@@ -92,9 +92,14 @@ async function getQuote(inputMint, outputMint, amountRaw) {
   });
   const response = await fetch(`${JUPITER_QUOTE_API}?${params}`);
   if (!response.ok) {
-    throw new Error(`Jupiter quote API error: ${response.status} ${response.statusText}`);
+    const errorText = await response.text();
+    throw new Error(`Jupiter quote API error: ${response.status} ${response.statusText} - ${errorText}`);
   }
-  return response.json();
+  const quoteResponse = await response.json();
+  if (!quoteResponse || !quoteResponse.outAmount || !quoteResponse.routePlan) {
+    throw new Error("Invalid quote response: no routes available for this swap");
+  }
+  return quoteResponse;
 }
 
 async function getSwapTransaction(quoteResponse) {
@@ -110,27 +115,34 @@ async function getSwapTransaction(quoteResponse) {
     }),
   });
   if (!response.ok) {
-    throw new Error(`Jupiter swap API error: ${response.status} ${response.statusText}`);
+    const errorText = await response.text();
+    throw new Error(`Jupiter swap API error: ${response.status} ${response.statusText} - ${errorText}`);
   }
-  return response.json();
+  const swapResponse = await response.json();
+  if (!swapResponse || !swapResponse.swapTransaction) {
+    throw new Error("Invalid swap response: no transaction returned");
+  }
+  return swapResponse;
 }
 
-async function executeSwap(swapTransaction, retryCount = 0) {
+async function executeSwap(swapResponse, retryCount = 0) {
   const maxRetries = 1;
   try {
+    const { swapTransaction, lastValidBlockHeight } = swapResponse;
     const swapTransactionBuf = Buffer.from(swapTransaction, "base64");
     const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
     transaction.sign([wallet]);
+    const blockhash = transaction.message.recentBlockhash;
     const rawTransaction = transaction.serialize();
     const txid = await connection.sendRawTransaction(rawTransaction, {
       skipPreflight: false,
       maxRetries: 2,
     });
     log(`Transaction sent: ${txid}`);
-    const latestBlockHash = await connection.getLatestBlockhash();
+    const blockHeight = lastValidBlockHeight || (await connection.getLatestBlockhash()).lastValidBlockHeight;
     const confirmation = await connection.confirmTransaction({
-      blockhash: latestBlockHash.blockhash,
-      lastValidBlockHeight: latestBlockHash.lastValidBlockHeight,
+      blockhash,
+      lastValidBlockHeight: blockHeight,
       signature: txid,
     });
     if (confirmation.value.err) {
@@ -142,7 +154,7 @@ async function executeSwap(swapTransaction, retryCount = 0) {
     if (retryCount < maxRetries) {
       log(`Transaction failed, retrying (${retryCount + 1}/${maxRetries}): ${error.message}`, "WARN");
       await new Promise((r) => setTimeout(r, 2000));
-      return executeSwap(swapTransaction, retryCount + 1);
+      return executeSwap(swapResponse, retryCount + 1);
     }
     throw error;
   }
@@ -161,8 +173,8 @@ async function executeBuy() {
   const quote = await getQuote(USDC_MINT, SOL_MINT, amountRaw);
   const expectedSol = parseFloat(quote.outAmount) / LAMPORTS_PER_SOL;
   log(`Expected to receive: ${expectedSol.toFixed(6)} SOL`);
-  const { swapTransaction } = await getSwapTransaction(quote);
-  const txid = await executeSwap(swapTransaction);
+  const swapResponse = await getSwapTransaction(quote);
+  const txid = await executeSwap(swapResponse);
   return txid;
 }
 
@@ -181,8 +193,8 @@ async function executeSell() {
   const quote = await getQuote(SOL_MINT, USDC_MINT, amountRaw);
   const expectedUsdc = parseFloat(quote.outAmount) / Math.pow(10, USDC_DECIMALS);
   log(`Expected to receive: ${expectedUsdc.toFixed(2)} USDC`);
-  const { swapTransaction } = await getSwapTransaction(quote);
-  const txid = await executeSwap(swapTransaction);
+  const swapResponse = await getSwapTransaction(quote);
+  const txid = await executeSwap(swapResponse);
   return txid;
 }
 
