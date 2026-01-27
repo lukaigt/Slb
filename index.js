@@ -163,7 +163,7 @@ async function executeSwap(swapResponse, retryCount = 0) {
 async function executeBuy() {
   log("Executing BUY: USDC -> SOL");
   const usdcBalance = await getTokenBalance(USDC_MINT, wallet.publicKey);
-  if (usdcBalance < 1) {
+  if (usdcBalance < 0.1) {
     log("Insufficient USDC balance to buy SOL", "WARN");
     return null;
   }
