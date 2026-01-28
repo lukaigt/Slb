@@ -12,14 +12,18 @@ dotenv.config();
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const JUPITER_QUOTE_API = "https://quote-api.jup.ag/v6/quote";
-const JUPITER_SWAP_API = "https://quote-api.jup.ag/v6/swap";
+
+// Jupiter API v6 endpoints (Migrated to api.jup.ag for Jan 31, 2026 deadline)
+const JUPITER_QUOTE_API = "https://api.jup.ag/v6/quote";
+const JUPITER_SWAP_API = "https://api.jup.ag/v6/swap";
+
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const USDC_DECIMALS = 6;
 const PRICE_CHECK_INTERVAL_MS = 15_000;
 const KRAKEN_WS_URL = "wss://ws.kraken.com";
 
 const RPC_URL = process.env.SOLANA_RPC_URL;
+const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
 const SLIPPAGE_BPS = parseInt(process.env.SLIPPAGE_BPS || "50", 10);
 const TRADE_PERCENT = parseFloat(process.env.TRADE_PERCENT || "0.2");
 const BUY_THRESHOLD = parseFloat(process.env.BUY_THRESHOLD || "1");
@@ -43,7 +47,7 @@ function log(message, level = "INFO") {
 }
 
 function validateEnvVars() {
-  const required = ["SOLANA_RPC_URL", "PRIVATE_KEY"];
+  const required = ["SOLANA_RPC_URL", "PRIVATE_KEY", "JUPITER_API_KEY"];
   const missing = required.filter((key) => !process.env[key]);
   if (missing.length > 0) {
     log(`Missing required environment variables: ${missing.join(", ")}`, "ERROR");
@@ -166,7 +170,12 @@ async function getQuote(inputMint, outputMint, amountRaw) {
   const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
   try {
-    const response = await fetch(`${JUPITER_QUOTE_API}?${params}`, { signal: controller.signal });
+    const response = await fetch(`${JUPITER_QUOTE_API}?${params}`, { 
+      headers: {
+        'x-api-key': JUPITER_API_KEY
+      },
+      signal: controller.signal 
+    });
     clearTimeout(timeoutId);
 
     if (!response.ok) {
@@ -195,7 +204,10 @@ async function getSwapTransaction(quoteResponse) {
   try {
     const response = await fetch(JUPITER_SWAP_API, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { 
+        "Content-Type": "application/json",
+        "x-api-key": JUPITER_API_KEY
+      },
       body: JSON.stringify({
         quoteResponse,
         userPublicKey: wallet.publicKey.toString(),
