@@ -1,31 +1,35 @@
 # Solana Jupiter Trading Bot
 
 ## Overview
-Automated SOL/USDC trading bot using Jupiter aggregator on Solana mainnet. The bot monitors price changes and executes trades based on a simple momentum strategy.
+Automated SOL/USDC trading bot using CoinGecko for price monitoring and Jupiter aggregator for swap execution on Solana mainnet.
 
 ## Project Structure
 ```
-├── index.js          # Main bot logic with Jupiter integration
+├── index.js          # Main bot logic
 ├── package.json      # Node.js dependencies
 ├── .env.example      # Environment variable template
-├── README.md         # Documentation for running the bot
+├── README.md         # Documentation
 └── .gitignore        # Git ignore rules
 ```
 
 ## Key Components
 
+### Price Monitoring
+- Uses CoinGecko API for SOL/USD price
+- Checks every 15 seconds
+- No Jupiter dependency for price checks
+
 ### Trading Strategy
-- Monitors SOL/USDC price every 10 seconds
 - BUY SOL when price increases by 1% from reference
 - SELL SOL when price decreases by 1% from reference
 - Trades 20% of available balance per trade
 - 60-second cooldown between trades
+- Reserves 0.01 SOL for gas fees
 
-### Jupiter Integration
-- Uses Jupiter Quote API v6 for price quotes
+### Swap Execution
+- Uses Jupiter Quote API v6 for quotes
 - Uses Jupiter Swap API v6 for transaction building
 - Supports versioned transactions
-- Automatic slippage and priority fee handling
 
 ## Environment Variables
 - `SOLANA_RPC_URL`: Solana RPC endpoint
@@ -44,4 +48,5 @@ Automated SOL/USDC trading bot using Jupiter aggregator on Solana mainnet. The b
 - dotenv: Environment variable management
 
 ## Recent Changes
-- 2026-01-27: Initial implementation with Jupiter v6 API
+- 2026-01-28: Switched price source from Jupiter to CoinGecko
+- 2026-01-28: Updated price check interval to 15 seconds

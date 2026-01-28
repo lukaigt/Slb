@@ -11,6 +11,7 @@ dotenv.config();
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const COINGECKO_PRICE_API = "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd";
 const JUPITER_QUOTE_API = "https://quote-api.jup.ag/v6/quote";
 const JUPITER_SWAP_API = "https://quote-api.jup.ag/v6/swap";
 const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -19,7 +20,7 @@ const USDC_DECIMALS = 6;
 const RPC_URL = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
 const SLIPPAGE_BPS = parseInt(process.env.SLIPPAGE_BPS || "50", 10);
 const TRADE_PERCENT = parseFloat(process.env.TRADE_PERCENT || "0.2");
-const PRICE_CHECK_INTERVAL_MS = 10_000;
+const PRICE_CHECK_INTERVAL_MS = 15_000;
 const TRADE_COOLDOWN_MS = 60_000;
 const PRICE_THRESHOLD_PERCENT = 1;
 
@@ -66,21 +67,16 @@ async function getTokenBalance(mint, owner) {
   return balance || 0;
 }
 
-async function getSolPrice() {
-  const params = new URLSearchParams({
-    inputMint: USDC_MINT,
-    outputMint: SOL_MINT,
-    amount: String(1_000_000),
-    slippageBps: String(SLIPPAGE_BPS),
-  });
-  const response = await fetch(`${JUPITER_QUOTE_API}?${params}`);
+async function getSolPriceUSD() {
+  const response = await fetch(COINGECKO_PRICE_API);
   if (!response.ok) {
-    throw new Error(`Jupiter quote API error: ${response.status} ${response.statusText}`);
+    throw new Error(`CoinGecko API error: ${response.status} ${response.statusText}`);
   }
   const data = await response.json();
-  const outAmount = parseFloat(data.outAmount) / LAMPORTS_PER_SOL;
-  const pricePerSol = 1 / outAmount;
-  return pricePerSol;
+  if (!data.solana || typeof data.solana.usd !== "number") {
+    throw new Error("Invalid CoinGecko response: missing solana.usd price");
+  }
+  return data.solana.usd;
 }
 
 async function getQuote(inputMint, outputMint, amountRaw) {
@@ -211,8 +207,8 @@ function canTrade() {
 
 async function checkAndTrade() {
   try {
-    const currentPrice = await getSolPrice();
-    log(`SOL/USDC Price: $${currentPrice.toFixed(4)}`);
+    const currentPrice = await getSolPriceUSD();
+    log(`SOL/USD Price (CoinGecko): $${currentPrice.toFixed(4)}`);
     if (lastReferencePrice === null) {
       lastReferencePrice = currentPrice;
       log(`Initial reference price set: $${lastReferencePrice.toFixed(4)}`);
@@ -269,6 +265,7 @@ async function main() {
   log(`Connected to RPC: ${RPC_URL}`);
   wallet = loadWallet();
   log(`Wallet loaded: ${wallet.publicKey.toString()}`);
+  log(`Price source: CoinGecko`);
   log(`Slippage: ${SLIPPAGE_BPS} bps`);
   log(`Trade percent: ${TRADE_PERCENT * 100}%`);
   log(`Price check interval: ${PRICE_CHECK_INTERVAL_MS / 1000}s`);
