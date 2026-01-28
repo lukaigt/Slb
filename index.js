@@ -13,9 +13,9 @@ dotenv.config();
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
-// Jupiter API v6 endpoints (Migrated to api.jup.ag for Jan 31, 2026 deadline)
-const JUPITER_QUOTE_API = "https://api.jup.ag/v6/quote";
-const JUPITER_SWAP_API = "https://api.jup.ag/v6/swap";
+// Corrected v6 endpoints
+const JUPITER_QUOTE_API = "https://api.jup.ag/swap/v1/quote";
+const JUPITER_SWAP_API = "https://api.jup.ag/swap/v1/swap";
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const USDC_DECIMALS = 6;
