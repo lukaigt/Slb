@@ -24,7 +24,7 @@ npm install
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your private key
+# Edit .env with your private key and RPC URL
 
 # Run the bot
 npm start
@@ -32,16 +32,16 @@ npm start
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SOLANA_RPC_URL` | Solana RPC endpoint | Required |
-| `PRIVATE_KEY` | Wallet private key (base58) | Required |
-| `TRADE_PERCENT` | Balance percentage per trade | `0.2` |
-| `BUY_THRESHOLD` | Buy trigger (% increase) | `1` |
-| `SELL_THRESHOLD` | Sell trigger (% decrease) | `1` |
-| `COOLDOWN_SECONDS` | Seconds between trades | `60` |
-| `SLIPPAGE_BPS` | Slippage tolerance (bps) | `50` |
-| `COMMITMENT` | RPC commitment level | `confirmed` |
+| Variable | Description | Required | Default |
+|----------|-------------|----------|---------|
+| `SOLANA_RPC_URL` | Solana RPC endpoint | Yes | - |
+| `PRIVATE_KEY` | Wallet private key (base58) | Yes | - |
+| `TRADE_PERCENT` | Balance percentage per trade | No | `0.2` |
+| `BUY_THRESHOLD` | Buy trigger (% increase) | No | `1` |
+| `SELL_THRESHOLD` | Sell trigger (% decrease) | No | `1` |
+| `COOLDOWN_SECONDS` | Seconds between trades | No | `60` |
+| `SLIPPAGE_BPS` | Slippage tolerance (bps) | No | `50` |
+| `COMMITMENT` | RPC commitment level | No | `confirmed` |
 
 ## How It Works
 
@@ -60,6 +60,16 @@ The bot validates Pyth oracle data before trading:
 - **Confidence check**: Rejects if confidence > 5% of price
 
 If any check fails, the trading cycle is safely skipped.
+
+## Project Structure
+
+```
+├── index.js          # Main bot logic
+├── pythPrice.js      # Pyth price fetching module
+├── package.json      # Node.js dependencies
+├── .env.example      # Environment variable template
+└── README.md         # Documentation
+```
 
 ## VPS Deployment
 

@@ -6,6 +6,7 @@ Automated SOL/USDC trading bot using Pyth Network on-chain oracle for price moni
 ## Project Structure
 ```
 ├── index.js          # Main bot logic
+├── pythPrice.js      # Pyth price fetching module
 ├── package.json      # Node.js dependencies
 ├── .env.example      # Environment variable template
 ├── README.md         # Documentation
@@ -14,14 +15,15 @@ Automated SOL/USDC trading bot using Pyth Network on-chain oracle for price moni
 
 ## Key Components
 
-### Price Monitoring (Pyth Network)
+### Price Monitoring (pythPrice.js)
 - Uses Pyth on-chain oracle for SOL/USD price
-- Price account: 7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE
+- Price account: J83r8UtrU7ns4fE4sL7xvX2t3f7r3qgwS9ctWk1dVKE
 - Fetches via getAccountInfo (no HTTP API)
 - No API keys required
-- Validates staleness (<60s), zero values, and confidence
+- Validates staleness (<60s), zero values, and confidence (<5%)
+- Logs price, confidence, and timestamp on each fetch
 
-### Trading Strategy
+### Trading Strategy (index.js)
 - BUY SOL when price increases by BUY_THRESHOLD% from reference
 - SELL SOL when price decreases by SELL_THRESHOLD% from reference
 - Trades TRADE_PERCENT of available balance per trade
@@ -55,6 +57,7 @@ Automated SOL/USDC trading bot using Pyth Network on-chain oracle for price moni
 - dotenv: Environment variable management
 
 ## Recent Changes
+- 2026-01-28: Created pythPrice.js module for Pyth integration
 - 2026-01-28: Replaced CoinGecko with Pyth Network on-chain oracle
 - 2026-01-28: Added price staleness and confidence validation
 - 2026-01-28: Added configurable thresholds via env vars
