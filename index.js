@@ -196,21 +196,47 @@ async function getSwapTransaction(quoteResponse) {
   return swapResponse;
 }
 
-async function executeSwapWithRetry(tradeFunc, retries = 3, delayMs = 500) {
+async function executeSwapWithRetry(inputMint, outputMint, initialAmountRaw, retries = 3, delayMs = 1000) {
+  let currentAmountRaw = initialAmountRaw;
+  
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const result = await tradeFunc();
-      console.log(`[INFO] Swap succeeded on attempt ${attempt}`);
-      return result;
+      log(`Swap attempt ${attempt}/${retries} for ${currentAmountRaw} units`, "TRADE");
+      
+      // Step 1: Fetch FRESH quote on every retry
+      const quote = await getQuote(inputMint, outputMint, currentAmountRaw);
+      
+      // Step 2: Get swap transaction
+      const swapResponse = await getSwapTransaction(quote);
+      
+      // Step 3: Execute swap
+      const txid = await executeSwap(swapResponse);
+      
+      log(`Swap succeeded on attempt ${attempt}: ${txid}`, "TRADE");
+      return txid;
     } catch (err) {
-      console.warn(`[WARN] Swap attempt ${attempt} failed: ${err.message}`);
+      log(`Swap attempt ${attempt} failed: ${err.message}`, "WARN");
+      
+      // Detailed error analysis
+      const isLiquidityIssue = err.message.includes("no routes available") || 
+                               err.message.includes("Could not find a route") ||
+                               err.message.includes("Insufficient liquidity");
+
+      if (isLiquidityIssue && attempt < retries) {
+        // Automatically reduce trade amount by 10% to try smaller swap
+        const newAmount = Math.floor(currentAmountRaw * 0.9);
+        log(`Liquidity/Route issue detected. Reducing trade amount from ${currentAmountRaw} to ${newAmount} for next attempt.`, "WARN");
+        currentAmountRaw = newAmount;
+      }
+
       if (attempt < retries) {
-        console.log(`[INFO] Retrying in ${delayMs}ms...`);
+        log(`Retrying in ${delayMs}ms...`, "INFO");
         await new Promise(resolve => setTimeout(resolve, delayMs));
+      } else {
+        throw new Error(`All ${retries} swap attempts failed. Last error: ${err.message}`);
       }
     }
   }
-  throw new Error("[ERROR] All swap attempts failed");
 }
 
 async function executeSwap(swapResponse, retryCount = 0) {
@@ -257,14 +283,9 @@ async function executeBuy() {
   }
   const tradeAmount = usdcBalance * TRADE_PERCENT;
   const amountRaw = Math.floor(tradeAmount * Math.pow(10, USDC_DECIMALS));
-  log(`Trading ${tradeAmount.toFixed(2)} USDC (${TRADE_PERCENT * 100}% of ${usdcBalance.toFixed(2)} USDC)`);
-  const quote = await getQuote(USDC_MINT, SOL_MINT, amountRaw);
-  const expectedSol = parseFloat(quote.outAmount) / LAMPORTS_PER_SOL;
-  log(`Expected to receive: ${expectedSol.toFixed(6)} SOL`);
-  const txid = await executeSwapWithRetry(async () => {
-    const swapResponse = await getSwapTransaction(quote);
-    return await executeSwap(swapResponse);
-  }, 3, 500);
+  log(`Initial trading amount: ${tradeAmount.toFixed(2)} USDC (${TRADE_PERCENT * 100}% of ${usdcBalance.toFixed(2)} USDC)`);
+  
+  const txid = await executeSwapWithRetry(USDC_MINT, SOL_MINT, amountRaw, 3, 1000);
   return txid;
 }
 
@@ -279,14 +300,9 @@ async function executeSell() {
   }
   const tradeAmount = availableSol * TRADE_PERCENT;
   const amountRaw = Math.floor(tradeAmount * LAMPORTS_PER_SOL);
-  log(`Trading ${tradeAmount.toFixed(6)} SOL (${TRADE_PERCENT * 100}% of ${availableSol.toFixed(6)} available SOL)`);
-  const quote = await getQuote(SOL_MINT, USDC_MINT, amountRaw);
-  const expectedUsdc = parseFloat(quote.outAmount) / Math.pow(10, USDC_DECIMALS);
-  log(`Expected to receive: ${expectedUsdc.toFixed(2)} USDC`);
-  const txid = await executeSwapWithRetry(async () => {
-    const swapResponse = await getSwapTransaction(quote);
-    return await executeSwap(swapResponse);
-  }, 3, 500);
+  log(`Initial trading amount: ${tradeAmount.toFixed(6)} SOL (${TRADE_PERCENT * 100}% of ${availableSol.toFixed(6)} available SOL)`);
+  
+  const txid = await executeSwapWithRetry(SOL_MINT, USDC_MINT, amountRaw, 3, 1000);
   return txid;
 }
 
@@ -379,7 +395,7 @@ async function main() {
   log(`Buy threshold: +${BUY_THRESHOLD}%`);
   log(`Sell threshold: -${SELL_THRESHOLD}%`);
   log(`Price check interval: ${PRICE_CHECK_INTERVAL_MS / 1000}s`);
-  log(`Trade cooldown: ${COOLDOWN_SECONDS}s`);
+  log(`Trade cooldown: ${ COOLDOWN_SECONDS }s`);
 
   log("=".repeat(60));
   await displayBalances();
