@@ -161,39 +161,69 @@ async function getQuote(inputMint, outputMint, amountRaw) {
     amount: String(amountRaw),
     slippageBps: String(SLIPPAGE_BPS),
   });
-  const response = await fetch(`${JUPITER_QUOTE_API}?${params}`);
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Jupiter quote API error: ${response.status} ${response.statusText} - ${errorText}`);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+  try {
+    const response = await fetch(`${JUPITER_QUOTE_API}?${params}`, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      log(`Jupiter quote API error: ${response.status} ${response.statusText} - ${errorText}`, "ERROR");
+      throw new Error(`Jupiter quote API error: ${response.status} ${response.statusText}`);
+    }
+    const quoteResponse = await response.json();
+    if (!quoteResponse || !quoteResponse.outAmount || !quoteResponse.routePlan) {
+      throw new Error("Invalid quote response: no routes available for this swap");
+    }
+    return quoteResponse;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === "AbortError") {
+      throw new Error("Jupiter quote API request timed out after 10s");
+    }
+    throw err;
   }
-  const quoteResponse = await response.json();
-  if (!quoteResponse || !quoteResponse.outAmount || !quoteResponse.routePlan) {
-    throw new Error("Invalid quote response: no routes available for this swap");
-  }
-  return quoteResponse;
 }
 
 async function getSwapTransaction(quoteResponse) {
-  const response = await fetch(JUPITER_SWAP_API, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      quoteResponse,
-      userPublicKey: wallet.publicKey.toString(),
-      wrapAndUnwrapSol: true,
-      dynamicComputeUnitLimit: true,
-      prioritizationFeeLamports: "auto",
-    }),
-  });
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Jupiter swap API error: ${response.status} ${response.statusText} - ${errorText}`);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+
+  try {
+    const response = await fetch(JUPITER_SWAP_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        quoteResponse,
+        userPublicKey: wallet.publicKey.toString(),
+        wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true,
+        prioritizationFeeLamports: "auto",
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      log(`Jupiter swap API error: ${response.status} ${response.statusText} - ${errorText}`, "ERROR");
+      throw new Error(`Jupiter swap API error: ${response.status} ${response.statusText}`);
+    }
+    const swapResponse = await response.json();
+    if (!swapResponse || !swapResponse.swapTransaction) {
+      throw new Error("Invalid swap response: no transaction returned");
+    }
+    return swapResponse;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === "AbortError") {
+      throw new Error("Jupiter swap API request timed out after 15s");
+    }
+    throw err;
   }
-  const swapResponse = await response.json();
-  if (!swapResponse || !swapResponse.swapTransaction) {
-    throw new Error("Invalid swap response: no transaction returned");
-  }
-  return swapResponse;
 }
 
 async function executeSwapWithRetry(inputMint, outputMint, initialAmountRaw, retries = 3, delayMs = 1000) {
