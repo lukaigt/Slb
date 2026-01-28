@@ -31,10 +31,6 @@ const SELL_THRESHOLD = parseFloat(process.env.SELL_THRESHOLD || "1");
 const COOLDOWN_SECONDS = parseInt(process.env.COOLDOWN_SECONDS || "60", 10);
 const COMMITMENT = process.env.COMMITMENT || "confirmed";
 
-// --- NEW SMART LOGIC CONSTANTS ---
-const MAX_PRICE_IMPACT_PCT = 0.5; // Max 0.5% price impact allowed
-const MIN_NET_PROFIT_PCT = 0.2;  // Must make at least 0.2% after estimated fees
-
 let connection;
 let wallet;
 let lastReferencePrice = null;
@@ -188,17 +184,9 @@ async function getQuote(inputMint, outputMint, amountRaw) {
       throw new Error(`Jupiter quote API error: ${response.status} ${response.statusText}`);
     }
     const quoteResponse = await response.json();
-    
     if (!quoteResponse || !quoteResponse.outAmount || !quoteResponse.routePlan) {
       throw new Error("Invalid quote response: no routes available for this swap");
     }
-
-    // --- SMART CHECK: Price Impact ---
-    const priceImpact = parseFloat(quoteResponse.priceImpactPct || "0");
-    if (priceImpact > MAX_PRICE_IMPACT_PCT) {
-      throw new Error(`Price impact too high: ${priceImpact.toFixed(2)}% (Max: ${MAX_PRICE_IMPACT_PCT}%)`);
-    }
-
     return quoteResponse;
   } catch (err) {
     clearTimeout(timeoutId);
@@ -274,8 +262,7 @@ async function executeSwapWithRetry(inputMint, outputMint, initialAmountRaw, ret
       // Detailed error analysis
       const isLiquidityIssue = err.message.includes("no routes available") || 
                                err.message.includes("Could not find a route") ||
-                               err.message.includes("Insufficient liquidity") ||
-                               err.message.includes("Price impact too high");
+                               err.message.includes("Insufficient liquidity");
 
       if (isLiquidityIssue && attempt < retries) {
         // Automatically reduce trade amount by 10% to try smaller swap
@@ -394,19 +381,6 @@ async function checkAndTrade() {
     return;
   }
 
-  // --- SMART LOGIC: Threshold + Buffer Check ---
-  // We only trade if the move is enough to cover the threshold + minimum net profit
-  const requiredMove = Math.abs(priceChange);
-  const triggerThreshold = priceChange >= 0 ? BUY_THRESHOLD : SELL_THRESHOLD;
-  
-  if (requiredMove < triggerThreshold + MIN_NET_PROFIT_PCT) {
-    // If we're at the threshold but not enough for profit after fees
-    if (requiredMove >= triggerThreshold) {
-      log(`Price reached threshold (${requiredMove.toFixed(2)}%), but skipping to protect against fees (Min profit buffer: ${MIN_NET_PROFIT_PCT}%)`, "INFO");
-    }
-    return;
-  }
-
   if (priceChange >= BUY_THRESHOLD) {
     log(`Price increased by ${priceChange.toFixed(2)}% - triggering BUY`, "TRADE");
     try {
@@ -464,7 +438,6 @@ async function main() {
   log(`Sell threshold: -${SELL_THRESHOLD}%`);
   log(`Price check interval: ${PRICE_CHECK_INTERVAL_MS / 1000}s`);
   log(`Trade cooldown: ${ COOLDOWN_SECONDS }s`);
-  log(`Smart Logic: Max Impact ${MAX_PRICE_IMPACT_PCT}%, Min Net Profit ${MIN_NET_PROFIT_PCT}%`);
 
   log("=".repeat(60));
   await displayBalances();
