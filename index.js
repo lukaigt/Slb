@@ -6,7 +6,7 @@ import {
 } from "@solana/web3.js";
 import bs58 from "bs58";
 import dotenv from "dotenv";
-import { getSolPriceUSD, initPythConnection } from "./pythPrice.js";
+import WebSocket from "ws";
 
 dotenv.config();
 
@@ -17,6 +17,7 @@ const JUPITER_SWAP_API = "https://quote-api.jup.ag/v6/swap";
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const USDC_DECIMALS = 6;
 const PRICE_CHECK_INTERVAL_MS = 15_000;
+const KRAKEN_WS_URL = "wss://ws.kraken.com";
 
 const RPC_URL = process.env.SOLANA_RPC_URL;
 const SLIPPAGE_BPS = parseInt(process.env.SLIPPAGE_BPS || "50", 10);
@@ -30,6 +31,11 @@ let connection;
 let wallet;
 let lastReferencePrice = null;
 let lastTradeTimestamp = 0;
+let currentKrakenPrice = null;
+let krakenWs = null;
+let wsReconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const RECONNECT_DELAY_MS = 5000;
 
 function log(message, level = "INFO") {
   const timestamp = new Date().toISOString();
@@ -58,6 +64,79 @@ function loadWallet() {
   const privateKeyEnv = process.env.PRIVATE_KEY;
   const secretKey = parsePrivateKey(privateKeyEnv);
   return Keypair.fromSecretKey(secretKey);
+}
+
+function connectKrakenWebSocket() {
+  return new Promise((resolve) => {
+    log("Connecting to Kraken WebSocket...");
+    
+    krakenWs = new WebSocket(KRAKEN_WS_URL);
+
+    krakenWs.on("open", () => {
+      log("Kraken WebSocket connected");
+      wsReconnectAttempts = 0;
+      
+      const subscribeMsg = {
+        event: "subscribe",
+        pair: ["SOL/USD"],
+        subscription: { name: "ticker" }
+      };
+      krakenWs.send(JSON.stringify(subscribeMsg));
+      log("Subscribed to SOL/USD ticker");
+    });
+
+    krakenWs.on("message", (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        
+        if (Array.isArray(message) && message.length >= 4) {
+          const tickerData = message[1];
+          if (tickerData && tickerData.c && Array.isArray(tickerData.c)) {
+            const lastTradePrice = parseFloat(tickerData.c[0]);
+            if (!isNaN(lastTradePrice) && lastTradePrice > 0) {
+              currentKrakenPrice = lastTradePrice;
+              log(`SOL/USD Price (Kraken WS): ${lastTradePrice.toFixed(4)}`);
+              
+              if (!resolve.resolved) {
+                resolve.resolved = true;
+                resolve();
+              }
+            }
+          }
+        }
+      } catch (error) {
+        // Ignore malformed messages
+      }
+    });
+
+    krakenWs.on("error", (error) => {
+      log(`Kraken WebSocket error: ${error.message}`, "WARN");
+    });
+
+    krakenWs.on("close", () => {
+      log("Kraken WebSocket disconnected", "WARN");
+      handleWsReconnect();
+    });
+
+    setTimeout(() => {
+      if (!resolve.resolved) {
+        resolve.resolved = true;
+        resolve();
+      }
+    }, 30000);
+  });
+}
+
+function handleWsReconnect() {
+  if (wsReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+    wsReconnectAttempts++;
+    log(`Reconnecting to Kraken WebSocket (attempt ${wsReconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`, "WARN");
+    setTimeout(() => {
+      connectKrakenWebSocket();
+    }, RECONNECT_DELAY_MS);
+  } else {
+    log("Max WebSocket reconnection attempts reached", "ERROR");
+  }
 }
 
 async function getTokenBalance(mint, owner) {
@@ -203,12 +282,12 @@ function canTrade() {
 }
 
 async function checkAndTrade() {
-  const currentPrice = await getSolPriceUSD();
-
-  if (currentPrice === null) {
-    log("Price unavailable or invalid, skipping trade cycle", "WARN");
+  if (currentKrakenPrice === null) {
+    log("No price available yet, waiting for Kraken data...", "WARN");
     return;
   }
+
+  const currentPrice = currentKrakenPrice;
 
   if (lastReferencePrice === null) {
     lastReferencePrice = currentPrice;
@@ -266,7 +345,6 @@ async function main() {
   validateEnvVars();
 
   connection = new Connection(RPC_URL, COMMITMENT);
-  initPythConnection(RPC_URL, COMMITMENT);
 
   log(`Connected to RPC: ${RPC_URL}`);
   log(`Commitment: ${COMMITMENT}`);
@@ -274,7 +352,7 @@ async function main() {
   wallet = loadWallet();
   log(`Wallet loaded: ${wallet.publicKey.toString()}`);
 
-  log(`Price source: Pyth Network (on-chain)`);
+  log(`Price source: Kraken WebSocket`);
   log(`Slippage: ${SLIPPAGE_BPS} bps`);
   log(`Trade percent: ${TRADE_PERCENT * 100}%`);
   log(`Buy threshold: +${BUY_THRESHOLD}%`);
@@ -285,6 +363,12 @@ async function main() {
   log("=".repeat(60));
   await displayBalances();
   log("=".repeat(60));
+
+  await connectKrakenWebSocket();
+
+  if (currentKrakenPrice === null) {
+    log("Waiting for first price update from Kraken...");
+  }
 
   log("Starting price monitoring loop...");
   await checkAndTrade();

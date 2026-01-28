@@ -1,14 +1,13 @@
 # Solana Jupiter Trading Bot
 
-Automated SOL/USDC trading bot using **Pyth Network on-chain oracle** for price monitoring and **Jupiter aggregator** for swap execution.
+Automated SOL/USDC trading bot using **Kraken WebSocket** for real-time price monitoring and **Jupiter aggregator** for swap execution.
 
 ## Features
 
-- **On-chain price oracle**: Uses Pyth Network directly via Solana RPC (no HTTP APIs)
-- **No API keys required**: Reads price data directly from Solana blockchain
-- **Price safety checks**: Rejects stale prices (>60s) and wide confidence intervals
+- **Real-time price feed**: Uses Kraken WebSocket for SOL/USD prices (no API keys needed)
 - **Jupiter DEX integration**: Best-price swaps via Jupiter aggregator
 - **Momentum strategy**: Buy on +1% increase, sell on -1% decrease
+- **Auto-reconnect**: Automatically reconnects if WebSocket disconnects
 - **Spam protection**: 60-second cooldown between trades
 
 ## Requirements
@@ -34,38 +33,28 @@ npm start
 
 | Variable | Description | Required | Default |
 |----------|-------------|----------|---------|
-| `SOLANA_RPC_URL` | Solana RPC endpoint | Yes | - |
-| `PRIVATE_KEY` | Wallet private key (base58) | Yes | - |
-| `TRADE_PERCENT` | Balance percentage per trade | No | `0.2` |
-| `BUY_THRESHOLD` | Buy trigger (% increase) | No | `1` |
-| `SELL_THRESHOLD` | Sell trigger (% decrease) | No | `1` |
-| `COOLDOWN_SECONDS` | Seconds between trades | No | `60` |
-| `SLIPPAGE_BPS` | Slippage tolerance (bps) | No | `50` |
-| `COMMITMENT` | RPC commitment level | No | `confirmed` |
+| SOLANA_RPC_URL | Solana RPC endpoint | Yes | - |
+| PRIVATE_KEY | Wallet private key (base58) | Yes | - |
+| TRADE_PERCENT | Balance percentage per trade | No | 0.2 |
+| BUY_THRESHOLD | Buy trigger (% increase) | No | 1 |
+| SELL_THRESHOLD | Sell trigger (% decrease) | No | 1 |
+| COOLDOWN_SECONDS | Seconds between trades | No | 60 |
+| SLIPPAGE_BPS | Slippage tolerance (bps) | No | 50 |
+| COMMITMENT | RPC commitment level | No | confirmed |
 
 ## How It Works
 
-1. Fetches SOL/USD price from Pyth on-chain oracle every 15 seconds
-2. Validates price freshness (<60s old) and confidence interval
-3. Compares to reference price set at startup
+1. Connects to Kraken WebSocket and subscribes to SOL/USD ticker
+2. Stores the latest price in memory
+3. Every 15 seconds, checks price change from reference
 4. Triggers BUY when price increases by threshold
 5. Triggers SELL when price decreases by threshold
 6. Executes swaps via Jupiter with slippage protection
 
-## Price Safety
-
-The bot validates Pyth oracle data before trading:
-- **Staleness check**: Rejects prices older than 60 seconds
-- **Zero check**: Rejects zero or undefined prices
-- **Confidence check**: Rejects if confidence > 5% of price
-
-If any check fails, the trading cycle is safely skipped.
-
 ## Project Structure
 
 ```
-├── index.js          # Main bot logic
-├── pythPrice.js      # Pyth price fetching module
+├── index.js          # Main bot logic with Kraken WS
 ├── package.json      # Node.js dependencies
 ├── .env.example      # Environment variable template
 └── README.md         # Documentation
@@ -86,4 +75,4 @@ pm2 startup
 
 - Never share your private key
 - Use a dedicated trading wallet with limited funds
-- The `.env` file is gitignored
+- The .env file is gitignored
