@@ -196,6 +196,23 @@ async function getSwapTransaction(quoteResponse) {
   return swapResponse;
 }
 
+async function executeSwapWithRetry(tradeFunc, retries = 3, delayMs = 500) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const result = await tradeFunc();
+      console.log(`[INFO] Swap succeeded on attempt ${attempt}`);
+      return result;
+    } catch (err) {
+      console.warn(`[WARN] Swap attempt ${attempt} failed: ${err.message}`);
+      if (attempt < retries) {
+        console.log(`[INFO] Retrying in ${delayMs}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  throw new Error("[ERROR] All swap attempts failed");
+}
+
 async function executeSwap(swapResponse, retryCount = 0) {
   const maxRetries = 1;
   try {
@@ -244,8 +261,10 @@ async function executeBuy() {
   const quote = await getQuote(USDC_MINT, SOL_MINT, amountRaw);
   const expectedSol = parseFloat(quote.outAmount) / LAMPORTS_PER_SOL;
   log(`Expected to receive: ${expectedSol.toFixed(6)} SOL`);
-  const swapResponse = await getSwapTransaction(quote);
-  const txid = await executeSwap(swapResponse);
+  const txid = await executeSwapWithRetry(async () => {
+    const swapResponse = await getSwapTransaction(quote);
+    return await executeSwap(swapResponse);
+  }, 3, 500);
   return txid;
 }
 
@@ -264,8 +283,10 @@ async function executeSell() {
   const quote = await getQuote(SOL_MINT, USDC_MINT, amountRaw);
   const expectedUsdc = parseFloat(quote.outAmount) / Math.pow(10, USDC_DECIMALS);
   log(`Expected to receive: ${expectedUsdc.toFixed(2)} USDC`);
-  const swapResponse = await getSwapTransaction(quote);
-  const txid = await executeSwap(swapResponse);
+  const txid = await executeSwapWithRetry(async () => {
+    const swapResponse = await getSwapTransaction(quote);
+    return await executeSwap(swapResponse);
+  }, 3, 500);
   return txid;
 }
 
