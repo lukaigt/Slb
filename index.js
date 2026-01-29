@@ -35,7 +35,6 @@ let connection;
 let wallet;
 let lastReferencePrice = null;
 let lastTradeTimestamp = 0;
-let lastTradeType = "NONE"; // Track if we last BOUGHT or SOLD
 let currentKrakenPrice = null;
 let krakenWs = null;
 let wsReconnectAttempts = 0;
@@ -100,10 +99,7 @@ function connectKrakenWebSocket() {
             const lastTradePrice = parseFloat(tickerData.c[0]);
             if (!isNaN(lastTradePrice) && lastTradePrice > 0) {
               currentKrakenPrice = lastTradePrice;
-              // Reduced logging frequency for price
-              if (Math.random() < 0.1) {
-                log(`SOL/USD Price (Kraken WS): ${lastTradePrice.toFixed(4)}`);
-              }
+              log(`SOL/USD Price (Kraken WS): ${lastTradePrice.toFixed(4)}`);
               
               if (!resolve.resolved) {
                 resolve.resolved = true;
@@ -249,41 +245,9 @@ async function executeSwapWithRetry(inputMint, outputMint, initialAmountRaw, ret
     try {
       log(`Swap attempt ${attempt}/${retries} for ${currentAmountRaw} units`, "TRADE");
       
-      // Step 1: Fetch FRESH quote
+      // Step 1: Fetch FRESH quote on every retry
       const quote = await getQuote(inputMint, outputMint, currentAmountRaw);
       
-      // Receipt Check: Verify if the quote actually meets our threshold after fees
-      const outAmount = parseFloat(quote.outAmount);
-      const inAmount = parseFloat(currentAmountRaw);
-      
-      if (inputMint === USDC_MINT) {
-        // USDC -> SOL
-        const solReceived = outAmount / LAMPORTS_PER_SOL;
-        const usdcSpent = inAmount / Math.pow(10, USDC_DECIMALS);
-        const effectivePrice = usdcSpent / solReceived;
-        const slippagePct = ((effectivePrice - currentKrakenPrice) / currentKrakenPrice) * 100;
-        
-        log(`Quote Analysis: Kraken Price: $${currentKrakenPrice.toFixed(4)}, Effective Swap Price: $${effectivePrice.toFixed(4)} (${slippagePct.toFixed(2)}% impact)`);
-        
-        if (slippagePct > 1.0) {
-          log(`WARNING: High price impact/slippage detected (${slippagePct.toFixed(2)}%). Fees + Slippage exceed safe limits.`, "WARN");
-          if (attempt === retries) throw new Error("Fees/Slippage too high to trade safely");
-        }
-      } else {
-        // SOL -> USDC
-        const usdcReceived = outAmount / Math.pow(10, USDC_DECIMALS);
-        const solSpent = inAmount / LAMPORTS_PER_SOL;
-        const effectivePrice = usdcReceived / solSpent;
-        const slippagePct = ((currentKrakenPrice - effectivePrice) / currentKrakenPrice) * 100;
-
-        log(`Quote Analysis: Kraken Price: $${currentKrakenPrice.toFixed(4)}, Effective Swap Price: $${effectivePrice.toFixed(4)} (${slippagePct.toFixed(2)}% impact)`);
-
-        if (slippagePct > 1.0) {
-          log(`WARNING: High price impact/slippage detected (${slippagePct.toFixed(2)}%). Fees + Slippage exceed safe limits.`, "WARN");
-          if (attempt === retries) throw new Error("Fees/Slippage too high to trade safely");
-        }
-      }
-
       // Step 2: Get swap transaction
       const swapResponse = await getSwapTransaction(quote);
       
@@ -295,11 +259,13 @@ async function executeSwapWithRetry(inputMint, outputMint, initialAmountRaw, ret
     } catch (err) {
       log(`Swap attempt ${attempt} failed: ${err.message}`, "WARN");
       
+      // Detailed error analysis
       const isLiquidityIssue = err.message.includes("no routes available") || 
                                err.message.includes("Could not find a route") ||
                                err.message.includes("Insufficient liquidity");
 
       if (isLiquidityIssue && attempt < retries) {
+        // Automatically reduce trade amount by 10% to try smaller swap
         const newAmount = Math.floor(currentAmountRaw * 0.9);
         log(`Liquidity/Route issue detected. Reducing trade amount from ${currentAmountRaw} to ${newAmount} for next attempt.`, "WARN");
         currentAmountRaw = newAmount;
@@ -386,22 +352,9 @@ function canTrade() {
   const now = Date.now();
   const cooldownMs = COOLDOWN_SECONDS * 1000;
   const timeSinceLastTrade = now - lastTradeTimestamp;
-
-  // Stop Loss Logic: Ignore cooldown if price is crashing and we hold SOL
-  if (lastTradeType === "BUY") {
-    const priceChangeSinceBuy = ((currentKrakenPrice - lastReferencePrice) / lastReferencePrice) * 100;
-    if (priceChangeSinceBuy <= -1.0) {
-      log(`EMERGENCY: Price crashed 1.0% since buy. Breaking cooldown to execute stop-loss.`, "WARN");
-      return true;
-    }
-  }
-
   if (timeSinceLastTrade < cooldownMs) {
     const remainingCooldown = Math.ceil((cooldownMs - timeSinceLastTrade) / 1000);
-    // Reduced logging for cooldown
-    if (Math.random() < 0.05) {
-      log(`Trade cooldown active. ${remainingCooldown}s remaining.`);
-    }
+    log(`Trade cooldown active. ${remainingCooldown}s remaining.`);
     return false;
   }
   return true;
@@ -422,44 +375,31 @@ async function checkAndTrade() {
   }
 
   const priceChange = ((currentPrice - lastReferencePrice) / lastReferencePrice) * 100;
-  
-  // Fresh Anchor Logic: If we are in USDC and price goes LOWER, update reference to catch the new bottom
-  if (lastTradeType !== "BUY" && currentPrice < lastReferencePrice) {
-    lastReferencePrice = currentPrice;
-    log(`New lower bottom found: $${lastReferencePrice.toFixed(4)}. Updating reference.`);
-    return;
-  }
-
-  // Reduced logging for minor price changes
-  if (Math.abs(priceChange) > 0.1) {
-    log(`Price: $${currentPrice.toFixed(2)} | Change from ref: ${priceChange >= 0 ? "+" : ""}${priceChange.toFixed(2)}%`);
-  }
+  log(`Price change from reference: ${priceChange >= 0 ? "+" : ""}${priceChange.toFixed(2)}%`);
 
   if (!canTrade()) {
     return;
   }
 
-  if (priceChange >= BUY_THRESHOLD && lastTradeType !== "BUY") {
+  if (priceChange >= BUY_THRESHOLD) {
     log(`Price increased by ${priceChange.toFixed(2)}% - triggering BUY`, "TRADE");
     try {
       const txid = await executeBuy();
       if (txid) {
         lastTradeTimestamp = Date.now();
         lastReferencePrice = currentPrice;
-        lastTradeType = "BUY";
         log(`BUY completed. New reference price: $${currentPrice.toFixed(4)}`, "TRADE");
       }
     } catch (error) {
       log(`BUY failed: ${error.message}`, "ERROR");
     }
-  } else if (priceChange <= -SELL_THRESHOLD && lastTradeType === "BUY") {
+  } else if (priceChange <= -SELL_THRESHOLD) {
     log(`Price decreased by ${Math.abs(priceChange).toFixed(2)}% - triggering SELL`, "TRADE");
     try {
       const txid = await executeSell();
       if (txid) {
         lastTradeTimestamp = Date.now();
         lastReferencePrice = currentPrice;
-        lastTradeType = "SELL";
         log(`SELL completed. New reference price: $${currentPrice.toFixed(4)}`, "TRADE");
       }
     } catch (error) {
@@ -478,7 +418,7 @@ async function displayBalances() {
 
 async function main() {
   log("=".repeat(60));
-  log("Solana Jupiter Trading Bot Starting (V2 - Smart Momentum)");
+  log("Solana Jupiter Trading Bot Starting");
   log("=".repeat(60));
 
   validateEnvVars();
