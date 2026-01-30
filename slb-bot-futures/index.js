@@ -29,7 +29,8 @@ const CONFIG = {
     STOP_LOSS_PERCENT: parseFloat(process.env.STOP_LOSS_PERCENT) || 0.5,
     TRAILING_TP_START: parseFloat(process.env.TRAILING_TP_START_PERCENT) || 0.6,
     TRAILING_TP_DISTANCE: parseFloat(process.env.TRAILING_TP_DISTANCE_PERCENT) || 0.2,
-    EMA_SHORT: 20,
+    ORDER_COOLDOWN_MS: (parseInt(process.env.COOLDOWN_SECONDS) || 30) * 1000,
+    COMMITMENT: process.env.COMMITMENT || 'confirmed',
     EMA_LONG: 50,
     RSI_PERIOD: 14,
     RSI_OVERSOLD: 30,
@@ -188,7 +189,7 @@ function checkTrailingTakeProfit(currentPrice) {
 
 async function openPosition(direction) {
     const now = Date.now();
-    if (now - lastOrderTime < ORDER_COOLDOWN_MS) {
+    if (now - lastOrderTime < CONFIG.ORDER_COOLDOWN_MS) {
         log('Order cooldown active, skipping...');
         return false;
     }
@@ -430,7 +431,7 @@ async function main() {
 
     try {
         const connection = new Connection(CONFIG.RPC_URL, {
-            commitment: 'confirmed',
+            commitment: CONFIG.COMMITMENT,
         });
 
         let privateKeyBytes;
