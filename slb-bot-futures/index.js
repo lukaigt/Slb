@@ -435,10 +435,19 @@ async function main() {
         });
 
         let privateKeyBytes;
+        const cleanKey = CONFIG.PRIVATE_KEY.trim().replace(/['"]/g, '');
         try {
-            privateKeyBytes = bs58.decode(CONFIG.PRIVATE_KEY);
+            if (typeof bs58.decode === 'function') {
+                privateKeyBytes = bs58.decode(cleanKey);
+            } else if (typeof bs58.default?.decode === 'function') {
+                privateKeyBytes = bs58.default.decode(cleanKey);
+            } else {
+                throw new Error('bs58 decode not found');
+            }
         } catch (e) {
-            privateKeyBytes = Uint8Array.from(JSON.parse(CONFIG.PRIVATE_KEY));
+            log(`Private key decode error: ${e.message}`);
+            log('Make sure your PRIVATE_KEY in .env is the base58 key from Phantom (no quotes)');
+            process.exit(1);
         }
         
         const keypair = Keypair.fromSecretKey(privateKeyBytes);
