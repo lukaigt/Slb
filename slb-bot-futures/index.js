@@ -10,7 +10,6 @@ const {
     PRICE_PRECISION,
     BASE_PRECISION,
     QUOTE_PRECISION,
-    BulkAccountLoader,
     getMarketsAndOraclesForSubscription,
     PerpMarkets,
 } = require('@drift-labs/sdk');
@@ -457,15 +456,12 @@ async function main() {
 
         const sdkConfig = initialize({ env: 'mainnet-beta' });
 
-        const accountLoader = new BulkAccountLoader(connection, 'confirmed', 5000);
-
         driftClient = new DriftClient({
             connection,
             wallet,
             programID: new PublicKey(sdkConfig.DRIFT_PROGRAM_ID),
             accountSubscription: {
-                type: 'polling',
-                accountLoader: accountLoader,
+                type: 'websocket',
             },
         });
 
