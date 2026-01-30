@@ -1,60 +1,81 @@
-# Solana Jupiter Trading Bot
+# Solana Futures Trading Bot (Drift Protocol)
 
 ## Overview
-Automated SOL/USDC trading bot using Kraken WebSocket for real-time price monitoring and Jupiter aggregator for swap execution on Solana mainnet.
+High-performance perpetual futures trading bot using Drift Protocol on Solana mainnet. Supports 50x leverage, trailing take-profit, and professional trading indicators.
 
 ## Project Structure
 ```
-├── index.js          # Main bot logic with Kraken WS
-├── package.json      # Node.js dependencies
-├── .env.example      # Environment variable template
-├── README.md         # Documentation
-└── .gitignore        # Git ignore rules
+├── slb-bot-futures/          # NEW: Futures trading bot
+│   ├── index.js              # Main bot logic with Drift SDK
+│   ├── package.json          # Node.js dependencies
+│   ├── .env.example          # Environment variable template
+│   ├── README.md             # Deployment documentation
+│   └── .gitignore            # Git ignore rules
+│
+├── old_spot_bot/             # OLD: Archived spot trading bot
+│   ├── index.js              # Kraken WS + Jupiter swap logic
+│   ├── package.json          # Old dependencies
+│   └── .env.example          # Old config template
 ```
 
-## Key Components
+## Futures Bot (slb-bot-futures)
 
-### Price Monitoring (Kraken WebSocket)
-- Connects to wss://ws.kraken.com
-- Subscribes to SOL/USD ticker channel
-- Parses last trade price from ticker messages
-- Auto-reconnects on disconnect (up to 10 attempts)
-- No API keys required (public WebSocket)
+### Trading Strategy
+- **Trend Detection**: EMA 20/50 crossover (Bullish when short > long)
+- **Momentum Check**: RSI below 40 for LONG, above 60 for SHORT
+- **Confirmation**: Bollinger Bands position relative to middle band
+- **Volume Filter**: Requires 1.5x average volume to avoid fake breakouts
 
-### Trading Strategy (index.js)
-- BUY SOL when price increases by BUY_THRESHOLD% from reference
-- SELL SOL when price decreases by SELL_THRESHOLD% from reference
-- Trades TRADE_PERCENT of available balance per trade
-- COOLDOWN_SECONDS cooldown between trades
-- Reserves 0.01 SOL for gas fees
+### Risk Management
+- **Leverage**: 50x (configurable)
+- **Stop-Loss**: 0.8% price move against position
+- **Trailing Take-Profit**: Activates at 2% profit, trails by 0.5%
+- **Position Sizing**: Fixed USDC amount per trade
 
-### Swap Execution
-- Uses Jupiter Quote API v6 for quotes
-- Uses Jupiter Swap API v6 for transaction building
-- Supports versioned transactions
+### Key Features
+- Uses official @drift-labs/sdk (secure, audited)
+- WebSocket subscription (efficient, low API usage)
+- Pyth oracle for price feeds (built into Drift)
+- Reduce-only orders for safe position closing
 
 ## Environment Variables
-- SOLANA_RPC_URL: Solana RPC endpoint (required)
-- PRIVATE_KEY: Wallet private key in base58 (required)
-- TRADE_PERCENT: Balance percentage per trade (default: 0.2)
-- BUY_THRESHOLD: Buy trigger percentage (default: 1)
-- SELL_THRESHOLD: Sell trigger percentage (default: 1)
-- COOLDOWN_SECONDS: Seconds between trades (default: 60)
-- SLIPPAGE_BPS: Slippage in basis points (default: 50)
-- COMMITMENT: RPC commitment level (default: confirmed)
+- SOLANA_RPC_URL: QuickNode RPC endpoint
+- PRIVATE_KEY: Wallet private key (base58)
+- LEVERAGE: Trading leverage (default: 50)
+- SYMBOL: Market to trade (default: SOL-PERP)
+- TRADE_AMOUNT_USDC: Position size in USDC
+- STOP_LOSS_PERCENT: Max loss before exit (default: 0.8)
+- TRAILING_TP_START_PERCENT: Profit to activate trailing (default: 2.0)
+- TRAILING_TP_DISTANCE_PERCENT: Trail distance (default: 0.5)
 
 ## Running the Bot
-1. Copy .env.example to .env
-2. Configure your private key and RPC URL
-3. Run: npm start
+1. cd slb-bot-futures
+2. npm install
+3. cp .env.example .env
+4. Edit .env with your keys
+5. npm start
+
+## VPS Deployment
+- Git clone the repo to VPS
+- npm install && npm start
+- Use nohup or pm2 for background running
 
 ## Dependencies
-- @solana/web3.js: Solana SDK
-- ws: WebSocket client for Kraken
-- bs58: Base58 encoding/decoding
+- @drift-labs/sdk: Drift Protocol trading SDK
+- @solana/web3.js: Solana blockchain SDK
+- bs58: Base58 encoding for private keys
 - dotenv: Environment variable management
+- technicalindicators: EMA, RSI, Bollinger calculations
 
 ## Recent Changes
-- 2026-01-28: Replaced previous price feed with Kraken WebSocket
-- 2026-01-28: Added WebSocket auto-reconnect logic
-- 2026-01-28: Bot waits for first price before trading
+- 2026-01-30: Created new slb-bot-futures folder with Drift Protocol integration
+- 2026-01-30: Moved old spot bot to old_spot_bot folder
+- 2026-01-30: Implemented 50x leverage with trailing take-profit
+- 2026-01-30: Added professional indicators (EMA, RSI, BB, Volume)
+
+## User Preferences
+- Always ask before modifying code
+- Explain every decision in detail
+- Keep bot simple, avoid over-complication
+- No paid APIs (use free tiers)
+- Security is critical (no key exposure)

@@ -1,0 +1,20 @@
+{
+  "name": "slb-bot-futures",
+  "version": "1.0.0",
+  "description": "## Overview High-performance trading bot for Solana Perpetual Futures using Drift Protocol. Supports up to 50x leverage, Trailing Take-Profit, and Liquidation-based Stop-Loss.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@drift-labs/sdk": "^2.148.0",
+    "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0",
+    "dotenv": "^17.2.3",
+    "technicalindicators": "^3.1.0"
+  }
+}
