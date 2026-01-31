@@ -1,12 +1,12 @@
 # Solana Futures Trading Bot (Drift Protocol)
 
 ## Overview
-High-performance perpetual futures trading bot using Drift Protocol on Solana mainnet. Supports 50x leverage, trailing take-profit, and professional trading indicators.
+Smart perpetual futures trading bot using Drift Protocol on Solana mainnet. Uses Order Book Imbalance + CVD + VWAP for intelligent entries, with dynamic danger mode for exits.
 
 ## Project Structure
 ```
-├── slb-bot-futures/          # NEW: Futures trading bot
-│   ├── index.js              # Main bot logic with Drift SDK
+├── slb-bot-futures/          # Smart Futures trading bot
+│   ├── index.js              # Main bot logic with smart strategy
 │   ├── package.json          # Node.js dependencies
 │   ├── .env.example          # Environment variable template
 │   ├── README.md             # Deployment documentation
@@ -18,64 +18,76 @@ High-performance perpetual futures trading bot using Drift Protocol on Solana ma
 │   └── .env.example          # Old config template
 ```
 
-## Futures Bot (slb-bot-futures)
+## Trading Strategy (v2 - Smart Bot)
 
-### Trading Strategy
-- **Trend Detection**: EMA 20/50 crossover (Bullish when short > long)
-- **Momentum Check**: RSI below 40 for LONG, above 60 for SHORT
-- **Confirmation**: Bollinger Bands position relative to middle band
-- **Volume Filter**: Requires 1.5x average volume to avoid fake breakouts
+### Entry Logic (All 4 must be TRUE)
+1. **Order Book Imbalance**: >25% buyers for LONG, >25% sellers for SHORT
+2. **Imbalance Trend**: Consistently bullish (RISING) for LONG, consistently bearish (FALLING) for SHORT
+3. **Price Position**: Price at/below average for LONG, at/above average for SHORT
+4. **Cooldown**: No trade in last 2 minutes
 
-### Risk Management
-- **Leverage**: 50x (configurable)
-- **Stop-Loss**: 0.8% price move against position
-- **Trailing Take-Profit**: Activates at 2% profit, trails by 0.5%
-- **Position Sizing**: Fixed USDC amount per trade
+### Exit Logic
+- **Stop-Loss**: 0.5% price move against position
+- **Take-Profit Activation**: 0.4% price move in favor
+- **Trailing (Normal Mode)**: 0.15% from peak
+- **Trailing (Danger Mode)**: 0.05% from peak (when reversal signals appear)
 
-### Key Features
-- Uses official @drift-labs/sdk (secure, audited)
-- WebSocket subscription (efficient, low API usage)
-- Pyth oracle for price feeds (built into Drift)
-- Reduce-only orders for safe position closing
+### Danger Mode
+Activates when:
+- In LONG and order book flips bearish OR CVD starts falling
+- In SHORT and order book flips bullish OR CVD starts rising
+Effect: Tightens trailing stop from 0.15% to 0.05%
+
+### Data Sources (All Free)
+- **Order Book**: Drift DLOB API (https://dlob.drift.trade)
+- **Price**: Drift SDK via Pyth oracle
+- **Imbalance Trend**: Tracks order book imbalance over time (real data)
+- **Price Average**: Simple moving average of price (50 periods)
 
 ## Environment Variables
-- SOLANA_RPC_URL: QuickNode RPC endpoint
+- SOLANA_RPC_URL: Helius RPC endpoint (free tier)
 - PRIVATE_KEY: Wallet private key (base58)
-- LEVERAGE: Trading leverage (default: 50)
+- LEVERAGE: Trading leverage (default: 50, Drift may limit to 20x)
 - SYMBOL: Market to trade (default: SOL-PERP)
 - TRADE_AMOUNT_USDC: Position size in USDC
-- STOP_LOSS_PERCENT: Max loss before exit (default: 0.8)
-- TRAILING_TP_START_PERCENT: Profit to activate trailing (default: 2.0)
-- TRAILING_TP_DISTANCE_PERCENT: Trail distance (default: 0.5)
+- IMBALANCE_THRESHOLD: Order book imbalance needed (default: 0.25)
+- CVD_LOOKBACK: Periods to check CVD trend (default: 5)
+- VWAP_PERIOD: Candles for VWAP calculation (default: 50)
+- STOP_LOSS_PERCENT: Max loss before exit (default: 0.5)
+- TAKE_PROFIT_ACTIVATION: Profit to activate trailing (default: 0.4)
+- TRAILING_NORMAL: Normal trailing distance (default: 0.15)
+- TRAILING_DANGER: Tight trailing distance (default: 0.05)
+- COOLDOWN_SECONDS: Seconds between trades (default: 120)
+- CHECK_INTERVAL_MS: Check frequency in ms (default: 5000)
 
 ## Running the Bot
 1. cd slb-bot-futures
 2. npm install
 3. cp .env.example .env
-4. Edit .env with your keys
+4. Edit .env with your Helius RPC and private key
 5. npm start
 
 ## VPS Deployment
-- Git clone the repo to VPS
-- npm install && npm start
-- Use nohup or pm2 for background running
+```bash
+cd ~/Slb && git pull && cd slb-bot-futures && npm install && pkill -f "node index.js"; nohup npm start > bot.log 2>&1 & tail -f bot.log
+```
 
 ## Dependencies
 - @drift-labs/sdk: Drift Protocol trading SDK
 - @solana/web3.js: Solana blockchain SDK
 - bs58: Base58 encoding for private keys
 - dotenv: Environment variable management
-- technicalindicators: EMA, RSI, Bollinger calculations
 
 ## Recent Changes
-- 2026-01-30: Created new slb-bot-futures folder with Drift Protocol integration
-- 2026-01-30: Moved old spot bot to old_spot_bot folder
-- 2026-01-30: Implemented 50x leverage with trailing take-profit
-- 2026-01-30: Added professional indicators (EMA, RSI, BB, Volume)
+- 2026-01-31: Complete rewrite with Order Book + CVD + VWAP strategy
+- 2026-01-31: Added Danger Mode for smart exits
+- 2026-01-31: Integrated Drift DLOB API for real-time order book
+- 2026-01-31: Removed EMA/RSI/Bollinger (replaced with order flow)
+- 2026-01-30: Created initial Drift Protocol integration
 
 ## User Preferences
 - Always ask before modifying code
 - Explain every decision in detail
 - Keep bot simple, avoid over-complication
-- No paid APIs (use free tiers)
+- No paid APIs (use free tiers only)
 - Security is critical (no key exposure)

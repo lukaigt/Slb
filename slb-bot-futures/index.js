@@ -16,7 +16,6 @@ const {
 const { Connection, Keypair, PublicKey } = require('@solana/web3.js');
 const bs58 = require('bs58');
 const dotenv = require('dotenv');
-const { RSI, EMA, BollingerBands } = require('technicalindicators');
 
 dotenv.config();
 
@@ -26,99 +25,184 @@ const CONFIG = {
     LEVERAGE: parseInt(process.env.LEVERAGE) || 50,
     SYMBOL: process.env.SYMBOL || 'SOL-PERP',
     TRADE_AMOUNT_USDC: parseFloat(process.env.TRADE_AMOUNT_USDC) || 10,
+    
+    IMBALANCE_THRESHOLD: parseFloat(process.env.IMBALANCE_THRESHOLD) || 0.25,
+    CVD_LOOKBACK: parseInt(process.env.CVD_LOOKBACK) || 5,
+    VWAP_PERIOD: parseInt(process.env.VWAP_PERIOD) || 50,
+    
     STOP_LOSS_PERCENT: parseFloat(process.env.STOP_LOSS_PERCENT) || 0.5,
-    TRAILING_TP_START: parseFloat(process.env.TRAILING_TP_START_PERCENT) || 0.6,
-    TRAILING_TP_DISTANCE: parseFloat(process.env.TRAILING_TP_DISTANCE_PERCENT) || 0.2,
-    ORDER_COOLDOWN_MS: (parseInt(process.env.COOLDOWN_SECONDS) || 30) * 1000,
-    COMMITMENT: process.env.COMMITMENT || 'confirmed',
-    EMA_LONG: 50,
-    RSI_PERIOD: 14,
-    RSI_OVERSOLD: 30,
-    RSI_OVERBOUGHT: 70,
-    MIN_VOLUME_MULTIPLIER: 1.5,
-    CHECK_INTERVAL_MS: 10000,
+    TAKE_PROFIT_ACTIVATION: parseFloat(process.env.TAKE_PROFIT_ACTIVATION) || 0.4,
+    TRAILING_NORMAL: parseFloat(process.env.TRAILING_NORMAL) || 0.15,
+    TRAILING_DANGER: parseFloat(process.env.TRAILING_DANGER) || 0.05,
+    
+    ORDER_COOLDOWN_MS: (parseInt(process.env.COOLDOWN_SECONDS) || 120) * 1000,
+    CHECK_INTERVAL_MS: parseInt(process.env.CHECK_INTERVAL_MS) || 5000,
+    DLOB_URL: 'https://dlob.drift.trade',
 };
 
 const priceHistory = [];
+const imbalanceHistory = [];
 let currentPosition = null;
 let entryPrice = 0;
 let highestPriceSinceEntry = 0;
 let lowestPriceSinceEntry = Infinity;
 let trailingStopActive = false;
+let dangerMode = false;
 let driftClient = null;
 let marketIndex = 0;
 let lastOrderTime = 0;
-const ORDER_COOLDOWN_MS = 30000;
 
 function log(message) {
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] ${message}`);
 }
 
-function calculateIndicators() {
-    if (priceHistory.length < CONFIG.EMA_LONG) {
+async function fetchOrderBook() {
+    try {
+        const response = await fetch(
+            `${CONFIG.DLOB_URL}/l2?marketName=${CONFIG.SYMBOL}&depth=10`
+        );
+        
+        if (!response.ok) {
+            log(`DLOB API error: ${response.status}`);
+            return null;
+        }
+        
+        const data = await response.json();
+        
+        if (!data || !data.bids || !data.asks || !Array.isArray(data.bids) || !Array.isArray(data.asks)) {
+            log('Invalid order book format');
+            return null;
+        }
+        
+        return data;
+    } catch (error) {
+        log(`Error fetching order book: ${error.message}`);
         return null;
     }
-
-    const emaShort = EMA.calculate({ period: CONFIG.EMA_SHORT, values: priceHistory });
-    const emaLong = EMA.calculate({ period: CONFIG.EMA_LONG, values: priceHistory });
-    const rsiValues = RSI.calculate({ period: CONFIG.RSI_PERIOD, values: priceHistory });
-    const bbands = BollingerBands.calculate({ 
-        period: 20, 
-        values: priceHistory, 
-        stdDev: 2 
-    });
-
-    if (emaShort.length === 0 || emaLong.length === 0 || rsiValues.length === 0) {
-        return null;
-    }
-
-    const currentEmaShort = emaShort[emaShort.length - 1];
-    const currentEmaLong = emaLong[emaLong.length - 1];
-    const currentRsi = rsiValues[rsiValues.length - 1];
-    const currentBB = bbands.length > 0 ? bbands[bbands.length - 1] : null;
-    const currentPrice = priceHistory[priceHistory.length - 1];
-
-    return {
-        emaShort: currentEmaShort,
-        emaLong: currentEmaLong,
-        rsi: currentRsi,
-        bb: currentBB,
-        price: currentPrice,
-        emaTrend: currentEmaShort > currentEmaLong ? 'BULLISH' : 'BEARISH',
-    };
 }
 
-function shouldOpenLong(indicators) {
-    if (!indicators || !indicators.bb) return false;
-
-    const emaBullish = indicators.emaTrend === 'BULLISH';
-    const rsiOversold = indicators.rsi < CONFIG.RSI_OVERSOLD + 10;
-    const priceBelowMiddleBB = indicators.price < indicators.bb.middle;
-
-    const signal = emaBullish && rsiOversold && priceBelowMiddleBB;
-
-    if (signal) {
-        log(`LONG SIGNAL: EMA=${indicators.emaTrend}, RSI=${indicators.rsi.toFixed(2)}`);
+function calculateImbalance(orderBook) {
+    if (!orderBook || !orderBook.bids || !orderBook.asks) {
+        return 0;
     }
-
-    return signal;
+    
+    let totalBids = 0;
+    let totalAsks = 0;
+    
+    for (const bid of orderBook.bids.slice(0, 10)) {
+        const size = Array.isArray(bid) ? parseFloat(bid[1]) : parseFloat(bid.size || 0);
+        if (!isNaN(size)) totalBids += size;
+    }
+    
+    for (const ask of orderBook.asks.slice(0, 10)) {
+        const size = Array.isArray(ask) ? parseFloat(ask[1]) : parseFloat(ask.size || 0);
+        if (!isNaN(size)) totalAsks += size;
+    }
+    
+    if (totalBids + totalAsks === 0) return 0;
+    
+    const imbalance = (totalBids - totalAsks) / (totalBids + totalAsks);
+    return imbalance;
 }
 
-function shouldOpenShort(indicators) {
-    if (!indicators || !indicators.bb) return false;
-
-    const emaBearish = indicators.emaTrend === 'BEARISH';
-    const rsiOverbought = indicators.rsi > CONFIG.RSI_OVERBOUGHT - 10;
-    const priceAboveMiddleBB = indicators.price > indicators.bb.middle;
-
-    const signal = emaBearish && rsiOverbought && priceAboveMiddleBB;
-
-    if (signal) {
-        log(`SHORT SIGNAL: EMA=${indicators.emaTrend}, RSI=${indicators.rsi.toFixed(2)}`);
+function getImbalanceTrend() {
+    if (imbalanceHistory.length < CONFIG.CVD_LOOKBACK) return 'FLAT';
+    
+    const recent = imbalanceHistory.slice(-CONFIG.CVD_LOOKBACK);
+    let bullishCount = 0;
+    let bearishCount = 0;
+    
+    for (const imb of recent) {
+        if (imb > 0.1) bullishCount++;
+        else if (imb < -0.1) bearishCount++;
     }
+    
+    if (bullishCount >= CONFIG.CVD_LOOKBACK - 1) return 'RISING';
+    if (bearishCount >= CONFIG.CVD_LOOKBACK - 1) return 'FALLING';
+    return 'FLAT';
+}
 
-    return signal;
+function calculateVWAP() {
+    if (priceHistory.length < 2) {
+        return priceHistory.length > 0 ? priceHistory[priceHistory.length - 1] : 0;
+    }
+    
+    const period = Math.min(CONFIG.VWAP_PERIOD, priceHistory.length);
+    const prices = priceHistory.slice(-period);
+    
+    let sum = 0;
+    for (const p of prices) {
+        sum += p;
+    }
+    
+    return sum / prices.length;
+}
+
+function shouldOpenLong(imbalance, imbalanceTrend, price, avgPrice) {
+    const now = Date.now();
+    if (now - lastOrderTime < CONFIG.ORDER_COOLDOWN_MS) {
+        return false;
+    }
+    
+    if (imbalanceHistory.length < CONFIG.CVD_LOOKBACK) {
+        return false;
+    }
+    
+    const imbalanceBullish = imbalance >= CONFIG.IMBALANCE_THRESHOLD;
+    const trendBullish = imbalanceTrend === 'RISING';
+    const priceAtOrBelowAvg = price <= avgPrice * 1.002;
+    
+    if (imbalanceBullish && trendBullish && priceAtOrBelowAvg) {
+        log(`✓ LONG SIGNAL: Imbalance=${(imbalance * 100).toFixed(1)}% | Trend=${imbalanceTrend} | Price=$${price.toFixed(4)} <= Avg=$${avgPrice.toFixed(4)}`);
+        return true;
+    }
+    
+    return false;
+}
+
+function shouldOpenShort(imbalance, imbalanceTrend, price, avgPrice) {
+    const now = Date.now();
+    if (now - lastOrderTime < CONFIG.ORDER_COOLDOWN_MS) {
+        return false;
+    }
+    
+    if (imbalanceHistory.length < CONFIG.CVD_LOOKBACK) {
+        return false;
+    }
+    
+    const imbalanceBearish = imbalance <= -CONFIG.IMBALANCE_THRESHOLD;
+    const trendBearish = imbalanceTrend === 'FALLING';
+    const priceAtOrAboveAvg = price >= avgPrice * 0.998;
+    
+    if (imbalanceBearish && trendBearish && priceAtOrAboveAvg) {
+        log(`✓ SHORT SIGNAL: Imbalance=${(imbalance * 100).toFixed(1)}% | Trend=${imbalanceTrend} | Price=$${price.toFixed(4)} >= Avg=$${avgPrice.toFixed(4)}`);
+        return true;
+    }
+    
+    return false;
+}
+
+function checkDangerSignals(imbalance, imbalanceTrend) {
+    if (!currentPosition) return false;
+    
+    if (currentPosition === 'LONG') {
+        if (imbalance < 0 || imbalanceTrend === 'FALLING') {
+            if (!dangerMode) {
+                log(`⚠️ DANGER MODE: Reversal signals detected while LONG`);
+            }
+            return true;
+        }
+    } else if (currentPosition === 'SHORT') {
+        if (imbalance > 0 || imbalanceTrend === 'RISING') {
+            if (!dangerMode) {
+                log(`⚠️ DANGER MODE: Reversal signals detected while SHORT`);
+            }
+            return true;
+        }
+    }
+    
+    return false;
 }
 
 function checkStopLoss(currentPrice) {
@@ -128,12 +212,12 @@ function checkStopLoss(currentPrice) {
 
     if (currentPosition === 'LONG') {
         if (priceMovePercent <= -CONFIG.STOP_LOSS_PERCENT) {
-            log(`STOP LOSS HIT (LONG): Entry=${entryPrice.toFixed(4)}, Current=${currentPrice.toFixed(4)}, Loss=${priceMovePercent.toFixed(2)}%`);
+            log(`✗ STOP LOSS (LONG): Entry=$${entryPrice.toFixed(4)}, Current=$${currentPrice.toFixed(4)}, Loss=${priceMovePercent.toFixed(2)}%`);
             return true;
         }
     } else if (currentPosition === 'SHORT') {
         if (priceMovePercent >= CONFIG.STOP_LOSS_PERCENT) {
-            log(`STOP LOSS HIT (SHORT): Entry=${entryPrice.toFixed(4)}, Current=${currentPrice.toFixed(4)}, Loss=${(-priceMovePercent).toFixed(2)}%`);
+            log(`✗ STOP LOSS (SHORT): Entry=$${entryPrice.toFixed(4)}, Current=$${currentPrice.toFixed(4)}, Loss=${(-priceMovePercent).toFixed(2)}%`);
             return true;
         }
     }
@@ -144,6 +228,7 @@ function checkStopLoss(currentPrice) {
 function checkTrailingTakeProfit(currentPrice) {
     if (!currentPosition) return false;
 
+    const trailingDistance = dangerMode ? CONFIG.TRAILING_DANGER : CONFIG.TRAILING_NORMAL;
     let profitPercent = 0;
 
     if (currentPosition === 'LONG') {
@@ -153,14 +238,14 @@ function checkTrailingTakeProfit(currentPrice) {
             highestPriceSinceEntry = currentPrice;
         }
 
-        if (profitPercent >= CONFIG.TRAILING_TP_START) {
+        if (profitPercent >= CONFIG.TAKE_PROFIT_ACTIVATION) {
             trailingStopActive = true;
         }
 
         if (trailingStopActive) {
             const dropFromHigh = ((highestPriceSinceEntry - currentPrice) / highestPriceSinceEntry) * 100;
-            if (dropFromHigh >= CONFIG.TRAILING_TP_DISTANCE) {
-                log(`TRAILING TP HIT (LONG): High=${highestPriceSinceEntry.toFixed(4)}, Current=${currentPrice.toFixed(4)}, Profit=${profitPercent.toFixed(2)}%`);
+            if (dropFromHigh >= trailingDistance) {
+                log(`✓ TRAILING TP (LONG): High=$${highestPriceSinceEntry.toFixed(4)}, Current=$${currentPrice.toFixed(4)}, Profit=${profitPercent.toFixed(2)}% | Mode=${dangerMode ? 'DANGER' : 'NORMAL'}`);
                 return true;
             }
         }
@@ -171,14 +256,14 @@ function checkTrailingTakeProfit(currentPrice) {
             lowestPriceSinceEntry = currentPrice;
         }
 
-        if (profitPercent >= CONFIG.TRAILING_TP_START) {
+        if (profitPercent >= CONFIG.TAKE_PROFIT_ACTIVATION) {
             trailingStopActive = true;
         }
 
         if (trailingStopActive) {
             const riseFromLow = ((currentPrice - lowestPriceSinceEntry) / lowestPriceSinceEntry) * 100;
-            if (riseFromLow >= CONFIG.TRAILING_TP_DISTANCE) {
-                log(`TRAILING TP HIT (SHORT): Low=${lowestPriceSinceEntry.toFixed(4)}, Current=${currentPrice.toFixed(4)}, Profit=${profitPercent.toFixed(2)}%`);
+            if (riseFromLow >= trailingDistance) {
+                log(`✓ TRAILING TP (SHORT): Low=$${lowestPriceSinceEntry.toFixed(4)}, Current=$${currentPrice.toFixed(4)}, Profit=${profitPercent.toFixed(2)}% | Mode=${dangerMode ? 'DANGER' : 'NORMAL'}`);
                 return true;
             }
         }
@@ -188,20 +273,13 @@ function checkTrailingTakeProfit(currentPrice) {
 }
 
 async function openPosition(direction) {
-    const now = Date.now();
-    if (now - lastOrderTime < CONFIG.ORDER_COOLDOWN_MS) {
-        log('Order cooldown active, skipping...');
-        return false;
-    }
-
     try {
         const currentPrice = priceHistory[priceHistory.length - 1];
         const notionalValue = CONFIG.TRADE_AMOUNT_USDC * CONFIG.LEVERAGE;
         const baseAssetAmountRaw = notionalValue / currentPrice;
         const baseAssetAmount = driftClient.convertToPerpPrecision(baseAssetAmountRaw);
 
-        log(`Opening ${direction}: $${CONFIG.TRADE_AMOUNT_USDC} x ${CONFIG.LEVERAGE}x = $${notionalValue} notional`);
-        log(`Base amount: ${baseAssetAmountRaw.toFixed(6)} SOL at $${currentPrice.toFixed(4)}`);
+        log(`Opening ${direction}: $${CONFIG.TRADE_AMOUNT_USDC} x ${CONFIG.LEVERAGE}x = $${notionalValue.toFixed(2)} notional`);
 
         const orderParams = {
             orderType: OrderType.MARKET,
@@ -214,12 +292,13 @@ async function openPosition(direction) {
         const txSig = await driftClient.placePerpOrder(orderParams);
         log(`Order placed. TX: ${txSig}`);
 
-        lastOrderTime = now;
+        lastOrderTime = Date.now();
         currentPosition = direction;
         entryPrice = currentPrice;
         highestPriceSinceEntry = currentPrice;
         lowestPriceSinceEntry = currentPrice;
         trailingStopActive = false;
+        dangerMode = false;
 
         return true;
     } catch (error) {
@@ -229,12 +308,6 @@ async function openPosition(direction) {
 }
 
 async function closePosition() {
-    const now = Date.now();
-    if (now - lastOrderTime < ORDER_COOLDOWN_MS) {
-        log('Order cooldown active, skipping close...');
-        return false;
-    }
-
     try {
         log(`Closing ${currentPosition} position...`);
 
@@ -275,7 +348,7 @@ async function closePosition() {
 
         log(`Trade result: Entry=$${entryPrice.toFixed(4)}, Exit=$${exitPrice.toFixed(4)}, P&L=${profitPercent.toFixed(2)}% (leveraged)`);
 
-        lastOrderTime = now;
+        lastOrderTime = Date.now();
         resetPositionState();
 
         return true;
@@ -291,6 +364,7 @@ function resetPositionState() {
     highestPriceSinceEntry = 0;
     lowestPriceSinceEntry = Infinity;
     trailingStopActive = false;
+    dangerMode = false;
 }
 
 async function syncPositionFromChain() {
@@ -317,7 +391,6 @@ async function syncPositionFromChain() {
                     entryPrice = convertToNumber(oracleData.price, PRICE_PRECISION);
                 }
                 
-                log(`Synced entry price: $${entryPrice.toFixed(4)}`);
                 highestPriceSinceEntry = entryPrice;
                 lowestPriceSinceEntry = entryPrice;
             }
@@ -334,12 +407,11 @@ async function fetchPrice() {
     try {
         const oracleData = driftClient.getOracleDataForPerpMarket(marketIndex);
         if (!oracleData) {
-            log('Waiting for oracle data...');
             return null;
         }
 
         const price = convertToNumber(oracleData.price, PRICE_PRECISION);
-
+        
         priceHistory.push(price);
         if (priceHistory.length > 200) priceHistory.shift();
 
@@ -356,17 +428,32 @@ async function tradingLoop() {
         if (!price) return;
 
         await syncPositionFromChain();
+        
+        const orderBook = await fetchOrderBook();
+        if (!orderBook) {
+            log(`Waiting for order book data... Price: $${price.toFixed(4)}`);
+            return;
+        }
+        
+        const imbalance = calculateImbalance(orderBook);
+        
+        imbalanceHistory.push(imbalance);
+        if (imbalanceHistory.length > 100) imbalanceHistory.shift();
+        
+        const imbalanceTrend = getImbalanceTrend();
+        const avgPrice = calculateVWAP();
 
-        const indicators = calculateIndicators();
-
-        if (!indicators) {
-            log(`Building history... ${priceHistory.length}/${CONFIG.EMA_LONG} candles`);
+        if (priceHistory.length < CONFIG.VWAP_PERIOD || imbalanceHistory.length < CONFIG.CVD_LOOKBACK) {
+            log(`Building history... Prices: ${priceHistory.length}/${CONFIG.VWAP_PERIOD} | Imbalances: ${imbalanceHistory.length}/${CONFIG.CVD_LOOKBACK} | Price: $${price.toFixed(4)}`);
             return;
         }
 
-        log(`Price: $${price.toFixed(4)} | EMA: ${indicators.emaTrend} | RSI: ${indicators.rsi.toFixed(2)} | Pos: ${currentPosition || 'NONE'}`);
+        const modeStr = currentPosition ? (dangerMode ? '🔴 DANGER' : '🟢 NORMAL') : '⚪ NONE';
+        log(`Price: $${price.toFixed(4)} | Avg: $${avgPrice.toFixed(4)} | Imbalance: ${(imbalance * 100).toFixed(1)}% | Trend: ${imbalanceTrend} | Pos: ${currentPosition || 'NONE'} | ${modeStr}`);
 
         if (currentPosition) {
+            dangerMode = checkDangerSignals(imbalance, imbalanceTrend);
+            
             if (checkStopLoss(price)) {
                 await closePosition();
                 return;
@@ -377,9 +464,9 @@ async function tradingLoop() {
                 return;
             }
         } else {
-            if (shouldOpenLong(indicators)) {
+            if (shouldOpenLong(imbalance, imbalanceTrend, price, avgPrice)) {
                 await openPosition('LONG');
-            } else if (shouldOpenShort(indicators)) {
+            } else if (shouldOpenShort(imbalance, imbalanceTrend, price, avgPrice)) {
                 await openPosition('SHORT');
             }
         }
@@ -402,27 +489,23 @@ async function findMarketIndex(symbol) {
     }
 
     log(`ERROR: Market "${symbol}" not found!`);
-    log('Available markets:');
-    perpMarkets.slice(0, 15).forEach(m => {
-        const name = Buffer.from(m.name).toString('utf8').trim().replace(/\0/g, '');
-        log(`  - ${name} (Index: ${m.marketIndex})`);
-    });
-
-    log('Please check your SYMBOL in .env file and try again.');
     process.exit(1);
 }
 
 async function main() {
-    log('===========================================');
-    log('   SOLANA FUTURES BOT - DRIFT PROTOCOL');
-    log('===========================================');
+    log('═══════════════════════════════════════════════════════════');
+    log('   SMART SOLANA FUTURES BOT - DRIFT PROTOCOL');
+    log('   Order Book Imbalance + Trend Strategy');
+    log('═══════════════════════════════════════════════════════════');
     log(`Leverage: ${CONFIG.LEVERAGE}x`);
     log(`Symbol: ${CONFIG.SYMBOL}`);
     log(`Trade Size: ${CONFIG.TRADE_AMOUNT_USDC} USDC`);
+    log(`Imbalance Threshold: ${(CONFIG.IMBALANCE_THRESHOLD * 100).toFixed(0)}%`);
     log(`Stop Loss: ${CONFIG.STOP_LOSS_PERCENT}%`);
-    log(`Trailing TP Start: ${CONFIG.TRAILING_TP_START}%`);
-    log(`Trailing TP Distance: ${CONFIG.TRAILING_TP_DISTANCE}%`);
-    log('===========================================');
+    log(`Take Profit Activation: ${CONFIG.TAKE_PROFIT_ACTIVATION}%`);
+    log(`Trailing (Normal): ${CONFIG.TRAILING_NORMAL}% | (Danger): ${CONFIG.TRAILING_DANGER}%`);
+    log(`Cooldown: ${CONFIG.ORDER_COOLDOWN_MS / 1000}s`);
+    log('═══════════════════════════════════════════════════════════');
 
     if (!CONFIG.RPC_URL || !CONFIG.PRIVATE_KEY) {
         log('ERROR: Missing RPC_URL or PRIVATE_KEY in .env file');
@@ -431,7 +514,7 @@ async function main() {
 
     try {
         const connection = new Connection(CONFIG.RPC_URL, {
-            commitment: CONFIG.COMMITMENT,
+            commitment: 'confirmed',
         });
 
         let privateKeyBytes;
@@ -446,7 +529,6 @@ async function main() {
             }
         } catch (e) {
             log(`Private key decode error: ${e.message}`);
-            log('Make sure your PRIVATE_KEY in .env is the base58 key from Phantom (no quotes)');
             process.exit(1);
         }
         
@@ -478,7 +560,17 @@ async function main() {
 
         marketIndex = await findMarketIndex(CONFIG.SYMBOL);
 
-        log('Starting trading loop...');
+        log('Testing DLOB API connection...');
+        const testOrderBook = await fetchOrderBook();
+        if (testOrderBook) {
+            log('DLOB API connected successfully!');
+            const testImbalance = calculateImbalance(testOrderBook);
+            log(`Current order book imbalance: ${(testImbalance * 100).toFixed(1)}%`);
+        } else {
+            log('WARNING: Could not connect to DLOB API. Will retry during trading...');
+        }
+
+        log('Starting smart trading loop...');
         log('Press Ctrl+C to stop the bot safely.');
 
         setInterval(tradingLoop, CONFIG.CHECK_INTERVAL_MS);
