@@ -91,7 +91,9 @@ let tradeMemory = {
         simulatedWins: 0,
         simulatedLosses: 0,
         simulatedProfitPercent: 0
-    }
+    },
+    consecutiveLosses: 0,
+    lastLossDirection: null
 };
 let consecutiveLosses = 0;
 let lastLossDirection = null;
@@ -107,6 +109,7 @@ let botStatus = {
     timeframeSignals: {},
     lastUpdate: null
 };
+let lastHeartbeat = Date.now();
 
 function log(message) {
     const timestamp = new Date().toISOString();
@@ -132,8 +135,12 @@ function loadMemory() {
                     simulatedWins: 0,
                     simulatedLosses: 0,
                     simulatedProfitPercent: 0
-                }
+                },
+                consecutiveLosses: loaded.consecutiveLosses || 0,
+                lastLossDirection: loaded.lastLossDirection || null
             };
+            consecutiveLosses = tradeMemory.consecutiveLosses;
+            lastLossDirection = tradeMemory.lastLossDirection;
             log(`Memory loaded: ${tradeMemory.trades.length} trades, ${tradeMemory.shadowTrades.length} shadow trades`);
             recalculateWeightedStats();
             analyzeMemoryOnStartup();
@@ -209,8 +216,7 @@ function analyzeMemoryOnStartup() {
 }
 
 function getPatternKey(imbalanceType, trend, priceAction, volatility) {
-    const volLevel = volatility > CONFIG.VOLATILITY_THRESHOLD ? 'high_vol' : 'low_vol';
-    return `${imbalanceType}_${trend}_${priceAction}_${volLevel}`;
+    return `${imbalanceType}_${trend}_${priceAction}`;
 }
 
 function getTimeWeight(timestamp) {
@@ -371,6 +377,11 @@ function recordShadowTrade(pattern, signalDirection, whySkipped, priceAtSignal) 
     };
     
     tradeMemory.shadowTrades.push(shadowTrade);
+    
+    if (tradeMemory.shadowTrades.length > 500) {
+        tradeMemory.shadowTrades = tradeMemory.shadowTrades.slice(-500);
+    }
+    
     saveMemory();
 }
 
@@ -406,12 +417,12 @@ function resolveShadowTrades(currentPrice) {
                 profitPercent = -CONFIG.STOP_LOSS_PERCENT;
             } else if (bestGain >= CONFIG.TAKE_PROFIT_ACTIVATION) {
                 const dropFromHigh = ((shadow.highestPrice - currentPrice) / shadow.highestPrice) * 100;
-                if (dropFromHigh >= CONFIG.TRAILING_NORMAL || minutesPassed >= 5) {
+                if (dropFromHigh >= CONFIG.TRAILING_NORMAL || minutesPassed >= 15) {
                     result = 'WIN';
                     exitReason = 'trailing_tp';
                     profitPercent = bestGain - CONFIG.TRAILING_NORMAL;
                 }
-            } else if (minutesPassed >= 10) {
+            } else if (minutesPassed >= 30) {
                 profitPercent = ((currentPrice - shadow.priceAtSignal) / shadow.priceAtSignal) * 100;
                 result = profitPercent > 0 ? 'WIN' : 'LOSS';
                 exitReason = 'timeout';
@@ -426,12 +437,12 @@ function resolveShadowTrades(currentPrice) {
                 profitPercent = -CONFIG.STOP_LOSS_PERCENT;
             } else if (bestGain >= CONFIG.TAKE_PROFIT_ACTIVATION) {
                 const riseFromLow = ((currentPrice - shadow.lowestPrice) / shadow.lowestPrice) * 100;
-                if (riseFromLow >= CONFIG.TRAILING_NORMAL || minutesPassed >= 5) {
+                if (riseFromLow >= CONFIG.TRAILING_NORMAL || minutesPassed >= 15) {
                     result = 'WIN';
                     exitReason = 'trailing_tp';
                     profitPercent = bestGain - CONFIG.TRAILING_NORMAL;
                 }
-            } else if (minutesPassed >= 10) {
+            } else if (minutesPassed >= 30) {
                 profitPercent = ((shadow.priceAtSignal - currentPrice) / shadow.priceAtSignal) * 100;
                 result = profitPercent > 0 ? 'WIN' : 'LOSS';
                 exitReason = 'timeout';
@@ -806,11 +817,22 @@ async function closePosition(exitReason) {
     
     if (!pos) return true;
     
+    if (!entryPrice || entryPrice <= 0 || !currentPrice || currentPrice <= 0) {
+        log(`ERROR: Invalid prices for P&L calculation. Entry: ${entryPrice}, Current: ${currentPrice}. Skipping trade record.`);
+        resetPositionState();
+        return true;
+    }
+    
     let profitPercent = 0;
     if (pos === 'LONG') {
         profitPercent = ((currentPrice - entryPrice) / entryPrice) * 100;
     } else {
         profitPercent = ((entryPrice - currentPrice) / entryPrice) * 100;
+    }
+    
+    if (Math.abs(profitPercent) > 100) {
+        log(`ERROR: Unrealistic P&L detected (${profitPercent.toFixed(2)}%). Capping at ±100%.`);
+        profitPercent = profitPercent > 0 ? 100 : -100;
     }
     
     const result = profitPercent > 0 ? 'WIN' : 'LOSS';
@@ -863,11 +885,12 @@ async function closePosition(exitReason) {
             lastLossDirection = pos;
         }
     } else {
-        if (lastLossDirection && pos !== lastLossDirection) {
-            consecutiveLosses = 0;
-            lastLossDirection = null;
-        }
+        consecutiveLosses = 0;
+        lastLossDirection = null;
     }
+    
+    tradeMemory.consecutiveLosses = consecutiveLosses;
+    tradeMemory.lastLossDirection = lastLossDirection;
 
     lastOrderTime = Date.now();
     resetPositionState();
@@ -958,6 +981,8 @@ function updateTimeframeData(price, imbalance) {
 }
 
 async function tradingLoop() {
+    lastHeartbeat = Date.now();
+    
     try {
         const price = await fetchPrice();
         if (!price) return;
@@ -1405,6 +1430,29 @@ async function main() {
 
         log('Starting trading loop...');
         setInterval(tradingLoop, CONFIG.BASE_INTERVAL_MS);
+        
+        setInterval(() => {
+            const now = Date.now();
+            const timeSinceHeartbeat = now - lastHeartbeat;
+            const maxIdleTime = CONFIG.BASE_INTERVAL_MS * 5;
+            
+            if (timeSinceHeartbeat > maxIdleTime) {
+                log(`⚠️ WATCHDOG: No heartbeat for ${Math.round(timeSinceHeartbeat / 1000)}s. Bot may be frozen.`);
+                log(`Attempting to force reconnect...`);
+                
+                (async () => {
+                    try {
+                        await driftClient.unsubscribe();
+                        await driftClient.subscribe();
+                        log(`Reconnection successful.`);
+                        lastHeartbeat = Date.now();
+                    } catch (err) {
+                        log(`Reconnection failed: ${err.message}. Restarting process...`);
+                        process.exit(1);
+                    }
+                })();
+            }
+        }, 60000);
 
         process.on('SIGINT', async () => {
             log('Shutting down...');
