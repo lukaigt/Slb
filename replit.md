@@ -44,10 +44,21 @@ Adaptive perpetual futures trading bot using Drift Protocol on Solana mainnet. F
 - Tracks actual price highs/lows after signal
 - Simulates stop loss and take profit hits
 - More realistic "what would have happened" results
-- 10-minute timeout for unresolved shadows
+- 30-minute timeout for unresolved shadows
+
+### Heartbeat Watchdog
+- Monitors bot activity every 60 seconds
+- Detects freezes (no activity for 5 trading loops / ~2.5 min)
+- Auto-reconnects Drift SDK on freeze detection
+- Force restarts process if reconnection fails
+- Prevents VPS from getting stuck indefinitely
 
 ### Live Web Dashboard
 - Real-time bot status and market data
+- **System Health panel**: Uptime, last heartbeat, connection indicators (RPC/Drift/DLOB)
+- **Volatility Gauge**: Visual bar showing market volatility vs threshold
+- **Best/Worst Trade display**: Highlights biggest win and loss
+- **Alert Log**: Shows watchdog triggers, reconnections, warnings
 - Timeframe signals display
 - Session statistics (real + simulated)
 - Recent trades table
