@@ -107,13 +107,34 @@ let botStatus = {
     priceAction: 'FLAT',
     volatility: 0,
     timeframeSignals: {},
-    lastUpdate: null
+    lastUpdate: null,
+    rpcConnected: false,
+    driftConnected: false,
+    dlobConnected: false
 };
 let lastHeartbeat = Date.now();
+let botStartTime = Date.now();
+let alertLog = [];
 
 function log(message) {
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] ${message}`);
+}
+
+function addAlert(type, message) {
+    alertLog.unshift({ time: Date.now(), type, message });
+    if (alertLog.length > 20) alertLog.pop();
+}
+
+function formatUptime(ms) {
+    const seconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    if (days > 0) return `${days}d ${hours % 24}h ${minutes % 60}m`;
+    if (hours > 0) return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+    return `${seconds}s`;
 }
 
 function loadMemory() {
@@ -985,11 +1006,18 @@ async function tradingLoop() {
     
     try {
         const price = await fetchPrice();
+        botStatus.rpcConnected = !!price;
         if (!price) return;
 
-        await syncPositionFromChain();
+        try {
+            await syncPositionFromChain();
+            botStatus.driftConnected = true;
+        } catch (err) {
+            botStatus.driftConnected = false;
+        }
         
         const orderBook = await fetchOrderBook();
+        botStatus.dlobConnected = !!orderBook;
         if (!orderBook) return;
         
         const imbalance = calculateImbalance(orderBook);
@@ -1077,6 +1105,15 @@ function generateDashboardHTML() {
         })
         .filter(p => p.count >= 3)
         .sort((a, b) => b.winRate - a.winRate);
+    
+    const uptime = formatUptime(Date.now() - botStartTime);
+    const heartbeatAgo = Math.round((Date.now() - lastHeartbeat) / 1000);
+    
+    const allTrades = tradeMemory.trades;
+    const bestTrade = allTrades.length > 0 ? allTrades.reduce((best, t) => (!best || (t.profitPercent || 0) > (best.profitPercent || 0)) ? t : best, null) : null;
+    const worstTrade = allTrades.length > 0 ? allTrades.reduce((worst, t) => (!worst || (t.profitPercent || 0) < (worst.profitPercent || 0)) ? t : worst, null) : null;
+    
+    const volPercent = Math.min(100, (botStatus.volatility / (CONFIG.VOLATILITY_THRESHOLD * 2)) * 100);
 
     return `<!DOCTYPE html>
 <html>
@@ -1109,6 +1146,21 @@ function generateDashboardHTML() {
         .signal-long { color: #00ff88; font-weight: bold; }
         .signal-short { color: #ff4444; font-weight: bold; }
         .signal-none { color: #666; }
+        .health-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+        .health-green { background: #00ff88; box-shadow: 0 0 6px #00ff88; }
+        .health-red { background: #ff4444; box-shadow: 0 0 6px #ff4444; }
+        .health-yellow { background: #ffaa00; box-shadow: 0 0 6px #ffaa00; }
+        .gauge-container { background: #1a1a2e; border-radius: 10px; height: 20px; overflow: hidden; margin: 10px 0; }
+        .gauge-fill { height: 100%; transition: width 0.3s; }
+        .gauge-green { background: linear-gradient(90deg, #00ff88, #00cc66); }
+        .gauge-yellow { background: linear-gradient(90deg, #ffaa00, #ff8800); }
+        .gauge-red { background: linear-gradient(90deg, #ff4444, #cc0000); }
+        .alert-item { padding: 8px; margin: 5px 0; border-radius: 5px; font-size: 0.85em; }
+        .alert-warning { background: rgba(255, 170, 0, 0.2); border-left: 3px solid #ffaa00; }
+        .alert-error { background: rgba(255, 68, 68, 0.2); border-left: 3px solid #ff4444; }
+        .alert-success { background: rgba(0, 255, 136, 0.2); border-left: 3px solid #00ff88; }
+        .best-worst { display: flex; gap: 20px; }
+        .best-worst > div { flex: 1; padding: 10px; border-radius: 8px; background: #1a1a2e; }
     </style>
 </head>
 <body>
@@ -1116,6 +1168,38 @@ function generateDashboardHTML() {
         <h1>🤖 Solana Trading Bot Dashboard</h1>
         
         <div class="grid">
+            <div class="card">
+                <h2>System Health</h2>
+                <div class="stat-row">
+                    <span class="stat-label">Uptime</span>
+                    <span class="stat-value">${uptime}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Last Heartbeat</span>
+                    <span class="stat-value ${heartbeatAgo > 60 ? 'negative' : 'positive'}">${heartbeatAgo}s ago</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label"><span class="health-dot ${botStatus.rpcConnected ? 'health-green' : 'health-red'}"></span>RPC</span>
+                    <span class="stat-value">${botStatus.rpcConnected ? 'Connected' : 'Disconnected'}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label"><span class="health-dot ${botStatus.driftConnected ? 'health-green' : 'health-red'}"></span>Drift</span>
+                    <span class="stat-value">${botStatus.driftConnected ? 'Connected' : 'Disconnected'}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label"><span class="health-dot ${botStatus.dlobConnected ? 'health-green' : 'health-red'}"></span>DLOB</span>
+                    <span class="stat-value">${botStatus.dlobConnected ? 'Connected' : 'Disconnected'}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Volatility</span>
+                    <span class="stat-value">${botStatus.volatility.toFixed(3)}%</span>
+                </div>
+                <div class="gauge-container">
+                    <div class="gauge-fill ${volPercent < 50 ? 'gauge-green' : volPercent < 75 ? 'gauge-yellow' : 'gauge-red'}" style="width: ${volPercent}%"></div>
+                </div>
+                <div style="font-size: 0.8em; color: #666; text-align: center;">${botStatus.volatility > CONFIG.VOLATILITY_THRESHOLD ? 'Too volatile - trading paused' : 'Market calm - trading active'}</div>
+            </div>
+            
             <div class="card">
                 <h2>Bot Status</h2>
                 <div class="stat-row">
@@ -1137,10 +1221,6 @@ function generateDashboardHTML() {
                 <div class="stat-row">
                     <span class="stat-label">Order Book</span>
                     <span class="stat-value ${botStatus.lastImbalance > 0 ? 'positive' : 'negative'}">${(botStatus.lastImbalance * 100).toFixed(1)}%</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Volatility</span>
-                    <span class="stat-value ${botStatus.volatility > CONFIG.VOLATILITY_THRESHOLD ? 'negative' : 'positive'}">${botStatus.volatility.toFixed(3)}%</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Position</span>
@@ -1228,6 +1308,36 @@ function generateDashboardHTML() {
                     <span class="stat-label">Consecutive Losses</span>
                     <span class="stat-value ${consecutiveLosses >= 2 ? 'negative' : ''}">${consecutiveLosses} ${lastLossDirection ? `(${lastLossDirection})` : ''}</span>
                 </div>
+            </div>
+            
+            <div class="card">
+                <h2>Best / Worst Trade</h2>
+                <div class="best-worst">
+                    <div>
+                        <div style="color: #00ff88; font-weight: bold; margin-bottom: 5px;">Best Trade</div>
+                        ${bestTrade ? `
+                            <div style="font-size: 1.5em; color: #00ff88;">+${(bestTrade.profitPercent || 0).toFixed(2)}%</div>
+                            <div style="font-size: 0.85em; color: #888;">${bestTrade.direction} | ${bestTrade.patternKey || 'N/A'}</div>
+                        ` : '<div style="color: #666;">No trades yet</div>'}
+                    </div>
+                    <div>
+                        <div style="color: #ff4444; font-weight: bold; margin-bottom: 5px;">Worst Trade</div>
+                        ${worstTrade ? `
+                            <div style="font-size: 1.5em; color: #ff4444;">${(worstTrade.profitPercent || 0).toFixed(2)}%</div>
+                            <div style="font-size: 0.85em; color: #888;">${worstTrade.direction} | ${worstTrade.patternKey || 'N/A'}</div>
+                        ` : '<div style="color: #666;">No trades yet</div>'}
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>Alert Log</h2>
+                ${alertLog.length > 0 ? alertLog.slice(0, 5).map(a => `
+                    <div class="alert-item alert-${a.type}">
+                        <span style="color: #666; font-size: 0.8em;">${new Date(a.time).toLocaleTimeString()}</span>
+                        ${a.message}
+                    </div>
+                `).join('') : '<div style="color: #666; text-align: center; padding: 20px;">No alerts yet - system running smoothly</div>'}
             </div>
         </div>
         
@@ -1439,15 +1549,18 @@ async function main() {
             if (timeSinceHeartbeat > maxIdleTime) {
                 log(`⚠️ WATCHDOG: No heartbeat for ${Math.round(timeSinceHeartbeat / 1000)}s. Bot may be frozen.`);
                 log(`Attempting to force reconnect...`);
+                addAlert('warning', `Freeze detected - no activity for ${Math.round(timeSinceHeartbeat / 1000)}s`);
                 
                 (async () => {
                     try {
                         await driftClient.unsubscribe();
                         await driftClient.subscribe();
                         log(`Reconnection successful.`);
+                        addAlert('success', 'Reconnection successful');
                         lastHeartbeat = Date.now();
                     } catch (err) {
                         log(`Reconnection failed: ${err.message}. Restarting process...`);
+                        addAlert('error', `Reconnection failed: ${err.message}`);
                         process.exit(1);
                     }
                 })();
