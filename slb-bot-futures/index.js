@@ -1370,7 +1370,11 @@ async function main() {
             connection,
             wallet,
             programID: new PublicKey(sdkConfig.DRIFT_PROGRAM_ID),
-            accountSubscription: { type: 'websocket' },
+            accountSubscription: { 
+                type: 'websocket',
+                resubTimeoutMs: 30000,
+                resyncIntervalMs: 60000,
+            },
         });
 
         log('Connecting to Drift Protocol...');
