@@ -22,18 +22,12 @@ const CONFIG = {
     RPC_URL: process.env.SOLANA_RPC_URL,
     PRIVATE_KEY: process.env.PRIVATE_KEY,
     LEVERAGE: parseInt(process.env.LEVERAGE) || 50,
-    SYMBOL: process.env.SYMBOL || 'SOL-PERP',
     TRADE_AMOUNT_USDC: parseFloat(process.env.TRADE_AMOUNT_USDC) || 10,
     
     SIMULATION_MODE: process.env.SIMULATION_MODE === 'true' || process.env.SIMULATION_MODE === '1',
     
     IMBALANCE_THRESHOLD: parseFloat(process.env.IMBALANCE_THRESHOLD) || 0.15,
     VOLATILITY_THRESHOLD: parseFloat(process.env.VOLATILITY_THRESHOLD) || 0.5,
-    
-    STOP_LOSS_PERCENT: parseFloat(process.env.STOP_LOSS_PERCENT) || 0.8,
-    TAKE_PROFIT_ACTIVATION: parseFloat(process.env.TAKE_PROFIT_ACTIVATION) || 1.2,
-    TRAILING_NORMAL: parseFloat(process.env.TRAILING_NORMAL) || 0.25,
-    TRAILING_DANGER: parseFloat(process.env.TRAILING_DANGER) || 0.1,
     
     ORDER_COOLDOWN_MS: (parseInt(process.env.COOLDOWN_SECONDS) || 120) * 1000,
     BASE_INTERVAL_MS: parseInt(process.env.BASE_INTERVAL_MS) || 30000,
@@ -42,6 +36,38 @@ const CONFIG = {
     
     MEMORY_FILE: path.join(__dirname, 'trade_memory.json'),
 };
+
+const MARKETS = {
+    'SOL-PERP': {
+        symbol: 'SOL-PERP',
+        marketIndex: 0,
+        stopLoss: parseFloat(process.env.SOL_STOP_LOSS) || 0.8,
+        takeProfit: parseFloat(process.env.SOL_TAKE_PROFIT) || 1.2,
+        trailingNormal: 0.25,
+        trailingDanger: 0.1,
+        positionMultiplier: 1.0
+    },
+    'BTC-PERP': {
+        symbol: 'BTC-PERP',
+        marketIndex: 1,
+        stopLoss: parseFloat(process.env.BTC_STOP_LOSS) || 0.5,
+        takeProfit: parseFloat(process.env.BTC_TAKE_PROFIT) || 0.8,
+        trailingNormal: 0.15,
+        trailingDanger: 0.08,
+        positionMultiplier: 1.2
+    },
+    'ETH-PERP': {
+        symbol: 'ETH-PERP',
+        marketIndex: 2,
+        stopLoss: parseFloat(process.env.ETH_STOP_LOSS) || 0.6,
+        takeProfit: parseFloat(process.env.ETH_TAKE_PROFIT) || 1.0,
+        trailingNormal: 0.2,
+        trailingDanger: 0.1,
+        positionMultiplier: 1.0
+    }
+};
+
+const ACTIVE_MARKETS = (process.env.ACTIVE_MARKETS || 'SOL-PERP,BTC-PERP,ETH-PERP').split(',').map(s => s.trim());
 
 const TIMEFRAMES = {
     fast: { 
@@ -61,22 +87,45 @@ const TIMEFRAMES = {
     }
 };
 
-const timeframeData = {
-    fast: { prices: [], imbalances: [], lastUpdate: 0 },
-    medium: { prices: [], imbalances: [], lastUpdate: 0 },
-    slow: { prices: [], imbalances: [], lastUpdate: 0 }
-};
+function createEmptyTimeframeData() {
+    return {
+        fast: { prices: [], imbalances: [], lastUpdate: 0 },
+        medium: { prices: [], imbalances: [], lastUpdate: 0 },
+        slow: { prices: [], imbalances: [], lastUpdate: 0 }
+    };
+}
 
-let currentPosition = null;
-let simulatedPosition = null;
-let entryPrice = 0;
-let highestPriceSinceEntry = 0;
-let lowestPriceSinceEntry = Infinity;
-let trailingStopActive = false;
-let dangerMode = false;
+function createEmptyMarketState() {
+    return {
+        currentPosition: null,
+        simulatedPosition: null,
+        entryPrice: 0,
+        highestPriceSinceEntry: 0,
+        lowestPriceSinceEntry: Infinity,
+        trailingStopActive: false,
+        dangerMode: false,
+        lastOrderTime: 0,
+        currentTradePattern: null,
+        currentTradeDirection: null,
+        consecutiveLosses: 0,
+        lastLossDirection: null,
+        timeframeData: createEmptyTimeframeData(),
+        lastPrice: 0,
+        lastImbalance: 0,
+        marketMode: 'UNKNOWN',
+        priceAction: 'FLAT',
+        volatility: 0,
+        rpcConnected: false,
+        dlobConnected: false
+    };
+}
+
+const marketStates = {};
+for (const symbol of ACTIVE_MARKETS) {
+    marketStates[symbol] = createEmptyMarketState();
+}
+
 let driftClient = null;
-let marketIndex = 0;
-let lastOrderTime = 0;
 let tradeMemory = { 
     trades: [], 
     shadowTrades: [], 
@@ -91,26 +140,13 @@ let tradeMemory = {
         simulatedWins: 0,
         simulatedLosses: 0,
         simulatedProfitPercent: 0
-    },
-    consecutiveLosses: 0,
-    lastLossDirection: null
+    }
 };
-let consecutiveLosses = 0;
-let lastLossDirection = null;
-let currentTradePattern = null;
-let currentTradeDirection = null;
 let botStatus = {
     running: false,
-    lastPrice: 0,
-    lastImbalance: 0,
-    marketMode: 'UNKNOWN',
-    priceAction: 'FLAT',
-    volatility: 0,
-    timeframeSignals: {},
+    markets: {},
     lastUpdate: null,
-    rpcConnected: false,
-    driftConnected: false,
-    dlobConnected: false
+    driftConnected: false
 };
 let lastHeartbeat = Date.now();
 let botStartTime = Date.now();
@@ -156,12 +192,8 @@ function loadMemory() {
                     simulatedWins: 0,
                     simulatedLosses: 0,
                     simulatedProfitPercent: 0
-                },
-                consecutiveLosses: loaded.consecutiveLosses || 0,
-                lastLossDirection: loaded.lastLossDirection || null
+                }
             };
-            consecutiveLosses = tradeMemory.consecutiveLosses;
-            lastLossDirection = tradeMemory.lastLossDirection;
             log(`Memory loaded: ${tradeMemory.trades.length} trades, ${tradeMemory.shadowTrades.length} shadow trades`);
             recalculateWeightedStats();
             analyzeMemoryOnStartup();
@@ -337,10 +369,11 @@ function getAdaptiveConfidence(patternKey) {
     return { direction: null, confidence: 0, expectedValue: 0 };
 }
 
-function recordTrade(pattern, direction, entryPx, exitPx, result, profitPercent, exitReason, isSimulated = false) {
+function recordTrade(pattern, direction, entryPx, exitPx, result, profitPercent, exitReason, isSimulated = false, symbol = 'SOL-PERP') {
     const trade = {
         timestamp: new Date().toISOString(),
         type: isSimulated ? 'simulated' : 'real',
+        symbol: symbol,
         patternKey: pattern.patternKey,
         pattern: pattern,
         direction: direction,
@@ -378,10 +411,11 @@ function recordTrade(pattern, direction, entryPx, exitPx, result, profitPercent,
     log(`${modeStr} Trade recorded: ${direction} ${result} ${profitPercent.toFixed(2)}% | Pattern: ${pattern.patternKey}`);
 }
 
-function recordShadowTrade(pattern, signalDirection, whySkipped, priceAtSignal) {
+function recordShadowTrade(pattern, signalDirection, whySkipped, priceAtSignal, symbol = 'SOL-PERP') {
     const shadowTrade = {
         timestamp: new Date().toISOString(),
         type: 'shadow',
+        symbol: symbol,
         patternKey: pattern.patternKey,
         pattern: pattern,
         signalDirection: signalDirection,
@@ -406,11 +440,14 @@ function recordShadowTrade(pattern, signalDirection, whySkipped, priceAtSignal) 
     saveMemory();
 }
 
-function resolveShadowTrades(currentPrice) {
+function resolveShadowTrades(currentPrice, marketConfig, symbol) {
+    if (!marketConfig) return;
+    
     let updated = false;
     
     for (const shadow of tradeMemory.shadowTrades) {
         if (shadow.resolved) continue;
+        if (shadow.symbol && shadow.symbol !== symbol) continue;
         
         if (!shadow.priceHistory) shadow.priceHistory = [shadow.priceAtSignal];
         if (!shadow.highestPrice) shadow.highestPrice = shadow.priceAtSignal;
@@ -432,16 +469,16 @@ function resolveShadowTrades(currentPrice) {
             const worstDrop = ((shadow.lowestPrice - shadow.priceAtSignal) / shadow.priceAtSignal) * 100;
             const bestGain = ((shadow.highestPrice - shadow.priceAtSignal) / shadow.priceAtSignal) * 100;
             
-            if (worstDrop <= -CONFIG.STOP_LOSS_PERCENT) {
+            if (worstDrop <= -marketConfig.stopLoss) {
                 result = 'LOSS';
                 exitReason = 'stop_loss';
-                profitPercent = -CONFIG.STOP_LOSS_PERCENT;
-            } else if (bestGain >= CONFIG.TAKE_PROFIT_ACTIVATION) {
+                profitPercent = -marketConfig.stopLoss;
+            } else if (bestGain >= marketConfig.takeProfit) {
                 const dropFromHigh = ((shadow.highestPrice - currentPrice) / shadow.highestPrice) * 100;
-                if (dropFromHigh >= CONFIG.TRAILING_NORMAL || minutesPassed >= 15) {
+                if (dropFromHigh >= marketConfig.trailingNormal || minutesPassed >= 15) {
                     result = 'WIN';
                     exitReason = 'trailing_tp';
-                    profitPercent = bestGain - CONFIG.TRAILING_NORMAL;
+                    profitPercent = bestGain - marketConfig.trailingNormal;
                 }
             } else if (minutesPassed >= 30) {
                 profitPercent = ((currentPrice - shadow.priceAtSignal) / shadow.priceAtSignal) * 100;
@@ -452,16 +489,16 @@ function resolveShadowTrades(currentPrice) {
             const worstRise = ((shadow.highestPrice - shadow.priceAtSignal) / shadow.priceAtSignal) * 100;
             const bestGain = ((shadow.priceAtSignal - shadow.lowestPrice) / shadow.priceAtSignal) * 100;
             
-            if (worstRise >= CONFIG.STOP_LOSS_PERCENT) {
+            if (worstRise >= marketConfig.stopLoss) {
                 result = 'LOSS';
                 exitReason = 'stop_loss';
-                profitPercent = -CONFIG.STOP_LOSS_PERCENT;
-            } else if (bestGain >= CONFIG.TAKE_PROFIT_ACTIVATION) {
+                profitPercent = -marketConfig.stopLoss;
+            } else if (bestGain >= marketConfig.takeProfit) {
                 const riseFromLow = ((currentPrice - shadow.lowestPrice) / shadow.lowestPrice) * 100;
-                if (riseFromLow >= CONFIG.TRAILING_NORMAL || minutesPassed >= 15) {
+                if (riseFromLow >= marketConfig.trailingNormal || minutesPassed >= 15) {
                     result = 'WIN';
                     exitReason = 'trailing_tp';
-                    profitPercent = bestGain - CONFIG.TRAILING_NORMAL;
+                    profitPercent = bestGain - marketConfig.trailingNormal;
                 }
             } else if (minutesPassed >= 30) {
                 profitPercent = ((shadow.priceAtSignal - currentPrice) / shadow.priceAtSignal) * 100;
@@ -478,7 +515,7 @@ function resolveShadowTrades(currentPrice) {
             shadow.resolved = true;
             updated = true;
             
-            log(`Shadow resolved: ${shadow.signalDirection} ${result} (${profitPercent.toFixed(2)}%) via ${exitReason}`);
+            log(`[${symbol}] Shadow resolved: ${shadow.signalDirection} ${result} (${profitPercent.toFixed(2)}%) via ${exitReason}`);
         }
     }
     
@@ -488,10 +525,10 @@ function resolveShadowTrades(currentPrice) {
     }
 }
 
-async function fetchOrderBook() {
+async function fetchOrderBook(symbol) {
     try {
         const response = await fetch(
-            `${CONFIG.DLOB_URL}/l2?marketName=${CONFIG.SYMBOL}&depth=20`
+            `${CONFIG.DLOB_URL}/l2?marketName=${symbol}&depth=20`
         );
         
         if (!response.ok) return null;
@@ -503,6 +540,21 @@ async function fetchOrderBook() {
         }
         
         return data;
+    } catch (error) {
+        return null;
+    }
+}
+
+async function fetchPriceForMarket(symbol) {
+    try {
+        const orderBook = await fetchOrderBook(symbol);
+        if (!orderBook || !orderBook.bids || !orderBook.asks) return null;
+        if (orderBook.bids.length === 0 || orderBook.asks.length === 0) return null;
+        
+        const bestBid = Array.isArray(orderBook.bids[0]) ? parseFloat(orderBook.bids[0][0]) : parseFloat(orderBook.bids[0].price);
+        const bestAsk = Array.isArray(orderBook.asks[0]) ? parseFloat(orderBook.asks[0][0]) : parseFloat(orderBook.asks[0].price);
+        
+        return (bestBid + bestAsk) / 2;
     } catch (error) {
         return null;
     }
@@ -529,8 +581,8 @@ function calculateImbalance(orderBook) {
     return (totalBids - totalAsks) / (totalBids + totalAsks);
 }
 
-function calculateVolatility(timeframe) {
-    const data = timeframeData[timeframe];
+function calculateVolatility(timeframe, marketState) {
+    const data = marketState.timeframeData[timeframe];
     if (data.prices.length < 5) return 0;
     
     const recent = data.prices.slice(-10);
@@ -543,8 +595,8 @@ function calculateVolatility(timeframe) {
     return totalChange / (recent.length - 1);
 }
 
-function detectMarketMode(timeframe) {
-    const data = timeframeData[timeframe];
+function detectMarketMode(timeframe, marketState) {
+    const data = marketState.timeframeData[timeframe];
     const config = TIMEFRAMES[timeframe];
     
     if (data.prices.length < config.pointsNeeded) return 'UNKNOWN';
@@ -560,8 +612,8 @@ function detectMarketMode(timeframe) {
     return 'RANGING';
 }
 
-function detectPriceAction(timeframe) {
-    const data = timeframeData[timeframe];
+function detectPriceAction(timeframe, marketState) {
+    const data = marketState.timeframeData[timeframe];
     if (data.prices.length < 5) return 'FLAT';
     
     const recent = data.prices.slice(-5);
@@ -578,8 +630,8 @@ function detectPriceAction(timeframe) {
     return 'FLAT';
 }
 
-function isImbalanceStable(timeframe, targetType) {
-    const data = timeframeData[timeframe];
+function isImbalanceStable(timeframe, targetType, marketState) {
+    const data = marketState.timeframeData[timeframe];
     if (data.imbalances.length < 4) return false;
     
     const recent = data.imbalances.slice(-4);
@@ -594,17 +646,17 @@ function isImbalanceStable(timeframe, targetType) {
     return matchCount >= 3;
 }
 
-function analyzeTimeframe(timeframe, currentPrice, imbalance) {
-    const data = timeframeData[timeframe];
+function analyzeTimeframe(timeframe, currentPrice, imbalance, marketState) {
+    const data = marketState.timeframeData[timeframe];
     const config = TIMEFRAMES[timeframe];
     
     if (data.prices.length < config.pointsNeeded) {
-        return { ready: false, signal: null, mode: 'BUILDING', priceAction: 'UNKNOWN' };
+        return { ready: false, signal: null, mode: 'BUILDING', priceAction: 'UNKNOWN', dataPoints: data.prices.length };
     }
     
-    const mode = detectMarketMode(timeframe);
-    const priceAction = detectPriceAction(timeframe);
-    const volatility = calculateVolatility(timeframe);
+    const mode = detectMarketMode(timeframe, marketState);
+    const priceAction = detectPriceAction(timeframe, marketState);
+    const volatility = calculateVolatility(timeframe, marketState);
     
     let signal = null;
     let signalStrength = 0;
@@ -616,10 +668,10 @@ function analyzeTimeframe(timeframe, currentPrice, imbalance) {
         signal = 'SHORT';
         signalStrength = 0.7;
     } else if (mode === 'RANGING') {
-        if (imbalance < -CONFIG.IMBALANCE_THRESHOLD && isImbalanceStable(timeframe, 'bearish') && priceAction !== 'FALLING') {
+        if (imbalance < -CONFIG.IMBALANCE_THRESHOLD && isImbalanceStable(timeframe, 'bearish', marketState) && priceAction !== 'FALLING') {
             signal = 'LONG';
             signalStrength = 0.5;
-        } else if (imbalance > CONFIG.IMBALANCE_THRESHOLD && isImbalanceStable(timeframe, 'bullish') && priceAction !== 'RISING') {
+        } else if (imbalance > CONFIG.IMBALANCE_THRESHOLD && isImbalanceStable(timeframe, 'bullish', marketState) && priceAction !== 'RISING') {
             signal = 'SHORT';
             signalStrength = 0.5;
         }
@@ -636,13 +688,13 @@ function analyzeTimeframe(timeframe, currentPrice, imbalance) {
     };
 }
 
-function getConsensusSignal(currentPrice, imbalance) {
+function getConsensusSignal(currentPrice, imbalance, marketState) {
     const analyses = {};
     let readyCount = 0;
     let signalsWithDirection = [];
     
     for (const tf of Object.keys(TIMEFRAMES)) {
-        analyses[tf] = analyzeTimeframe(tf, currentPrice, imbalance);
+        analyses[tf] = analyzeTimeframe(tf, currentPrice, imbalance, marketState);
         if (analyses[tf].ready) {
             readyCount++;
             if (analyses[tf].signal) {
@@ -651,7 +703,7 @@ function getConsensusSignal(currentPrice, imbalance) {
         }
     }
     
-    botStatus.timeframeSignals = analyses;
+    marketState.timeframeSignals = analyses;
     
     if (readyCount < 2) {
         return { signal: null, reason: 'not_enough_timeframes', confidence: 0 };
@@ -688,13 +740,13 @@ function getConsensusSignal(currentPrice, imbalance) {
     };
 }
 
-function shouldOpenPosition(signal, pattern) {
+function shouldOpenPosition(signal, pattern, marketState) {
     if (!signal.signal) return { open: false, reason: signal.reason };
     
     const direction = signal.signal;
     const now = Date.now();
     
-    if (now - lastOrderTime < CONFIG.ORDER_COOLDOWN_MS) {
+    if (now - marketState.lastOrderTime < CONFIG.ORDER_COOLDOWN_MS) {
         return { open: false, reason: 'cooldown', hasSignal: true };
     }
     
@@ -704,29 +756,28 @@ function shouldOpenPosition(signal, pattern) {
         return { open: false, reason: `memory_prefers_${memoryAnalysis.direction.toLowerCase()}`, hasSignal: true };
     }
     
-    if (direction === 'LONG' && lastLossDirection === 'LONG' && consecutiveLosses >= 2) {
+    if (direction === 'LONG' && marketState.lastLossDirection === 'LONG' && marketState.consecutiveLosses >= 2) {
         return { open: false, reason: 'consecutive_long_losses', hasSignal: true };
     }
-    if (direction === 'SHORT' && lastLossDirection === 'SHORT' && consecutiveLosses >= 2) {
+    if (direction === 'SHORT' && marketState.lastLossDirection === 'SHORT' && marketState.consecutiveLosses >= 2) {
         return { open: false, reason: 'consecutive_short_losses', hasSignal: true };
     }
     
     return { open: true, reason: signal.reason, direction, confidence: signal.confidence };
 }
 
-function checkDangerSignals(imbalance, marketMode) {
-    if (!currentPosition && !simulatedPosition) return false;
-    
-    const pos = CONFIG.SIMULATION_MODE ? simulatedPosition : currentPosition;
+function checkDangerSignals(imbalance, marketMode, marketState, symbol) {
+    const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
+    if (!pos) return false;
     
     if (pos === 'LONG') {
         if (marketMode === 'DOWNTREND' || imbalance < -0.2) {
-            if (!dangerMode) log(`⚠️ DANGER MODE: Market turning against LONG`);
+            if (!marketState.dangerMode) log(`[${symbol}] ⚠️ DANGER MODE: Market turning against LONG`);
             return true;
         }
     } else if (pos === 'SHORT') {
         if (marketMode === 'UPTREND' || imbalance > 0.2) {
-            if (!dangerMode) log(`⚠️ DANGER MODE: Market turning against SHORT`);
+            if (!marketState.dangerMode) log(`[${symbol}] ⚠️ DANGER MODE: Market turning against SHORT`);
             return true;
         }
     }
@@ -734,20 +785,20 @@ function checkDangerSignals(imbalance, marketMode) {
     return false;
 }
 
-function checkStopLoss(currentPrice) {
-    const pos = CONFIG.SIMULATION_MODE ? simulatedPosition : currentPosition;
+function checkStopLoss(currentPrice, marketState, marketConfig, symbol) {
+    const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
     if (!pos) return false;
 
-    const priceMovePercent = ((currentPrice - entryPrice) / entryPrice) * 100;
+    const priceMovePercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
 
     if (pos === 'LONG') {
-        if (priceMovePercent <= -CONFIG.STOP_LOSS_PERCENT) {
-            log(`✗ STOP LOSS (LONG): Entry=$${entryPrice.toFixed(4)}, Current=$${currentPrice.toFixed(4)}`);
+        if (priceMovePercent <= -marketConfig.stopLoss) {
+            log(`[${symbol}] ✗ STOP LOSS (LONG): Entry=$${marketState.entryPrice.toFixed(4)}, Current=$${currentPrice.toFixed(4)}`);
             return true;
         }
     } else if (pos === 'SHORT') {
-        if (priceMovePercent >= CONFIG.STOP_LOSS_PERCENT) {
-            log(`✗ STOP LOSS (SHORT): Entry=$${entryPrice.toFixed(4)}, Current=$${currentPrice.toFixed(4)}`);
+        if (priceMovePercent >= marketConfig.stopLoss) {
+            log(`[${symbol}] ✗ STOP LOSS (SHORT): Entry=$${marketState.entryPrice.toFixed(4)}, Current=$${currentPrice.toFixed(4)}`);
             return true;
         }
     }
@@ -755,32 +806,32 @@ function checkStopLoss(currentPrice) {
     return false;
 }
 
-function checkTrailingTakeProfit(currentPrice) {
-    const pos = CONFIG.SIMULATION_MODE ? simulatedPosition : currentPosition;
+function checkTrailingTakeProfit(currentPrice, marketState, marketConfig, symbol) {
+    const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
     if (!pos) return false;
 
-    const trailingDistance = dangerMode ? CONFIG.TRAILING_DANGER : CONFIG.TRAILING_NORMAL;
+    const trailingDistance = marketState.dangerMode ? marketConfig.trailingDanger : marketConfig.trailingNormal;
     let profitPercent = 0;
 
     if (pos === 'LONG') {
-        profitPercent = ((currentPrice - entryPrice) / entryPrice) * 100;
-        if (currentPrice > highestPriceSinceEntry) highestPriceSinceEntry = currentPrice;
-        if (profitPercent >= CONFIG.TAKE_PROFIT_ACTIVATION) trailingStopActive = true;
-        if (trailingStopActive) {
-            const dropFromHigh = ((highestPriceSinceEntry - currentPrice) / highestPriceSinceEntry) * 100;
+        profitPercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
+        if (currentPrice > marketState.highestPriceSinceEntry) marketState.highestPriceSinceEntry = currentPrice;
+        if (profitPercent >= marketConfig.takeProfit) marketState.trailingStopActive = true;
+        if (marketState.trailingStopActive) {
+            const dropFromHigh = ((marketState.highestPriceSinceEntry - currentPrice) / marketState.highestPriceSinceEntry) * 100;
             if (dropFromHigh >= trailingDistance) {
-                log(`✓ TRAILING TP (LONG): Profit=${profitPercent.toFixed(2)}%`);
+                log(`[${symbol}] ✓ TRAILING TP (LONG): Profit=${profitPercent.toFixed(2)}%`);
                 return true;
             }
         }
     } else if (pos === 'SHORT') {
-        profitPercent = ((entryPrice - currentPrice) / entryPrice) * 100;
-        if (currentPrice < lowestPriceSinceEntry) lowestPriceSinceEntry = currentPrice;
-        if (profitPercent >= CONFIG.TAKE_PROFIT_ACTIVATION) trailingStopActive = true;
-        if (trailingStopActive) {
-            const riseFromLow = ((currentPrice - lowestPriceSinceEntry) / lowestPriceSinceEntry) * 100;
+        profitPercent = ((marketState.entryPrice - currentPrice) / marketState.entryPrice) * 100;
+        if (currentPrice < marketState.lowestPriceSinceEntry) marketState.lowestPriceSinceEntry = currentPrice;
+        if (profitPercent >= marketConfig.takeProfit) marketState.trailingStopActive = true;
+        if (marketState.trailingStopActive) {
+            const riseFromLow = ((currentPrice - marketState.lowestPriceSinceEntry) / marketState.lowestPriceSinceEntry) * 100;
             if (riseFromLow >= trailingDistance) {
-                log(`✓ TRAILING TP (SHORT): Profit=${profitPercent.toFixed(2)}%`);
+                log(`[${symbol}] ✓ TRAILING TP (SHORT): Profit=${profitPercent.toFixed(2)}%`);
                 return true;
             }
         }
@@ -789,85 +840,86 @@ function checkTrailingTakeProfit(currentPrice) {
     return false;
 }
 
-async function openPosition(direction, pattern) {
-    const currentPrice = timeframeData.fast.prices[timeframeData.fast.prices.length - 1];
+async function openPosition(direction, pattern, marketState, marketConfig, symbol) {
+    const currentPrice = marketState.timeframeData.fast.prices[marketState.timeframeData.fast.prices.length - 1];
     
     if (CONFIG.SIMULATION_MODE) {
-        log(`[SIM] Opening ${direction} at $${currentPrice.toFixed(4)}`);
-        simulatedPosition = direction;
+        log(`[${symbol}] [SIM] Opening ${direction} at $${currentPrice.toFixed(4)}`);
+        marketState.simulatedPosition = direction;
     } else {
         try {
-            const notionalValue = CONFIG.TRADE_AMOUNT_USDC * CONFIG.LEVERAGE;
+            const tradeAmount = CONFIG.TRADE_AMOUNT_USDC * marketConfig.positionMultiplier;
+            const notionalValue = tradeAmount * CONFIG.LEVERAGE;
             const baseAssetAmountRaw = notionalValue / currentPrice;
             const baseAssetAmount = driftClient.convertToPerpPrecision(baseAssetAmountRaw);
 
-            log(`Opening ${direction}: $${CONFIG.TRADE_AMOUNT_USDC} x ${CONFIG.LEVERAGE}x`);
+            log(`[${symbol}] Opening ${direction}: $${tradeAmount.toFixed(2)} x ${CONFIG.LEVERAGE}x`);
 
             const orderParams = {
                 orderType: OrderType.MARKET,
                 marketType: MarketType.PERP,
-                marketIndex: marketIndex,
+                marketIndex: marketConfig.marketIndex,
                 direction: direction === 'LONG' ? PositionDirection.LONG : PositionDirection.SHORT,
                 baseAssetAmount: baseAssetAmount,
             };
 
             const txSig = await driftClient.placePerpOrder(orderParams);
-            log(`Order placed. TX: ${txSig}`);
-            currentPosition = direction;
+            log(`[${symbol}] Order placed. TX: ${txSig}`);
+            marketState.currentPosition = direction;
         } catch (error) {
-            log(`Error opening position: ${error.message}`);
+            log(`[${symbol}] Error opening position: ${error.message}`);
             return false;
         }
     }
 
-    lastOrderTime = Date.now();
-    entryPrice = currentPrice;
-    highestPriceSinceEntry = currentPrice;
-    lowestPriceSinceEntry = currentPrice;
-    trailingStopActive = false;
-    dangerMode = false;
-    currentTradePattern = pattern;
-    currentTradeDirection = direction;
+    marketState.lastOrderTime = Date.now();
+    marketState.entryPrice = currentPrice;
+    marketState.highestPriceSinceEntry = currentPrice;
+    marketState.lowestPriceSinceEntry = currentPrice;
+    marketState.trailingStopActive = false;
+    marketState.dangerMode = false;
+    marketState.currentTradePattern = pattern;
+    marketState.currentTradeDirection = direction;
 
     return true;
 }
 
-async function closePosition(exitReason) {
-    const currentPrice = timeframeData.fast.prices[timeframeData.fast.prices.length - 1];
-    const pos = CONFIG.SIMULATION_MODE ? simulatedPosition : currentPosition;
+async function closePosition(exitReason, marketState, marketConfig, symbol) {
+    const currentPrice = marketState.timeframeData.fast.prices[marketState.timeframeData.fast.prices.length - 1];
+    const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
     
     if (!pos) return true;
     
-    if (!entryPrice || entryPrice <= 0 || !currentPrice || currentPrice <= 0) {
-        log(`ERROR: Invalid prices for P&L calculation. Entry: ${entryPrice}, Current: ${currentPrice}. Skipping trade record.`);
-        resetPositionState();
+    if (!marketState.entryPrice || marketState.entryPrice <= 0 || !currentPrice || currentPrice <= 0) {
+        log(`[${symbol}] ERROR: Invalid prices for P&L calculation. Entry: ${marketState.entryPrice}, Current: ${currentPrice}. Skipping trade record.`);
+        resetPositionState(marketState);
         return true;
     }
     
     let profitPercent = 0;
     if (pos === 'LONG') {
-        profitPercent = ((currentPrice - entryPrice) / entryPrice) * 100;
+        profitPercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
     } else {
-        profitPercent = ((entryPrice - currentPrice) / entryPrice) * 100;
+        profitPercent = ((marketState.entryPrice - currentPrice) / marketState.entryPrice) * 100;
     }
     
     if (Math.abs(profitPercent) > 100) {
-        log(`ERROR: Unrealistic P&L detected (${profitPercent.toFixed(2)}%). Capping at ±100%.`);
+        log(`[${symbol}] ERROR: Unrealistic P&L detected (${profitPercent.toFixed(2)}%). Capping at ±100%.`);
         profitPercent = profitPercent > 0 ? 100 : -100;
     }
     
     const result = profitPercent > 0 ? 'WIN' : 'LOSS';
     
     if (CONFIG.SIMULATION_MODE) {
-        log(`[SIM] Closing ${pos}: ${result} ${profitPercent.toFixed(2)}%`);
-        simulatedPosition = null;
+        log(`[${symbol}] [SIM] Closing ${pos}: ${result} ${profitPercent.toFixed(2)}%`);
+        marketState.simulatedPosition = null;
     } else {
         try {
             const user = driftClient.getUser();
-            const perpPosition = user.getPerpPosition(marketIndex);
+            const perpPosition = user.getPerpPosition(marketConfig.marketIndex);
 
             if (!perpPosition || perpPosition.baseAssetAmount.eq(new BN(0))) {
-                resetPositionState();
+                resetPositionState(marketState);
                 return true;
             }
 
@@ -879,113 +931,100 @@ async function closePosition(exitReason) {
             const orderParams = {
                 orderType: OrderType.MARKET,
                 marketType: MarketType.PERP,
-                marketIndex: marketIndex,
+                marketIndex: marketConfig.marketIndex,
                 direction: closeDirection,
                 baseAssetAmount: baseAssetAmount,
                 reduceOnly: true,
             };
 
             const txSig = await driftClient.placePerpOrder(orderParams);
-            log(`Position closed. TX: ${txSig}`);
-            currentPosition = null;
+            log(`[${symbol}] Position closed. TX: ${txSig}`);
+            marketState.currentPosition = null;
         } catch (error) {
-            log(`Error closing position: ${error.message}`);
+            log(`[${symbol}] Error closing position: ${error.message}`);
             return false;
         }
     }
 
-    if (currentTradePattern) {
-        recordTrade(currentTradePattern, currentTradeDirection, entryPrice, currentPrice, result, profitPercent, exitReason, CONFIG.SIMULATION_MODE);
+    if (marketState.currentTradePattern) {
+        recordTrade(marketState.currentTradePattern, marketState.currentTradeDirection, marketState.entryPrice, currentPrice, result, profitPercent, exitReason, CONFIG.SIMULATION_MODE, symbol);
     }
     
     if (result === 'LOSS') {
-        if (lastLossDirection === pos) {
-            consecutiveLosses++;
+        if (marketState.lastLossDirection === pos) {
+            marketState.consecutiveLosses++;
         } else {
-            consecutiveLosses = 1;
-            lastLossDirection = pos;
+            marketState.consecutiveLosses = 1;
+            marketState.lastLossDirection = pos;
         }
     } else {
-        consecutiveLosses = 0;
-        lastLossDirection = null;
+        marketState.consecutiveLosses = 0;
+        marketState.lastLossDirection = null;
     }
-    
-    tradeMemory.consecutiveLosses = consecutiveLosses;
-    tradeMemory.lastLossDirection = lastLossDirection;
 
-    lastOrderTime = Date.now();
-    resetPositionState();
+    marketState.lastOrderTime = Date.now();
+    resetPositionState(marketState);
 
     return true;
 }
 
-function resetPositionState() {
+function resetPositionState(marketState) {
     if (CONFIG.SIMULATION_MODE) {
-        simulatedPosition = null;
+        marketState.simulatedPosition = null;
     } else {
-        currentPosition = null;
+        marketState.currentPosition = null;
     }
-    entryPrice = 0;
-    highestPriceSinceEntry = 0;
-    lowestPriceSinceEntry = Infinity;
-    trailingStopActive = false;
-    dangerMode = false;
-    currentTradePattern = null;
-    currentTradeDirection = null;
+    marketState.entryPrice = 0;
+    marketState.highestPriceSinceEntry = 0;
+    marketState.lowestPriceSinceEntry = Infinity;
+    marketState.trailingStopActive = false;
+    marketState.dangerMode = false;
+    marketState.currentTradePattern = null;
+    marketState.currentTradeDirection = null;
 }
 
-async function syncPositionFromChain() {
+async function syncPositionFromChain(marketState, marketConfig, symbol) {
     if (CONFIG.SIMULATION_MODE) return;
     
     try {
         const user = driftClient.getUser();
-        const perpPosition = user.getPerpPosition(marketIndex);
+        const perpPosition = user.getPerpPosition(marketConfig.marketIndex);
 
         if (perpPosition && !perpPosition.baseAssetAmount.eq(new BN(0))) {
             const isLong = perpPosition.baseAssetAmount.gt(new BN(0));
             const onChainDirection = isLong ? 'LONG' : 'SHORT';
 
-            if (currentPosition !== onChainDirection) {
-                log(`Syncing position from chain: ${onChainDirection}`);
-                currentPosition = onChainDirection;
+            if (marketState.currentPosition !== onChainDirection) {
+                log(`[${symbol}] Syncing position from chain: ${onChainDirection}`);
+                marketState.currentPosition = onChainDirection;
                 
                 const quoteEntry = perpPosition.quoteEntryAmount;
                 const baseAmount = perpPosition.baseAssetAmount.abs();
                 
                 if (!baseAmount.eq(new BN(0))) {
                     const entryPriceRaw = quoteEntry.abs().mul(PRICE_PRECISION).div(baseAmount);
-                    entryPrice = convertToNumber(entryPriceRaw, PRICE_PRECISION);
+                    marketState.entryPrice = convertToNumber(entryPriceRaw, PRICE_PRECISION);
                 } else {
-                    const oracleData = driftClient.getOracleDataForPerpMarket(marketIndex);
-                    entryPrice = convertToNumber(oracleData.price, PRICE_PRECISION);
+                    const oracleData = driftClient.getOracleDataForPerpMarket(marketConfig.marketIndex);
+                    marketState.entryPrice = convertToNumber(oracleData.price, PRICE_PRECISION);
                 }
                 
-                highestPriceSinceEntry = entryPrice;
-                lowestPriceSinceEntry = entryPrice;
+                marketState.highestPriceSinceEntry = marketState.entryPrice;
+                marketState.lowestPriceSinceEntry = marketState.entryPrice;
             }
-        } else if (currentPosition) {
-            resetPositionState();
+        } else if (marketState.currentPosition) {
+            resetPositionState(marketState);
         }
     } catch (error) {
-        log(`Error syncing position: ${error.message}`);
+        log(`[${symbol}] Error syncing position: ${error.message}`);
     }
 }
 
-async function fetchPrice() {
-    try {
-        const oracleData = driftClient.getOracleDataForPerpMarket(marketIndex);
-        if (!oracleData) return null;
-        return convertToNumber(oracleData.price, PRICE_PRECISION);
-    } catch (error) {
-        return null;
-    }
-}
-
-function updateTimeframeData(price, imbalance) {
+function updateTimeframeData(price, imbalance, marketState) {
     const now = Date.now();
     
     for (const [tfName, config] of Object.entries(TIMEFRAMES)) {
-        const data = timeframeData[tfName];
+        const data = marketState.timeframeData[tfName];
         
         if (now - data.lastUpdate >= config.intervalMs || data.lastUpdate === 0) {
             data.prices.push(price);
@@ -1001,95 +1040,136 @@ function updateTimeframeData(price, imbalance) {
     }
 }
 
-async function tradingLoop() {
-    lastHeartbeat = Date.now();
+async function processMarket(symbol) {
+    const marketConfig = MARKETS[symbol];
+    const marketState = marketStates[symbol];
+    
+    if (!marketConfig || !marketState) {
+        log(`[${symbol}] Invalid market configuration`);
+        return;
+    }
     
     try {
-        const price = await fetchPrice();
-        botStatus.rpcConnected = !!price;
-        if (!price) return;
-
-        try {
-            await syncPositionFromChain();
-            botStatus.driftConnected = true;
-        } catch (err) {
-            botStatus.driftConnected = false;
-        }
-        
-        const orderBook = await fetchOrderBook();
-        botStatus.dlobConnected = !!orderBook;
+        const orderBook = await fetchOrderBook(symbol);
+        marketState.dlobConnected = !!orderBook;
         if (!orderBook) return;
+        
+        const price = await fetchPriceForMarket(symbol);
+        marketState.rpcConnected = !!price;
+        if (!price) return;
+        
+        try {
+            await syncPositionFromChain(marketState, marketConfig, symbol);
+        } catch (err) {
+        }
         
         const imbalance = calculateImbalance(orderBook);
         
-        updateTimeframeData(price, imbalance);
-        resolveShadowTrades(price);
+        updateTimeframeData(price, imbalance, marketState);
+        resolveShadowTrades(price, marketConfig, symbol);
         
-        const fastAnalysis = analyzeTimeframe('fast', price, imbalance);
-        botStatus.lastPrice = price;
-        botStatus.lastImbalance = imbalance;
-        botStatus.marketMode = fastAnalysis.mode;
-        botStatus.priceAction = fastAnalysis.priceAction;
-        botStatus.volatility = fastAnalysis.volatility || 0;
-        botStatus.lastUpdate = new Date().toISOString();
+        const fastAnalysis = analyzeTimeframe('fast', price, imbalance, marketState);
+        marketState.lastPrice = price;
+        marketState.lastImbalance = imbalance;
+        marketState.marketMode = fastAnalysis.mode;
+        marketState.priceAction = fastAnalysis.priceAction;
+        marketState.volatility = fastAnalysis.volatility || 0;
         
-        const fastData = timeframeData.fast;
+        botStatus.markets[symbol] = {
+            price: price,
+            imbalance: imbalance,
+            mode: fastAnalysis.mode,
+            priceAction: fastAnalysis.priceAction,
+            volatility: marketState.volatility,
+            position: CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition,
+            dangerMode: marketState.dangerMode,
+            rpcConnected: marketState.rpcConnected,
+            dlobConnected: marketState.dlobConnected,
+            dataPoints: fastAnalysis.dataPoints || 0
+        };
+        
+        const fastData = marketState.timeframeData.fast;
         if (fastData.prices.length < TIMEFRAMES.fast.pointsNeeded) {
-            log(`Building history... Fast: ${fastData.prices.length}/${TIMEFRAMES.fast.pointsNeeded}`);
+            log(`[${symbol}] Building history... ${fastData.prices.length}/${TIMEFRAMES.fast.pointsNeeded}`);
             return;
         }
 
-        const pos = CONFIG.SIMULATION_MODE ? simulatedPosition : currentPosition;
+        const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
         const modeStr = CONFIG.SIMULATION_MODE ? '🔵 SIM' : '🟢 LIVE';
-        const posStr = pos ? (dangerMode ? '🔴 ' + pos : '🟢 ' + pos) : '⚪ NONE';
+        const posStr = pos ? (marketState.dangerMode ? '🔴 ' + pos : '🟢 ' + pos) : '⚪ NONE';
         
-        log(`${modeStr} $${price.toFixed(2)} | ${fastAnalysis.mode} | Imb: ${(imbalance * 100).toFixed(0)}% | Vol: ${(botStatus.volatility).toFixed(2)}% | Pos: ${posStr}`);
+        log(`[${symbol}] ${modeStr} $${price.toFixed(2)} | ${fastAnalysis.mode} | Imb: ${(imbalance * 100).toFixed(0)}% | Vol: ${(marketState.volatility).toFixed(2)}% | Pos: ${posStr}`);
 
         if (pos) {
-            dangerMode = checkDangerSignals(imbalance, fastAnalysis.mode);
+            marketState.dangerMode = checkDangerSignals(imbalance, fastAnalysis.mode, marketState, symbol);
             
-            if (checkStopLoss(price)) {
-                await closePosition('stop_loss');
+            if (checkStopLoss(price, marketState, marketConfig, symbol)) {
+                await closePosition('stop_loss', marketState, marketConfig, symbol);
                 return;
             }
 
-            if (checkTrailingTakeProfit(price)) {
-                await closePosition('trailing_tp');
+            if (checkTrailingTakeProfit(price, marketState, marketConfig, symbol)) {
+                await closePosition('trailing_tp', marketState, marketConfig, symbol);
                 return;
             }
         } else {
-            const consensus = getConsensusSignal(price, imbalance);
+            const consensus = getConsensusSignal(price, imbalance, marketState);
             
             let imbalanceType = 'neutral';
             if (imbalance > CONFIG.IMBALANCE_THRESHOLD) imbalanceType = 'bullish';
             else if (imbalance < -CONFIG.IMBALANCE_THRESHOLD) imbalanceType = 'bearish';
             
             const pattern = {
-                patternKey: getPatternKey(imbalanceType, fastAnalysis.mode, fastAnalysis.priceAction, botStatus.volatility),
+                patternKey: getPatternKey(imbalanceType, fastAnalysis.mode, fastAnalysis.priceAction, marketState.volatility),
                 imbalanceType,
                 trend: fastAnalysis.mode,
                 priceAction: fastAnalysis.priceAction,
-                volatility: botStatus.volatility
+                volatility: marketState.volatility
             };
             
-            const decision = shouldOpenPosition(consensus, pattern);
+            const decision = shouldOpenPosition(consensus, pattern, marketState);
             
             if (decision.open) {
-                log(`✓ ${decision.direction} SIGNAL: ${decision.reason} (confidence: ${(decision.confidence * 100).toFixed(0)}%)`);
-                await openPosition(decision.direction, pattern);
+                log(`[${symbol}] ✓ ${decision.direction} SIGNAL: ${decision.reason} (confidence: ${(decision.confidence * 100).toFixed(0)}%)`);
+                await openPosition(decision.direction, pattern, marketState, marketConfig, symbol);
             } else if (decision.hasSignal) {
-                recordShadowTrade(pattern, consensus.signal, decision.reason, price);
+                recordShadowTrade(pattern, consensus.signal, decision.reason, price, symbol);
             }
         }
+    } catch (error) {
+        log(`[${symbol}] Trading loop error: ${error.message}`);
+    }
+}
+
+async function tradingLoop() {
+    lastHeartbeat = Date.now();
+    botStatus.lastUpdate = new Date().toISOString();
+    
+    try {
+        botStatus.driftConnected = !!driftClient;
+        
+        for (const symbol of ACTIVE_MARKETS) {
+            await processMarket(symbol);
+        }
+        
+        resolveShadowTradesAll();
     } catch (error) {
         log(`Trading loop error: ${error.message}`);
     }
 }
 
+function resolveShadowTradesAll() {
+    for (const symbol of ACTIVE_MARKETS) {
+        const marketState = marketStates[symbol];
+        const marketConfig = MARKETS[symbol];
+        if (marketState && marketState.lastPrice > 0) {
+            resolveShadowTrades(marketState.lastPrice, marketConfig, symbol);
+        }
+    }
+}
+
 function generateDashboardHTML() {
-    const pos = CONFIG.SIMULATION_MODE ? simulatedPosition : currentPosition;
     const stats = tradeMemory.sessionStats;
-    const simStats = CONFIG.SIMULATION_MODE ? stats : null;
     
     const recentTrades = tradeMemory.trades.slice(-20).reverse();
     const recentShadows = tradeMemory.shadowTrades.slice(-10).reverse();
@@ -1113,7 +1193,8 @@ function generateDashboardHTML() {
     const bestTrade = allTrades.length > 0 ? allTrades.reduce((best, t) => (!best || (t.profitPercent || 0) > (best.profitPercent || 0)) ? t : best, null) : null;
     const worstTrade = allTrades.length > 0 ? allTrades.reduce((worst, t) => (!worst || (t.profitPercent || 0) < (worst.profitPercent || 0)) ? t : worst, null) : null;
     
-    const volPercent = Math.min(100, (botStatus.volatility / (CONFIG.VOLATILITY_THRESHOLD * 2)) * 100);
+    const anyRpcConnected = ACTIVE_MARKETS.some(s => botStatus.markets[s]?.rpcConnected);
+    const anyDlobConnected = ACTIVE_MARKETS.some(s => botStatus.markets[s]?.dlobConnected);
 
     return `<!DOCTYPE html>
 <html>
@@ -1179,79 +1260,68 @@ function generateDashboardHTML() {
                     <span class="stat-value ${heartbeatAgo > 60 ? 'negative' : 'positive'}">${heartbeatAgo}s ago</span>
                 </div>
                 <div class="stat-row">
-                    <span class="stat-label"><span class="health-dot ${botStatus.rpcConnected ? 'health-green' : 'health-red'}"></span>RPC</span>
-                    <span class="stat-value">${botStatus.rpcConnected ? 'Connected' : 'Disconnected'}</span>
+                    <span class="stat-label"><span class="health-dot ${anyRpcConnected ? 'health-green' : 'health-red'}"></span>RPC</span>
+                    <span class="stat-value">${anyRpcConnected ? 'Connected' : 'Disconnected'}</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label"><span class="health-dot ${botStatus.driftConnected ? 'health-green' : 'health-red'}"></span>Drift</span>
                     <span class="stat-value">${botStatus.driftConnected ? 'Connected' : 'Disconnected'}</span>
                 </div>
                 <div class="stat-row">
-                    <span class="stat-label"><span class="health-dot ${botStatus.dlobConnected ? 'health-green' : 'health-red'}"></span>DLOB</span>
-                    <span class="stat-value">${botStatus.dlobConnected ? 'Connected' : 'Disconnected'}</span>
+                    <span class="stat-label"><span class="health-dot ${anyDlobConnected ? 'health-green' : 'health-red'}"></span>DLOB</span>
+                    <span class="stat-value">${anyDlobConnected ? 'Connected' : 'Disconnected'}</span>
                 </div>
                 <div class="stat-row">
-                    <span class="stat-label">Volatility</span>
-                    <span class="stat-value">${botStatus.volatility.toFixed(3)}%</span>
+                    <span class="stat-label">Active Markets</span>
+                    <span class="stat-value">${ACTIVE_MARKETS.length}</span>
                 </div>
-                <div class="gauge-container">
-                    <div class="gauge-fill ${volPercent < 50 ? 'gauge-green' : volPercent < 75 ? 'gauge-yellow' : 'gauge-red'}" style="width: ${volPercent}%"></div>
-                </div>
-                <div style="font-size: 0.8em; color: #666; text-align: center;">${botStatus.volatility > CONFIG.VOLATILITY_THRESHOLD ? 'Too volatile - trading paused' : 'Market calm - trading active'}</div>
-            </div>
-            
-            <div class="card">
-                <h2>Bot Status</h2>
                 <div class="stat-row">
                     <span class="stat-label">Mode</span>
-                    <span class="${CONFIG.SIMULATION_MODE ? 'sim-mode' : 'live-mode'}">${CONFIG.SIMULATION_MODE ? '🔵 SIMULATION' : '🟢 LIVE'}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Status</span>
-                    <span class="stat-value ${botStatus.running ? 'positive' : 'negative'}">${botStatus.running ? 'Running' : 'Stopped'}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Current Price</span>
-                    <span class="stat-value">$${botStatus.lastPrice.toFixed(4)}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Market Mode</span>
-                    <span class="stat-value ${botStatus.marketMode === 'UPTREND' ? 'positive' : botStatus.marketMode === 'DOWNTREND' ? 'negative' : 'neutral'}">${botStatus.marketMode}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Order Book</span>
-                    <span class="stat-value ${botStatus.lastImbalance > 0 ? 'positive' : 'negative'}">${(botStatus.lastImbalance * 100).toFixed(1)}%</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Position</span>
-                    <span class="stat-value ${pos === 'LONG' ? 'positive' : pos === 'SHORT' ? 'negative' : ''}">${pos || 'NONE'}</span>
-                </div>
-                ${pos ? `<div class="stat-row">
-                    <span class="stat-label">Entry Price</span>
-                    <span class="stat-value">$${entryPrice.toFixed(4)}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Current P&L</span>
-                    <span class="stat-value ${((pos === 'LONG' ? botStatus.lastPrice - entryPrice : entryPrice - botStatus.lastPrice) / entryPrice * 100) > 0 ? 'positive' : 'negative'}">${((pos === 'LONG' ? botStatus.lastPrice - entryPrice : entryPrice - botStatus.lastPrice) / entryPrice * 100).toFixed(2)}%</span>
-                </div>` : ''}
-                <div class="stat-row">
-                    <span class="stat-label">Last Update</span>
-                    <span class="stat-value">${botStatus.lastUpdate || 'Never'}</span>
+                    <span class="${CONFIG.SIMULATION_MODE ? 'sim-mode' : 'live-mode'}">${CONFIG.SIMULATION_MODE ? '🔵 SIM' : '🟢 LIVE'}</span>
                 </div>
             </div>
             
-            <div class="card">
-                <h2>Timeframe Signals</h2>
-                <div class="timeframe-card">
-                    ${Object.entries(TIMEFRAMES).map(([tf, config]) => {
-                        const analysis = botStatus.timeframeSignals[tf] || { ready: false };
-                        return `<div class="tf-row">
-                            <span>${config.name} (${analysis.dataPoints || 0}/${config.pointsNeeded})</span>
-                            <span>${analysis.mode || 'BUILDING'}</span>
-                            <span class="${analysis.signal === 'LONG' ? 'signal-long' : analysis.signal === 'SHORT' ? 'signal-short' : 'signal-none'}">${analysis.signal || '-'}</span>
-                        </div>`;
-                    }).join('')}
-                </div>
+            <div class="card" style="grid-column: span 2;">
+                <h2>Markets Overview</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Market</th>
+                            <th>Price</th>
+                            <th>Mode</th>
+                            <th>Imbalance</th>
+                            <th>Volatility</th>
+                            <th>Position</th>
+                            <th>Data</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${ACTIVE_MARKETS.map(symbol => {
+                            const m = botStatus.markets[symbol] || {};
+                            const marketConfig = MARKETS[symbol] || {};
+                            const marketState = marketStates[symbol] || {};
+                            const pos = m.position;
+                            const volPercent = Math.min(100, ((m.volatility || 0) / (CONFIG.VOLATILITY_THRESHOLD * 2)) * 100);
+                            const volClass = volPercent < 50 ? 'positive' : volPercent < 75 ? 'neutral' : 'negative';
+                            let pnl = '';
+                            if (pos && marketState.entryPrice > 0 && m.price > 0) {
+                                const pnlVal = pos === 'LONG' 
+                                    ? ((m.price - marketState.entryPrice) / marketState.entryPrice * 100)
+                                    : ((marketState.entryPrice - m.price) / marketState.entryPrice * 100);
+                                pnl = ` (${pnlVal.toFixed(2)}%)`;
+                            }
+                            return `<tr>
+                                <td><strong>${symbol}</strong></td>
+                                <td>$${(m.price || 0).toFixed(2)}</td>
+                                <td class="${m.mode === 'UPTREND' ? 'positive' : m.mode === 'DOWNTREND' ? 'negative' : 'neutral'}">${m.mode || 'BUILDING'}</td>
+                                <td class="${(m.imbalance || 0) > 0 ? 'positive' : 'negative'}">${((m.imbalance || 0) * 100).toFixed(1)}%</td>
+                                <td class="${volClass}">${(m.volatility || 0).toFixed(2)}%</td>
+                                <td class="${pos === 'LONG' ? 'positive' : pos === 'SHORT' ? 'negative' : ''}">${pos || 'NONE'}${pnl}</td>
+                                <td>${m.dataPoints || 0}/${TIMEFRAMES.fast.pointsNeeded}</td>
+                            </tr>`;
+                        }).join('')}
+                    </tbody>
+                </table>
             </div>
             
             <div class="card">
@@ -1305,8 +1375,8 @@ function generateDashboardHTML() {
                     <span class="stat-value">${Object.keys(tradeMemory.patternStats).length}</span>
                 </div>
                 <div class="stat-row">
-                    <span class="stat-label">Consecutive Losses</span>
-                    <span class="stat-value ${consecutiveLosses >= 2 ? 'negative' : ''}">${consecutiveLosses} ${lastLossDirection ? `(${lastLossDirection})` : ''}</span>
+                    <span class="stat-label">Open Positions</span>
+                    <span class="stat-value">${ACTIVE_MARKETS.filter(s => botStatus.markets[s]?.position).length}</span>
                 </div>
             </div>
             
@@ -1359,10 +1429,11 @@ function generateDashboardHTML() {
             <div class="card" style="grid-column: span 2;">
                 <h2>Recent Trades</h2>
                 <table>
-                    <tr><th>Time</th><th>Type</th><th>Direction</th><th>Result</th><th>P&L</th><th>Exit</th></tr>
+                    <tr><th>Time</th><th>Market</th><th>Type</th><th>Direction</th><th>Result</th><th>P&L</th><th>Exit</th></tr>
                     ${recentTrades.map(t => `
                         <tr>
                             <td>${new Date(t.timestamp).toLocaleTimeString()}</td>
+                            <td>${t.symbol || 'SOL-PERP'}</td>
                             <td>${t.type === 'simulated' ? '🔵' : '🟢'}</td>
                             <td class="${t.direction === 'LONG' ? 'positive' : 'negative'}">${t.direction}</td>
                             <td class="${t.result === 'WIN' ? 'trade-win' : 'trade-loss'}">${t.result}</td>
@@ -1378,10 +1449,11 @@ function generateDashboardHTML() {
             <div class="card" style="grid-column: span 2;">
                 <h2>Recent Shadow Trades (Signals Not Taken)</h2>
                 <table>
-                    <tr><th>Time</th><th>Signal</th><th>Why Skipped</th><th>Would Have</th><th>Result</th></tr>
+                    <tr><th>Time</th><th>Market</th><th>Signal</th><th>Why Skipped</th><th>Would Have</th><th>Result</th></tr>
                     ${recentShadows.map(s => `
                         <tr>
                             <td>${new Date(s.timestamp).toLocaleTimeString()}</td>
+                            <td>${s.symbol || 'SOL-PERP'}</td>
                             <td class="${s.signalDirection === 'LONG' ? 'positive' : 'negative'}">${s.signalDirection}</td>
                             <td>${s.whySkipped}</td>
                             <td>${s.resolved ? (s.hypotheticalProfit?.toFixed(2) || 0) + '%' : 'Pending...'}</td>
@@ -1404,12 +1476,15 @@ function startDashboard() {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
                 botStatus,
-                position: CONFIG.SIMULATION_MODE ? simulatedPosition : currentPosition,
-                entryPrice,
+                markets: ACTIVE_MARKETS.map(s => ({
+                    symbol: s,
+                    position: marketStates[s] ? (CONFIG.SIMULATION_MODE ? marketStates[s].simulatedPosition : marketStates[s].currentPosition) : null,
+                    entryPrice: marketStates[s]?.entryPrice || 0
+                })),
                 stats: tradeMemory.sessionStats,
                 config: {
                     simulationMode: CONFIG.SIMULATION_MODE,
-                    symbol: CONFIG.SYMBOL,
+                    activeMarkets: ACTIVE_MARKETS,
                     leverage: CONFIG.LEVERAGE
                 }
             }));
@@ -1443,17 +1518,17 @@ async function findMarketIndex(symbol) {
 
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   ADAPTIVE SOLANA FUTURES BOT v4 - DRIFT PROTOCOL');
-    log('   Multi-Timeframe + Memory Learning + Dashboard');
+    log('   ADAPTIVE SOLANA FUTURES BOT v5 - MULTI-MARKET');
+    log('   Drift Protocol + Shared Pattern Learning');
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? '🔵 SIMULATION (Paper Trading)' : '🟢 LIVE TRADING'}`);
     log(`Leverage: ${CONFIG.LEVERAGE}x`);
-    log(`Symbol: ${CONFIG.SYMBOL}`);
-    log(`Trade Size: ${CONFIG.TRADE_AMOUNT_USDC} USDC`);
+    log(`Active Markets: ${ACTIVE_MARKETS.join(', ')}`);
+    log(`Trade Size: ${CONFIG.TRADE_AMOUNT_USDC} USDC per market`);
     log(`Base Interval: ${CONFIG.BASE_INTERVAL_MS / 1000}s`);
     log(`Timeframes: ${Object.entries(TIMEFRAMES).map(([k, v]) => `${v.name}(${v.pointsNeeded}pts)`).join(', ')}`);
     log(`Volatility Filter: ${CONFIG.VOLATILITY_THRESHOLD}%`);
-    log(`Stop Loss: ${CONFIG.STOP_LOSS_PERCENT}% | TP Activation: ${CONFIG.TAKE_PROFIT_ACTIVATION}%`);
+    log(`Market-specific stops: SOL(${MARKETS['SOL-PERP'].stopLoss}%), BTC(${MARKETS['BTC-PERP'].stopLoss}%), ETH(${MARKETS['ETH-PERP'].stopLoss}%)`);
     log(`Dashboard: http://0.0.0.0:${CONFIG.DASHBOARD_PORT}`);
     log('═══════════════════════════════════════════════════════════');
 
@@ -1524,12 +1599,14 @@ async function main() {
             }
         }
 
-        marketIndex = await findMarketIndex(CONFIG.SYMBOL);
-
-        log('Testing DLOB API...');
-        const testOrderBook = await fetchOrderBook();
-        if (testOrderBook) {
-            log('DLOB API connected!');
+        log('Testing DLOB API for each market...');
+        for (const symbol of ACTIVE_MARKETS) {
+            const testOrderBook = await fetchOrderBook(symbol);
+            if (testOrderBook) {
+                log(`[${symbol}] DLOB connected`);
+            } else {
+                log(`[${symbol}] DLOB connection failed`);
+            }
         }
 
         botStatus.running = true;
@@ -1571,9 +1648,12 @@ async function main() {
             log('Shutting down...');
             botStatus.running = false;
             saveMemory();
-            const pos = CONFIG.SIMULATION_MODE ? simulatedPosition : currentPosition;
-            if (pos) {
-                log(`WARNING: Open ${CONFIG.SIMULATION_MODE ? 'simulated' : 'real'} position will remain.`);
+            const openPositions = ACTIVE_MARKETS.filter(s => {
+                const ms = marketStates[s];
+                return ms && (CONFIG.SIMULATION_MODE ? ms.simulatedPosition : ms.currentPosition);
+            });
+            if (openPositions.length > 0) {
+                log(`WARNING: Open ${CONFIG.SIMULATION_MODE ? 'simulated' : 'real'} positions on: ${openPositions.join(', ')}`);
             }
             await driftClient.unsubscribe();
             process.exit(0);

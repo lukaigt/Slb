@@ -1,11 +1,11 @@
-# Solana Futures Trading Bot v4 (Drift Protocol)
+# Solana Futures Trading Bot v5 (Drift Protocol - Multi-Market)
 
 ## Overview
-Adaptive perpetual futures trading bot using Drift Protocol on Solana mainnet. Features multi-timeframe analysis, simulation mode for paper trading, volatility filtering, memory-based learning with realistic shadow trade resolution, and a live web dashboard.
+Adaptive perpetual futures trading bot using Drift Protocol on Solana mainnet. Now supports **multiple markets simultaneously** (SOL, BTC, ETH) with shared pattern learning and market-specific risk settings. Features multi-timeframe analysis, simulation mode for paper trading, volatility filtering, memory-based learning, and a live web dashboard.
 
 ## Project Structure
 ```
-├── slb-bot-futures/          # Adaptive Futures trading bot v4
+├── slb-bot-futures/          # Multi-market Futures trading bot v5
 │   ├── index.js              # Main bot logic with dashboard
 │   ├── package.json          # Node.js dependencies
 │   ├── .env.example          # Environment variable template
@@ -18,92 +18,85 @@ Adaptive perpetual futures trading bot using Drift Protocol on Solana mainnet. F
 │   └── .env.example          # Old config template
 ```
 
-## New Features (v4)
+## New Features (v5)
 
-### Simulation Mode
-- Paper trade without risking real money
-- Set `SIMULATION_MODE=true` in .env
-- All trades logged as "simulated" in memory
-- Switch to live by changing to `SIMULATION_MODE=false`
-- Memory carries over - bot uses learned patterns for live trading
-- Note: Still requires RPC_URL for price data, but PRIVATE_KEY is optional
+### Multi-Market Trading
+- Trade SOL-PERP, BTC-PERP, and ETH-PERP simultaneously
+- Configure active markets via `ACTIVE_MARKETS` env variable
+- Separate position tracking per market
+- Independent timeframe data collection per market
+- Markets processed sequentially each loop (no position conflicts)
 
-### Multi-Timeframe Analysis
-- **Fast (30s)**: 20 data points, ~10 min to start
-- **Medium (2m)**: 10 data points, ~20 min to start  
-- **Slow (5m)**: 6 data points, ~30 min to start
-- Bot requires consensus across timeframes before trading
-- Scaled point requirements prevent forever-long warmup
+### Shared Pattern Learning
+- All markets contribute to the same pattern stats
+- Patterns are based on imbalance type, trend, and price action
+- Learning from one market helps improve trading on others
+- Faster overall learning by 3x with shared data
 
-### Volatility Filter
-- Calculates price volatility across timeframes
-- Skips trading when volatility > threshold (default 0.5%)
-- Avoids choppy, unpredictable market conditions
+### Market-Specific Risk Settings
+- **SOL-PERP**: 0.8% stop loss, 1.2% take profit (more volatile)
+- **BTC-PERP**: 0.5% stop loss, 0.8% take profit (less volatile)
+- **ETH-PERP**: 0.6% stop loss, 1.0% take profit (medium)
+- Customizable via environment variables
+- Position size multipliers per market
 
-### Smarter Shadow Trades
-- Tracks actual price highs/lows after signal
-- Simulates stop loss and take profit hits
-- More realistic "what would have happened" results
-- 30-minute timeout for unresolved shadows
+### Enhanced Dashboard
+- **Markets Overview table**: Price, mode, imbalance, volatility, position for each market
+- Updated trades table shows which market each trade was on
+- Shadow trades now tracked per market
+- Connection status aggregated across all markets
 
-### Heartbeat Watchdog
-- Monitors bot activity every 60 seconds
-- Detects freezes (no activity for 5 trading loops / ~2.5 min)
-- Auto-reconnects Drift SDK on freeze detection
-- Force restarts process if reconnection fails
-- Prevents VPS from getting stuck indefinitely
-
-### Live Web Dashboard
-- Real-time bot status and market data
-- **System Health panel**: Uptime, last heartbeat, connection indicators (RPC/Drift/DLOB)
-- **Volatility Gauge**: Visual bar showing market volatility vs threshold
-- **Best/Worst Trade display**: Highlights biggest win and loss
-- **Alert Log**: Shows watchdog triggers, reconnections, warnings
-- Timeframe signals display
-- Session statistics (real + simulated)
-- Recent trades table
-- Pattern performance rankings
-- Shadow trade tracking
-- Auto-refreshes every 5 seconds
-
-### Adaptive Learning
-- Analyzes all past trades on startup
-- Shows best/worst performing patterns
-- Expected value calculation per pattern
-- Time-weighted stats (recent trades count more)
-- Requires 55%+ win rate AND positive expected value
+### Previous Features (from v4)
+- Simulation Mode (paper trading)
+- Multi-Timeframe Analysis (30s, 2m, 5m)
+- Volatility Filter
+- Smarter Shadow Trades with SL/TP simulation
+- Heartbeat Watchdog with auto-reconnect
+- Adaptive Learning with time-weighted stats
 
 ## Trading Strategy
 
 ### Entry Logic
-1. **Timeframe Consensus**: 2+ timeframes with signals must agree on the same direction
-2. **Trend Following**: Buy dips in uptrend, sell rallies in downtrend
-3. **Absorption Detection**: Contrarian signals in ranging markets
-4. **Memory Check**: Pattern must have positive history (if available)
-5. **Safety Checks**: Cooldown, consecutive loss limits, volatility filter
+1. **Per-Market Analysis**: Each market analyzed independently
+2. **Timeframe Consensus**: 2+ timeframes must agree on direction
+3. **Trend Following**: Buy dips in uptrend, sell rallies in downtrend
+4. **Absorption Detection**: Contrarian signals in ranging markets
+5. **Shared Memory Check**: Pattern must have positive history across all markets
+6. **Safety Checks**: Cooldown, consecutive loss limits, volatility filter
 
-### Exit Logic
-- **Stop-Loss**: 0.8% against position
-- **Take-Profit**: 1.2% activates trailing
-- **Trailing Normal**: 0.25% from peak
-- **Trailing Danger**: 0.1% when market turns against
+### Exit Logic (Market-Specific)
+- **SOL-PERP**: Stop-Loss 0.8%, TP 1.2%, Trailing 0.25%
+- **BTC-PERP**: Stop-Loss 0.5%, TP 0.8%, Trailing 0.15%
+- **ETH-PERP**: Stop-Loss 0.6%, TP 1.0%, Trailing 0.20%
 
 ## Environment Variables
-- SOLANA_RPC_URL: Helius RPC endpoint
-- PRIVATE_KEY: Wallet private key (base58)
-- LEVERAGE: Trading leverage (default: 50)
-- SYMBOL: Market to trade (default: SOL-PERP)
-- TRADE_AMOUNT_USDC: Position size in USDC
-- SIMULATION_MODE: true for paper trading, false for real (default: true)
-- IMBALANCE_THRESHOLD: Order book imbalance threshold (default: 0.15)
-- VOLATILITY_THRESHOLD: Max volatility to trade (default: 0.5)
-- STOP_LOSS_PERCENT: Stop loss percentage (default: 0.8)
-- TAKE_PROFIT_ACTIVATION: TP activation percentage (default: 1.2)
-- TRAILING_NORMAL: Normal trailing distance (default: 0.25)
-- TRAILING_DANGER: Danger mode trailing (default: 0.1)
-- COOLDOWN_SECONDS: Seconds between trades (default: 120)
-- BASE_INTERVAL_MS: Base check interval in ms (default: 30000)
-- DASHBOARD_PORT: Web dashboard port (default: 3000)
+
+### Required
+- `SOLANA_RPC_URL`: Helius RPC endpoint
+- `PRIVATE_KEY`: Wallet private key (base58) - optional in simulation mode
+
+### Trading Settings
+- `LEVERAGE`: Trading leverage (default: 50)
+- `TRADE_AMOUNT_USDC`: Base position size in USDC per market (default: 10)
+- `ACTIVE_MARKETS`: Comma-separated list (default: SOL-PERP,BTC-PERP,ETH-PERP)
+- `SIMULATION_MODE`: true for paper trading, false for real (default: true)
+
+### Global Thresholds
+- `IMBALANCE_THRESHOLD`: Order book imbalance threshold (default: 0.15)
+- `VOLATILITY_THRESHOLD`: Max volatility to trade (default: 0.5%)
+- `COOLDOWN_SECONDS`: Seconds between trades per market (default: 120)
+- `BASE_INTERVAL_MS`: Base check interval in ms (default: 30000)
+
+### Market-Specific Risk (Optional)
+- `SOL_STOP_LOSS`: SOL stop loss % (default: 0.8)
+- `SOL_TAKE_PROFIT`: SOL TP activation % (default: 1.2)
+- `BTC_STOP_LOSS`: BTC stop loss % (default: 0.5)
+- `BTC_TAKE_PROFIT`: BTC TP activation % (default: 0.8)
+- `ETH_STOP_LOSS`: ETH stop loss % (default: 0.6)
+- `ETH_TAKE_PROFIT`: ETH TP activation % (default: 1.0)
+
+### Dashboard
+- `DASHBOARD_PORT`: Web dashboard port (default: 3000)
 
 ## Running the Bot
 
@@ -115,9 +108,16 @@ Adaptive perpetual futures trading bot using Drift Protocol on Solana mainnet. F
 5. npm start
 6. Open http://localhost:3000 for dashboard
 
-### VPS Deployment
+### VPS Deployment (with auto-restart)
 ```bash
 cd ~/Slb && git pull && cd slb-bot-futures && npm install && pkill -f "node index.js"; nohup npm start > bot.log 2>&1 & tail -f bot.log
+```
+
+### VPS with PM2 (recommended for production)
+```bash
+cd ~/Slb/slb-bot-futures && npm install
+pm2 start index.js --name "drift-bot" --restart-delay=5000 --max-restarts=100
+pm2 logs drift-bot
 ```
 
 ### Accessing Dashboard on VPS
@@ -126,8 +126,8 @@ Open in browser: `http://YOUR_VPS_IP:3000`
 ## Workflow: Simulation → Live
 
 1. **Start in simulation mode**: `SIMULATION_MODE=true`
-2. **Run for 1-2 days**: Watch dashboard, let bot learn patterns
-3. **Check results**: Look at simulated win rate and P&L
+2. **Run for 1-2 days**: Watch dashboard, let bot learn patterns across all markets
+3. **Check results**: Look at simulated win rate and P&L per market
 4. **If good (>55% win rate, positive P&L)**:
    - Stop bot
    - Change to `SIMULATION_MODE=false`
@@ -141,14 +141,16 @@ Open in browser: `http://YOUR_VPS_IP:3000`
 - dotenv: Environment variable management
 
 ## Recent Changes
+- 2026-02-02: v5 Multi-market support (SOL, BTC, ETH)
+- 2026-02-02: Shared pattern learning across markets
+- 2026-02-02: Market-specific risk settings (stop loss, take profit)
+- 2026-02-02: Enhanced dashboard with markets overview table
+- 2026-02-02: Position tracking per market
 - 2026-02-01: v4 complete rewrite with multi-timeframe system
 - 2026-02-01: Added simulation mode for paper trading
 - 2026-02-01: Added volatility filter to skip choppy markets
 - 2026-02-01: Smarter shadow trades that simulate SL/TP
 - 2026-02-01: Built live web dashboard with detailed stats
-- 2026-02-01: Adaptive learning analyzes memory on startup
-- 2026-02-01: Scaled timeframe points (no more 50-hour warmup)
-- 2026-02-01: Added expected value calculation to pattern analysis
 
 ## User Preferences
 - Always ask before modifying code
