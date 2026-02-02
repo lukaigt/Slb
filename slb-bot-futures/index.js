@@ -554,7 +554,8 @@ async function fetchPriceForMarket(symbol) {
         const bestBid = Array.isArray(orderBook.bids[0]) ? parseFloat(orderBook.bids[0][0]) : parseFloat(orderBook.bids[0].price);
         const bestAsk = Array.isArray(orderBook.asks[0]) ? parseFloat(orderBook.asks[0][0]) : parseFloat(orderBook.asks[0].price);
         
-        return (bestBid + bestAsk) / 2;
+        const midPrice = (bestBid + bestAsk) / 2;
+        return midPrice / 1e6;
     } catch (error) {
         return null;
     }
