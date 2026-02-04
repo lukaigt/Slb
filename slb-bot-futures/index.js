@@ -41,28 +41,28 @@ const MARKETS = {
     'SOL-PERP': {
         symbol: 'SOL-PERP',
         marketIndex: 0,
-        stopLoss: parseFloat(process.env.SOL_STOP_LOSS) || 0.8,
-        takeProfit: parseFloat(process.env.SOL_TAKE_PROFIT) || 1.2,
-        trailingNormal: 0.25,
-        trailingDanger: 0.1,
+        stopLoss: parseFloat(process.env.SOL_STOP_LOSS) || 1.5,
+        takeProfit: parseFloat(process.env.SOL_TAKE_PROFIT) || 2.5,
+        trailingNormal: 0.4,
+        trailingDanger: 0.2,
         positionMultiplier: 1.0
     },
     'BTC-PERP': {
         symbol: 'BTC-PERP',
         marketIndex: 1,
-        stopLoss: parseFloat(process.env.BTC_STOP_LOSS) || 0.5,
-        takeProfit: parseFloat(process.env.BTC_TAKE_PROFIT) || 0.8,
-        trailingNormal: 0.15,
-        trailingDanger: 0.08,
+        stopLoss: parseFloat(process.env.BTC_STOP_LOSS) || 1.0,
+        takeProfit: parseFloat(process.env.BTC_TAKE_PROFIT) || 1.8,
+        trailingNormal: 0.3,
+        trailingDanger: 0.15,
         positionMultiplier: 1.2
     },
     'ETH-PERP': {
         symbol: 'ETH-PERP',
         marketIndex: 2,
-        stopLoss: parseFloat(process.env.ETH_STOP_LOSS) || 0.6,
-        takeProfit: parseFloat(process.env.ETH_TAKE_PROFIT) || 1.0,
-        trailingNormal: 0.2,
-        trailingDanger: 0.1,
+        stopLoss: parseFloat(process.env.ETH_STOP_LOSS) || 1.2,
+        takeProfit: parseFloat(process.env.ETH_TAKE_PROFIT) || 2.0,
+        trailingNormal: 0.35,
+        trailingDanger: 0.18,
         positionMultiplier: 1.0
     }
 };
@@ -443,6 +443,11 @@ function recordShadowTrade(pattern, signalDirection, whySkipped, priceAtSignal, 
 function resolveShadowTrades(currentPrice, marketConfig, symbol) {
     if (!marketConfig) return;
     
+    const SHADOW_STOP_MULTIPLIER = 3.0;
+    const SHADOW_TP_MULTIPLIER = 2.0;
+    const shadowStopLoss = marketConfig.stopLoss * SHADOW_STOP_MULTIPLIER;
+    const shadowTakeProfit = marketConfig.takeProfit * SHADOW_TP_MULTIPLIER;
+    
     let updated = false;
     
     for (const shadow of tradeMemory.shadowTrades) {
@@ -469,18 +474,18 @@ function resolveShadowTrades(currentPrice, marketConfig, symbol) {
             const worstDrop = ((shadow.lowestPrice - shadow.priceAtSignal) / shadow.priceAtSignal) * 100;
             const bestGain = ((shadow.highestPrice - shadow.priceAtSignal) / shadow.priceAtSignal) * 100;
             
-            if (worstDrop <= -marketConfig.stopLoss) {
+            if (worstDrop <= -shadowStopLoss) {
                 result = 'LOSS';
-                exitReason = 'stop_loss';
-                profitPercent = -marketConfig.stopLoss;
-            } else if (bestGain >= marketConfig.takeProfit) {
+                exitReason = 'wide_stop_loss';
+                profitPercent = -shadowStopLoss;
+            } else if (bestGain >= shadowTakeProfit) {
                 const dropFromHigh = ((shadow.highestPrice - currentPrice) / shadow.highestPrice) * 100;
-                if (dropFromHigh >= marketConfig.trailingNormal || minutesPassed >= 15) {
+                if (dropFromHigh >= marketConfig.trailingNormal * 2 || minutesPassed >= 20) {
                     result = 'WIN';
-                    exitReason = 'trailing_tp';
-                    profitPercent = bestGain - marketConfig.trailingNormal;
+                    exitReason = 'wide_trailing_tp';
+                    profitPercent = bestGain - (marketConfig.trailingNormal * 2);
                 }
-            } else if (minutesPassed >= 30) {
+            } else if (minutesPassed >= 45) {
                 profitPercent = ((currentPrice - shadow.priceAtSignal) / shadow.priceAtSignal) * 100;
                 result = profitPercent > 0 ? 'WIN' : 'LOSS';
                 exitReason = 'timeout';
@@ -489,18 +494,18 @@ function resolveShadowTrades(currentPrice, marketConfig, symbol) {
             const worstRise = ((shadow.highestPrice - shadow.priceAtSignal) / shadow.priceAtSignal) * 100;
             const bestGain = ((shadow.priceAtSignal - shadow.lowestPrice) / shadow.priceAtSignal) * 100;
             
-            if (worstRise >= marketConfig.stopLoss) {
+            if (worstRise >= shadowStopLoss) {
                 result = 'LOSS';
-                exitReason = 'stop_loss';
-                profitPercent = -marketConfig.stopLoss;
-            } else if (bestGain >= marketConfig.takeProfit) {
+                exitReason = 'wide_stop_loss';
+                profitPercent = -shadowStopLoss;
+            } else if (bestGain >= shadowTakeProfit) {
                 const riseFromLow = ((currentPrice - shadow.lowestPrice) / shadow.lowestPrice) * 100;
-                if (riseFromLow >= marketConfig.trailingNormal || minutesPassed >= 15) {
+                if (riseFromLow >= marketConfig.trailingNormal * 2 || minutesPassed >= 20) {
                     result = 'WIN';
-                    exitReason = 'trailing_tp';
-                    profitPercent = bestGain - marketConfig.trailingNormal;
+                    exitReason = 'wide_trailing_tp';
+                    profitPercent = bestGain - (marketConfig.trailingNormal * 2);
                 }
-            } else if (minutesPassed >= 30) {
+            } else if (minutesPassed >= 45) {
                 profitPercent = ((shadow.priceAtSignal - currentPrice) / shadow.priceAtSignal) * 100;
                 result = profitPercent > 0 ? 'WIN' : 'LOSS';
                 exitReason = 'timeout';
@@ -513,9 +518,10 @@ function resolveShadowTrades(currentPrice, marketConfig, symbol) {
             shadow.hypotheticalProfit = profitPercent;
             shadow.hypotheticalExitReason = exitReason;
             shadow.resolved = true;
+            shadow.usedWiderStops = true;
             updated = true;
             
-            log(`[${symbol}] Shadow resolved: ${shadow.signalDirection} ${result} (${profitPercent.toFixed(2)}%) via ${exitReason}`);
+            log(`[${symbol}] Shadow (WIDE stops): ${shadow.signalDirection} ${result} (${profitPercent.toFixed(2)}%) via ${exitReason}`);
         }
     }
     
@@ -1190,7 +1196,7 @@ function generateDashboardHTML() {
     const uptime = formatUptime(Date.now() - botStartTime);
     const heartbeatAgo = Math.round((Date.now() - lastHeartbeat) / 1000);
     
-    const allTrades = tradeMemory.trades;
+    const allTrades = tradeMemory.trades.filter(t => Math.abs(t.profitPercent || 0) <= 100);
     const bestTrade = allTrades.length > 0 ? allTrades.reduce((best, t) => (!best || (t.profitPercent || 0) > (best.profitPercent || 0)) ? t : best, null) : null;
     const worstTrade = allTrades.length > 0 ? allTrades.reduce((worst, t) => (!worst || (t.profitPercent || 0) < (worst.profitPercent || 0)) ? t : worst, null) : null;
     

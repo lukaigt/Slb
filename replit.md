@@ -64,10 +64,16 @@ Adaptive perpetual futures trading bot using Drift Protocol on Solana mainnet. N
 5. **Shared Memory Check**: Pattern must have positive history across all markets
 6. **Safety Checks**: Cooldown, consecutive loss limits, volatility filter
 
-### Exit Logic (Market-Specific)
-- **SOL-PERP**: Stop-Loss 0.8%, TP 1.2%, Trailing 0.25%
-- **BTC-PERP**: Stop-Loss 0.5%, TP 0.8%, Trailing 0.15%
-- **ETH-PERP**: Stop-Loss 0.6%, TP 1.0%, Trailing 0.20%
+### Exit Logic (Market-Specific) - WIDENED v6
+- **SOL-PERP**: Stop-Loss 1.5%, TP 2.5%, Trailing 0.4%
+- **BTC-PERP**: Stop-Loss 1.0%, TP 1.8%, Trailing 0.3%
+- **ETH-PERP**: Stop-Loss 1.2%, TP 2.0%, Trailing 0.35%
+
+### Shadow Trade Learning (NEW)
+- Shadow trades use 3x WIDER stops than real trades
+- Purpose: Test "what would happen if I held longer"
+- Compares real exits vs hypothetical wider exits
+- Bot learns whether tight stops helped or hurt
 
 ## Environment Variables
 
