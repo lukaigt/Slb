@@ -15,6 +15,7 @@ const dotenv = require('dotenv');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const selfTuner = require('./self_tuner');
 
 dotenv.config();
 
@@ -796,16 +797,19 @@ function checkStopLoss(currentPrice, marketState, marketConfig, symbol) {
     const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
     if (!pos) return false;
 
+    const effectiveSL = selfTuner.getEffectiveStopLoss(symbol, marketState.volatility);
     const priceMovePercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
 
     if (pos === 'LONG') {
-        if (priceMovePercent <= -marketConfig.stopLoss) {
-            log(`[${symbol}] ✗ STOP LOSS (LONG): Entry=$${marketState.entryPrice.toFixed(4)}, Current=$${currentPrice.toFixed(4)}`);
+        if (priceMovePercent <= -effectiveSL) {
+            log(`[${symbol}] STOP LOSS (LONG): Entry=$${marketState.entryPrice.toFixed(4)}, Current=$${currentPrice.toFixed(4)}, SL=${effectiveSL.toFixed(2)}%`);
+            selfTuner.think(`[${symbol}] STOP LOSS hit on LONG at ${priceMovePercent.toFixed(2)}% | Entry: $${marketState.entryPrice.toFixed(2)} Exit: $${currentPrice.toFixed(2)} | Effective SL was ${effectiveSL.toFixed(2)}%`, 'exit');
             return true;
         }
     } else if (pos === 'SHORT') {
-        if (priceMovePercent >= marketConfig.stopLoss) {
-            log(`[${symbol}] ✗ STOP LOSS (SHORT): Entry=$${marketState.entryPrice.toFixed(4)}, Current=$${currentPrice.toFixed(4)}`);
+        if (priceMovePercent >= effectiveSL) {
+            log(`[${symbol}] STOP LOSS (SHORT): Entry=$${marketState.entryPrice.toFixed(4)}, Current=$${currentPrice.toFixed(4)}, SL=${effectiveSL.toFixed(2)}%`);
+            selfTuner.think(`[${symbol}] STOP LOSS hit on SHORT at ${priceMovePercent.toFixed(2)}% | Entry: $${marketState.entryPrice.toFixed(2)} Exit: $${currentPrice.toFixed(2)} | Effective SL was ${effectiveSL.toFixed(2)}%`, 'exit');
             return true;
         }
     }
@@ -817,28 +821,31 @@ function checkTrailingTakeProfit(currentPrice, marketState, marketConfig, symbol
     const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
     if (!pos) return false;
 
-    const trailingDistance = marketState.dangerMode ? marketConfig.trailingDanger : marketConfig.trailingNormal;
+    const effectiveTP = selfTuner.getEffectiveTakeProfit(symbol);
+    const trailingDistance = selfTuner.getEffectiveTrailing(symbol, marketState.dangerMode);
     let profitPercent = 0;
 
     if (pos === 'LONG') {
         profitPercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
         if (currentPrice > marketState.highestPriceSinceEntry) marketState.highestPriceSinceEntry = currentPrice;
-        if (profitPercent >= marketConfig.takeProfit) marketState.trailingStopActive = true;
+        if (profitPercent >= effectiveTP) marketState.trailingStopActive = true;
         if (marketState.trailingStopActive) {
             const dropFromHigh = ((marketState.highestPriceSinceEntry - currentPrice) / marketState.highestPriceSinceEntry) * 100;
             if (dropFromHigh >= trailingDistance) {
-                log(`[${symbol}] ✓ TRAILING TP (LONG): Profit=${profitPercent.toFixed(2)}%`);
+                log(`[${symbol}] TRAILING TP (LONG): Profit=${profitPercent.toFixed(2)}%`);
+                selfTuner.think(`[${symbol}] TRAILING TP on LONG | Profit: ${profitPercent.toFixed(2)}% | Entry: $${marketState.entryPrice.toFixed(2)} Exit: $${currentPrice.toFixed(2)} | TP target was ${effectiveTP.toFixed(2)}%`, 'exit');
                 return true;
             }
         }
     } else if (pos === 'SHORT') {
         profitPercent = ((marketState.entryPrice - currentPrice) / marketState.entryPrice) * 100;
         if (currentPrice < marketState.lowestPriceSinceEntry) marketState.lowestPriceSinceEntry = currentPrice;
-        if (profitPercent >= marketConfig.takeProfit) marketState.trailingStopActive = true;
+        if (profitPercent >= effectiveTP) marketState.trailingStopActive = true;
         if (marketState.trailingStopActive) {
             const riseFromLow = ((currentPrice - marketState.lowestPriceSinceEntry) / marketState.lowestPriceSinceEntry) * 100;
             if (riseFromLow >= trailingDistance) {
-                log(`[${symbol}] ✓ TRAILING TP (SHORT): Profit=${profitPercent.toFixed(2)}%`);
+                log(`[${symbol}] TRAILING TP (SHORT): Profit=${profitPercent.toFixed(2)}%`);
+                selfTuner.think(`[${symbol}] TRAILING TP on SHORT | Profit: ${profitPercent.toFixed(2)}% | Entry: $${marketState.entryPrice.toFixed(2)} Exit: $${currentPrice.toFixed(2)} | TP target was ${effectiveTP.toFixed(2)}%`, 'exit');
                 return true;
             }
         }
@@ -855,7 +862,8 @@ async function openPosition(direction, pattern, marketState, marketConfig, symbo
         marketState.simulatedPosition = direction;
     } else {
         try {
-            const tradeAmount = CONFIG.TRADE_AMOUNT_USDC * marketConfig.positionMultiplier;
+            const tunerMultiplier = marketState._sizeMultiplier || 1;
+            const tradeAmount = CONFIG.TRADE_AMOUNT_USDC * marketConfig.positionMultiplier * tunerMultiplier;
             const notionalValue = tradeAmount * CONFIG.LEVERAGE;
             const baseAssetAmountRaw = notionalValue / currentPrice;
             const baseAssetAmount = driftClient.convertToPerpPrecision(baseAssetAmountRaw);
@@ -1110,6 +1118,11 @@ async function processMarket(symbol) {
         if (pos) {
             marketState.dangerMode = checkDangerSignals(imbalance, fastAnalysis.mode, marketState, symbol);
             
+            const pnl = pos === 'LONG' 
+                ? ((price - marketState.entryPrice) / marketState.entryPrice * 100)
+                : ((marketState.entryPrice - price) / marketState.entryPrice * 100);
+            selfTuner.think(`[${symbol}] Monitoring ${pos} | Entry: $${marketState.entryPrice.toFixed(2)} | Now: $${price.toFixed(2)} | P&L: ${pnl.toFixed(2)}% | Danger: ${marketState.dangerMode}`, 'monitor');
+            
             if (checkStopLoss(price, marketState, marketConfig, symbol)) {
                 await closePosition('stop_loss', marketState, marketConfig, symbol);
                 return;
@@ -1120,6 +1133,11 @@ async function processMarket(symbol) {
                 return;
             }
         } else {
+            if (!selfTuner.isMarketEnabled(symbol)) {
+                selfTuner.think(`[${symbol}] Market paused by self-tuner - no new entries (monitoring continues)`, 'decision');
+                return;
+            }
+
             const consensus = getConsensusSignal(price, imbalance, marketState);
             
             let imbalanceType = 'neutral';
@@ -1137,16 +1155,30 @@ async function processMarket(symbol) {
             const decision = shouldOpenPosition(consensus, pattern, marketState);
             
             if (decision.open) {
-                log(`[${symbol}] ✓ ${decision.direction} SIGNAL: ${decision.reason} (confidence: ${(decision.confidence * 100).toFixed(0)}%)`);
-                await openPosition(decision.direction, pattern, marketState, marketConfig, symbol);
+                const tunerDecision = selfTuner.shouldTrade(symbol, decision.direction, pattern.patternKey, decision.confidence, marketState);
+                
+                if (tunerDecision.allowed) {
+                    log(`[${symbol}] ${decision.direction} SIGNAL: ${decision.reason} (confidence: ${(decision.confidence * 100).toFixed(0)}%) [size: x${tunerDecision.sizeMultiplier.toFixed(2)}]`);
+                    selfTuner.think(`[${symbol}] OPENING ${decision.direction} | Price: $${price.toFixed(2)} | Pattern: ${pattern.patternKey} | Confidence: ${(decision.confidence * 100).toFixed(0)}% | Size: x${tunerDecision.sizeMultiplier.toFixed(2)} | Reasons: ${tunerDecision.reasons.join('; ')}`, 'entry');
+                    marketState._sizeMultiplier = tunerDecision.sizeMultiplier;
+                    await openPosition(decision.direction, pattern, marketState, marketConfig, symbol);
+                } else {
+                    selfTuner.think(`[${symbol}] BLOCKED ${decision.direction} by self-tuner: ${tunerDecision.reasons.join('; ')}`, 'blocked');
+                    recordShadowTrade(pattern, consensus.signal, `tuner: ${tunerDecision.reasons[0]}`, price, symbol);
+                }
             } else if (decision.hasSignal) {
+                selfTuner.think(`[${symbol}] Signal skipped: ${decision.reason} | Pattern: ${pattern.patternKey}`, 'skip');
                 recordShadowTrade(pattern, consensus.signal, decision.reason, price, symbol);
+            } else {
+                selfTuner.think(`[${symbol}] No signal: ${consensus.reason || decision.reason} | Mode: ${fastAnalysis.mode} | Vol: ${marketState.volatility.toFixed(2)}%`, 'scan');
             }
         }
     } catch (error) {
         log(`[${symbol}] Trading loop error: ${error.message}`);
     }
 }
+
+let tuningTradeCount = 0;
 
 async function tradingLoop() {
     lastHeartbeat = Date.now();
@@ -1160,6 +1192,17 @@ async function tradingLoop() {
         }
         
         resolveShadowTradesAll();
+        
+        const currentTradeCount = tradeMemory.trades.length;
+        const tunerConfig = selfTuner.getConfig();
+        if (currentTradeCount >= tuningTradeCount + tunerConfig.tuningInterval) {
+            selfTuner.think('Running self-tuning cycle...', 'tuning');
+            const changes = selfTuner.runFullTuning(tradeMemory.trades, tradeMemory.shadowTrades, tradeMemory.patternStats, marketStates);
+            tuningTradeCount = currentTradeCount;
+            if (changes > 0) {
+                log(`Self-tuner: ${changes} adjustments made`);
+            }
+        }
     } catch (error) {
         log(`Trading loop error: ${error.message}`);
     }
@@ -1178,7 +1221,7 @@ function resolveShadowTradesAll() {
 function generateDashboardHTML() {
     const stats = tradeMemory.sessionStats;
     
-    const recentTrades = tradeMemory.trades.slice(-20).reverse();
+    const recentTrades = tradeMemory.trades.slice(-25).reverse();
     const recentShadows = tradeMemory.shadowTrades.slice(-10).reverse();
     
     const winRate = stats.totalTrades > 0 ? (stats.wins / stats.totalTrades * 100).toFixed(1) : '0.0';
@@ -1203,258 +1246,213 @@ function generateDashboardHTML() {
     const anyRpcConnected = ACTIVE_MARKETS.some(s => botStatus.markets[s]?.rpcConnected);
     const anyDlobConnected = ACTIVE_MARKETS.some(s => botStatus.markets[s]?.dlobConnected);
 
+    const tunerConfig = selfTuner.getConfig();
+    const thinkingLog = selfTuner.getThinkingLog();
+    const tuningChanges = selfTuner.getTuningLog();
+
+    const categoryColors = {
+        entry: '#00ff88', exit: '#ff4444', monitor: '#00d4ff', decision: '#ffaa00',
+        blocked: '#ff6600', skip: '#888', scan: '#555', tuning: '#aa44ff',
+        stop_loss: '#ff4444', take_profit: '#00ff88', pattern: '#00d4ff',
+        timing: '#ffaa00', streak: '#ff6600', market_selection: '#aa44ff',
+        volatility: '#ff8800', position_size: '#00aaff', cooldown: '#aaaaaa',
+        system: '#666', error: '#ff0000', general: '#888'
+    };
+
     return `<!DOCTYPE html>
 <html>
 <head>
-    <title>Trading Bot Dashboard</title>
+    <title>Drift Trading Bot v6 - Self-Tuning</title>
+    <meta charset="UTF-8">
     <meta http-equiv="refresh" content="5">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
-        .container { max-width: 1400px; margin: 0 auto; }
-        h1 { color: #00d4ff; margin-bottom: 20px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-        .card { background: #16213e; border-radius: 10px; padding: 20px; }
-        .card h2 { color: #00d4ff; font-size: 1.1em; margin-bottom: 15px; border-bottom: 1px solid #333; padding-bottom: 10px; }
-        .stat-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #222; }
-        .stat-label { color: #888; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0d1117; color: #e6edf3; padding: 15px; font-size: 14px; }
+        .container { max-width: 1600px; margin: 0 auto; }
+        h1 { color: #58a6ff; margin-bottom: 15px; font-size: 1.4em; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; margin-bottom: 15px; }
+        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 15px; }
+        .card h2 { color: #58a6ff; font-size: 1em; margin-bottom: 12px; border-bottom: 1px solid #30363d; padding-bottom: 8px; }
+        .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #21262d; }
+        .stat-label { color: #8b949e; font-size: 0.9em; }
         .stat-value { font-weight: bold; }
-        .positive { color: #00ff88; }
-        .negative { color: #ff4444; }
-        .neutral { color: #ffaa00; }
-        .sim-mode { background: #0066cc; color: white; padding: 5px 15px; border-radius: 20px; display: inline-block; }
-        .live-mode { background: #00aa44; color: white; padding: 5px 15px; border-radius: 20px; display: inline-block; }
-        table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
-        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #333; }
-        th { color: #00d4ff; }
-        .trade-win { color: #00ff88; }
-        .trade-loss { color: #ff4444; }
-        .timeframe-card { display: flex; flex-direction: column; gap: 5px; }
-        .tf-row { display: flex; justify-content: space-between; padding: 5px; background: #1a1a2e; border-radius: 5px; }
-        .signal-long { color: #00ff88; font-weight: bold; }
-        .signal-short { color: #ff4444; font-weight: bold; }
-        .signal-none { color: #666; }
-        .health-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
-        .health-green { background: #00ff88; box-shadow: 0 0 6px #00ff88; }
-        .health-red { background: #ff4444; box-shadow: 0 0 6px #ff4444; }
-        .health-yellow { background: #ffaa00; box-shadow: 0 0 6px #ffaa00; }
-        .gauge-container { background: #1a1a2e; border-radius: 10px; height: 20px; overflow: hidden; margin: 10px 0; }
-        .gauge-fill { height: 100%; transition: width 0.3s; }
-        .gauge-green { background: linear-gradient(90deg, #00ff88, #00cc66); }
-        .gauge-yellow { background: linear-gradient(90deg, #ffaa00, #ff8800); }
-        .gauge-red { background: linear-gradient(90deg, #ff4444, #cc0000); }
-        .alert-item { padding: 8px; margin: 5px 0; border-radius: 5px; font-size: 0.85em; }
-        .alert-warning { background: rgba(255, 170, 0, 0.2); border-left: 3px solid #ffaa00; }
-        .alert-error { background: rgba(255, 68, 68, 0.2); border-left: 3px solid #ff4444; }
-        .alert-success { background: rgba(0, 255, 136, 0.2); border-left: 3px solid #00ff88; }
-        .best-worst { display: flex; gap: 20px; }
-        .best-worst > div { flex: 1; padding: 10px; border-radius: 8px; background: #1a1a2e; }
+        .positive { color: #3fb950; }
+        .negative { color: #f85149; }
+        .neutral { color: #d29922; }
+        .sim-mode { background: #1f6feb; color: white; padding: 3px 12px; border-radius: 12px; display: inline-block; font-size: 0.85em; }
+        .live-mode { background: #238636; color: white; padding: 3px 12px; border-radius: 12px; display: inline-block; font-size: 0.85em; }
+        .caution-badge { background: #9e6a03; color: white; padding: 3px 12px; border-radius: 12px; display: inline-block; font-size: 0.85em; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+        th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #21262d; }
+        th { color: #58a6ff; font-weight: 600; }
+        .trade-win { color: #3fb950; }
+        .trade-loss { color: #f85149; }
+        .health-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+        .health-green { background: #3fb950; }
+        .health-red { background: #f85149; }
+        .best-worst { display: flex; gap: 15px; }
+        .best-worst > div { flex: 1; padding: 10px; border-radius: 6px; background: #0d1117; }
+        .thinking-entry { padding: 6px 10px; margin: 3px 0; border-radius: 4px; font-size: 0.82em; border-left: 3px solid #30363d; background: #0d1117; word-break: break-word; }
+        .thinking-time { color: #484f58; font-size: 0.8em; margin-right: 8px; }
+        .tuning-entry { padding: 6px 10px; margin: 3px 0; border-radius: 4px; font-size: 0.82em; background: #0d1117; border-left: 3px solid #8b5cf6; }
+        .full-width { grid-column: 1 / -1; }
+        .disabled-tag { background: #da3633; color: white; padding: 1px 6px; border-radius: 3px; font-size: 0.75em; }
+        .enabled-tag { background: #238636; color: white; padding: 1px 6px; border-radius: 3px; font-size: 0.75em; }
+        .config-val { color: #58a6ff; font-family: monospace; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🤖 Solana Trading Bot Dashboard</h1>
+        <h1>Drift Trading Bot v6 - Self-Tuning Engine</h1>
         
         <div class="grid">
             <div class="card">
                 <h2>System Health</h2>
-                <div class="stat-row">
-                    <span class="stat-label">Uptime</span>
-                    <span class="stat-value">${uptime}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Last Heartbeat</span>
-                    <span class="stat-value ${heartbeatAgo > 60 ? 'negative' : 'positive'}">${heartbeatAgo}s ago</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label"><span class="health-dot ${anyRpcConnected ? 'health-green' : 'health-red'}"></span>RPC</span>
-                    <span class="stat-value">${anyRpcConnected ? 'Connected' : 'Disconnected'}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label"><span class="health-dot ${botStatus.driftConnected ? 'health-green' : 'health-red'}"></span>Drift</span>
-                    <span class="stat-value">${botStatus.driftConnected ? 'Connected' : 'Disconnected'}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label"><span class="health-dot ${anyDlobConnected ? 'health-green' : 'health-red'}"></span>DLOB</span>
-                    <span class="stat-value">${anyDlobConnected ? 'Connected' : 'Disconnected'}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Active Markets</span>
-                    <span class="stat-value">${ACTIVE_MARKETS.length}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Mode</span>
-                    <span class="${CONFIG.SIMULATION_MODE ? 'sim-mode' : 'live-mode'}">${CONFIG.SIMULATION_MODE ? '🔵 SIM' : '🟢 LIVE'}</span>
-                </div>
+                <div class="stat-row"><span class="stat-label">Uptime</span><span class="stat-value">${uptime}</span></div>
+                <div class="stat-row"><span class="stat-label">Heartbeat</span><span class="stat-value ${heartbeatAgo > 60 ? 'negative' : 'positive'}">${heartbeatAgo}s ago</span></div>
+                <div class="stat-row"><span class="stat-label"><span class="health-dot ${anyRpcConnected ? 'health-green' : 'health-red'}"></span>RPC</span><span class="stat-value">${anyRpcConnected ? 'OK' : 'DOWN'}</span></div>
+                <div class="stat-row"><span class="stat-label"><span class="health-dot ${botStatus.driftConnected ? 'health-green' : 'health-red'}"></span>Drift</span><span class="stat-value">${botStatus.driftConnected ? 'OK' : 'DOWN'}</span></div>
+                <div class="stat-row"><span class="stat-label"><span class="health-dot ${anyDlobConnected ? 'health-green' : 'health-red'}"></span>DLOB</span><span class="stat-value">${anyDlobConnected ? 'OK' : 'DOWN'}</span></div>
+                <div class="stat-row"><span class="stat-label">Mode</span><span>${CONFIG.SIMULATION_MODE ? '<span class="sim-mode">SIM</span>' : '<span class="live-mode">LIVE</span>'} ${tunerConfig.streaks.cautionMode ? '<span class="caution-badge">CAUTION</span>' : ''}</span></div>
+                <div class="stat-row"><span class="stat-label">Self-Tuner</span><span class="stat-value positive">Active</span></div>
+                <div class="stat-row"><span class="stat-label">Last Tuning</span><span class="stat-value" style="font-size:0.8em;">${tunerConfig.lastTuningRun ? new Date(tunerConfig.lastTuningRun).toLocaleTimeString() : 'Pending'}</span></div>
             </div>
             
             <div class="card" style="grid-column: span 2;">
                 <h2>Markets Overview</h2>
                 <table>
-                    <thead>
-                        <tr>
-                            <th>Market</th>
-                            <th>Price</th>
-                            <th>Mode</th>
-                            <th>Imbalance</th>
-                            <th>Volatility</th>
-                            <th>Position</th>
-                            <th>Data</th>
-                        </tr>
-                    </thead>
+                    <thead><tr><th>Market</th><th>Price</th><th>Mode</th><th>Imbalance</th><th>Vol</th><th>Position</th><th>Entry</th><th>P&L</th><th>SL/TP</th><th>Status</th></tr></thead>
                     <tbody>
                         ${ACTIVE_MARKETS.map(symbol => {
                             const m = botStatus.markets[symbol] || {};
-                            const marketConfig = MARKETS[symbol] || {};
-                            const marketState = marketStates[symbol] || {};
+                            const ms = marketStates[symbol] || {};
+                            const tc = tunerConfig.markets[symbol] || {};
                             const pos = m.position;
-                            const volPercent = Math.min(100, ((m.volatility || 0) / (CONFIG.VOLATILITY_THRESHOLD * 2)) * 100);
-                            const volClass = volPercent < 50 ? 'positive' : volPercent < 75 ? 'neutral' : 'negative';
-                            let pnl = '';
-                            if (pos && marketState.entryPrice > 0 && m.price > 0) {
-                                const pnlVal = pos === 'LONG' 
-                                    ? ((m.price - marketState.entryPrice) / marketState.entryPrice * 100)
-                                    : ((marketState.entryPrice - m.price) / marketState.entryPrice * 100);
-                                pnl = ` (${pnlVal.toFixed(2)}%)`;
+                            const volClass = (m.volatility || 0) < 0.2 ? 'positive' : (m.volatility || 0) < 0.4 ? 'neutral' : 'negative';
+                            let pnlVal = 0;
+                            if (pos && ms.entryPrice > 0 && m.price > 0) {
+                                pnlVal = pos === 'LONG' 
+                                    ? ((m.price - ms.entryPrice) / ms.entryPrice * 100)
+                                    : ((ms.entryPrice - m.price) / ms.entryPrice * 100);
                             }
+                            const effectiveSL = selfTuner.getEffectiveStopLoss(symbol, m.volatility || 0);
+                            const effectiveTP = selfTuner.getEffectiveTakeProfit(symbol);
                             return `<tr>
                                 <td><strong>${symbol}</strong></td>
                                 <td>$${(m.price || 0).toFixed(2)}</td>
                                 <td class="${m.mode === 'UPTREND' ? 'positive' : m.mode === 'DOWNTREND' ? 'negative' : 'neutral'}">${m.mode || 'BUILDING'}</td>
                                 <td class="${(m.imbalance || 0) > 0 ? 'positive' : 'negative'}">${((m.imbalance || 0) * 100).toFixed(1)}%</td>
                                 <td class="${volClass}">${(m.volatility || 0).toFixed(2)}%</td>
-                                <td class="${pos === 'LONG' ? 'positive' : pos === 'SHORT' ? 'negative' : ''}">${pos || 'NONE'}${pnl}</td>
-                                <td>${m.dataPoints || 0}/${TIMEFRAMES.fast.pointsNeeded}</td>
+                                <td class="${pos === 'LONG' ? 'positive' : pos === 'SHORT' ? 'negative' : ''}">${pos || 'NONE'}</td>
+                                <td>${pos ? '$' + ms.entryPrice.toFixed(2) : '-'}</td>
+                                <td class="${pnlVal >= 0 ? 'positive' : 'negative'}">${pos ? pnlVal.toFixed(2) + '%' : '-'}</td>
+                                <td><span class="config-val">${effectiveSL.toFixed(1)}/${effectiveTP.toFixed(1)}</span></td>
+                                <td>${tc.enabled !== false ? '<span class="enabled-tag">ON</span>' : '<span class="disabled-tag">PAUSED</span>'}</td>
                             </tr>`;
                         }).join('')}
                     </tbody>
                 </table>
             </div>
-            
+        </div>
+
+        <div class="grid">
             <div class="card">
-                <h2>Session Statistics</h2>
-                <div class="stat-row">
-                    <span class="stat-label">Real Trades</span>
-                    <span class="stat-value">${stats.totalTrades}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Real Wins/Losses</span>
-                    <span class="stat-value"><span class="positive">${stats.wins}</span> / <span class="negative">${stats.losses}</span></span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Real Win Rate</span>
-                    <span class="stat-value ${parseFloat(winRate) >= 50 ? 'positive' : 'negative'}">${winRate}%</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Real P&L</span>
-                    <span class="stat-value ${stats.totalProfitPercent >= 0 ? 'positive' : 'negative'}">${stats.totalProfitPercent.toFixed(2)}%</span>
-                </div>
-                <div class="stat-row" style="margin-top: 10px; border-top: 2px solid #444; padding-top: 10px;">
-                    <span class="stat-label">Simulated Trades</span>
-                    <span class="stat-value">${stats.simulatedTrades}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Sim Wins/Losses</span>
-                    <span class="stat-value"><span class="positive">${stats.simulatedWins}</span> / <span class="negative">${stats.simulatedLosses}</span></span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Sim Win Rate</span>
-                    <span class="stat-value ${parseFloat(simWinRate) >= 50 ? 'positive' : 'negative'}">${simWinRate}%</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Sim P&L</span>
-                    <span class="stat-value ${stats.simulatedProfitPercent >= 0 ? 'positive' : 'negative'}">${stats.simulatedProfitPercent.toFixed(2)}%</span>
-                </div>
+                <h2>Session Stats</h2>
+                <div class="stat-row"><span class="stat-label">Total Trades</span><span class="stat-value">${stats.simulatedTrades + stats.totalTrades}</span></div>
+                <div class="stat-row"><span class="stat-label">Wins / Losses</span><span class="stat-value"><span class="positive">${stats.simulatedWins + stats.wins}</span> / <span class="negative">${stats.simulatedLosses + stats.losses}</span></span></div>
+                <div class="stat-row"><span class="stat-label">Win Rate</span><span class="stat-value ${parseFloat(simWinRate) >= 50 ? 'positive' : 'negative'}">${(stats.simulatedTrades + stats.totalTrades) > 0 ? (((stats.simulatedWins + stats.wins) / (stats.simulatedTrades + stats.totalTrades)) * 100).toFixed(1) : '0.0'}%</span></div>
+                <div class="stat-row"><span class="stat-label">P&L</span><span class="stat-value ${(stats.simulatedProfitPercent + stats.totalProfitPercent) >= 0 ? 'positive' : 'negative'}">${(stats.simulatedProfitPercent + stats.totalProfitPercent).toFixed(2)}%</span></div>
+                <div class="stat-row"><span class="stat-label">Daily P&L</span><span class="stat-value ${(tunerConfig.streaks.dailyLossToday || 0) >= 0 ? 'positive' : 'negative'}">${(tunerConfig.streaks.dailyLossToday || 0).toFixed(2)}%</span></div>
+                <div class="stat-row"><span class="stat-label">Patterns Learned</span><span class="stat-value">${Object.keys(tradeMemory.patternStats).length}</span></div>
+                <div class="stat-row"><span class="stat-label">Shadow Trades</span><span class="stat-value">${tradeMemory.shadowTrades.length}</span></div>
+                <div class="stat-row"><span class="stat-label">Disabled Patterns</span><span class="stat-value ${tunerConfig.patterns.disabledPatterns.length > 0 ? 'neutral' : ''}">${tunerConfig.patterns.disabledPatterns.length}</span></div>
             </div>
-            
-            <div class="card">
-                <h2>All-Time Memory</h2>
-                <div class="stat-row">
-                    <span class="stat-label">Total Trades</span>
-                    <span class="stat-value">${tradeMemory.trades.length}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Shadow Trades</span>
-                    <span class="stat-value">${tradeMemory.shadowTrades.length}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Patterns Learned</span>
-                    <span class="stat-value">${Object.keys(tradeMemory.patternStats).length}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Open Positions</span>
-                    <span class="stat-value">${ACTIVE_MARKETS.filter(s => botStatus.markets[s]?.position).length}</span>
-                </div>
-            </div>
-            
+
             <div class="card">
                 <h2>Best / Worst Trade</h2>
                 <div class="best-worst">
                     <div>
-                        <div style="color: #00ff88; font-weight: bold; margin-bottom: 5px;">Best Trade</div>
-                        ${bestTrade ? `
-                            <div style="font-size: 1.5em; color: #00ff88;">+${(bestTrade.profitPercent || 0).toFixed(2)}%</div>
-                            <div style="font-size: 0.85em; color: #888;">${bestTrade.direction} | ${bestTrade.patternKey || 'N/A'}</div>
-                        ` : '<div style="color: #666;">No trades yet</div>'}
+                        <div style="color: #3fb950; font-weight: bold; margin-bottom: 5px;">Best</div>
+                        ${bestTrade ? `<div style="font-size: 1.3em; color: #3fb950;">+${(bestTrade.profitPercent || 0).toFixed(2)}%</div><div style="font-size: 0.8em; color: #8b949e;">${bestTrade.direction} | ${bestTrade.symbol || ''}</div>` : '<div style="color: #484f58;">No trades</div>'}
                     </div>
                     <div>
-                        <div style="color: #ff4444; font-weight: bold; margin-bottom: 5px;">Worst Trade</div>
-                        ${worstTrade ? `
-                            <div style="font-size: 1.5em; color: #ff4444;">${(worstTrade.profitPercent || 0).toFixed(2)}%</div>
-                            <div style="font-size: 0.85em; color: #888;">${worstTrade.direction} | ${worstTrade.patternKey || 'N/A'}</div>
-                        ` : '<div style="color: #666;">No trades yet</div>'}
+                        <div style="color: #f85149; font-weight: bold; margin-bottom: 5px;">Worst</div>
+                        ${worstTrade ? `<div style="font-size: 1.3em; color: #f85149;">${(worstTrade.profitPercent || 0).toFixed(2)}%</div><div style="font-size: 0.8em; color: #8b949e;">${worstTrade.direction} | ${worstTrade.symbol || ''}</div>` : '<div style="color: #484f58;">No trades</div>'}
                     </div>
                 </div>
             </div>
-            
+
             <div class="card">
-                <h2>Alert Log</h2>
-                ${alertLog.length > 0 ? alertLog.slice(0, 5).map(a => `
-                    <div class="alert-item alert-${a.type}">
-                        <span style="color: #666; font-size: 0.8em;">${new Date(a.time).toLocaleTimeString()}</span>
-                        ${a.message}
-                    </div>
-                `).join('') : '<div style="color: #666; text-align: center; padding: 20px;">No alerts yet - system running smoothly</div>'}
+                <h2>Self-Tuner Config</h2>
+                <div class="stat-row"><span class="stat-label">Cooldown</span><span class="config-val">${(tunerConfig.cooldown.currentCooldownMs / 1000).toFixed(0)}s</span></div>
+                <div class="stat-row"><span class="stat-label">Post-Loss CD</span><span class="config-val">x${tunerConfig.streaks.postLossCooldownMultiplier.toFixed(1)}</span></div>
+                <div class="stat-row"><span class="stat-label">Post-Win CD</span><span class="config-val">x${tunerConfig.streaks.postWinCooldownMultiplier.toFixed(1)}</span></div>
+                <div class="stat-row"><span class="stat-label">Size Reduction</span><span class="config-val">${tunerConfig.positioning.lossReductionActive ? 'ACTIVE (x' + tunerConfig.positioning.postLossSizeReduction + ')' : 'OFF'}</span></div>
+                <div class="stat-row"><span class="stat-label">Blocked Hours</span><span class="config-val">${tunerConfig.timing.blockedHours.length > 0 ? tunerConfig.timing.blockedHours.join(',') + ' UTC' : 'None'}</span></div>
+                <div class="stat-row"><span class="stat-label">Caution Mode</span><span class="${tunerConfig.streaks.cautionMode ? 'neutral' : 'positive'}">${tunerConfig.streaks.cautionMode ? 'ON (70%+ only)' : 'OFF'}</span></div>
             </div>
         </div>
-        
-        <div class="grid" style="margin-top: 20px;">
-            <div class="card" style="grid-column: span 2;">
+
+        <div class="grid">
+            <div class="card full-width">
+                <h2>Bot Thinking (Live Decisions)</h2>
+                <div style="max-height: 300px; overflow-y: auto;">
+                    ${thinkingLog.slice(0, 30).map(t => {
+                        const color = categoryColors[t.category] || '#888';
+                        return `<div class="thinking-entry" style="border-left-color: ${color};">
+                            <span class="thinking-time">${new Date(t.time).toLocaleTimeString()}</span>
+                            <span style="color: ${color}; font-weight: 600; text-transform: uppercase; font-size: 0.75em;">[${t.category}]</span>
+                            ${t.message}
+                        </div>`;
+                    }).join('') || '<div style="color: #484f58; padding: 20px; text-align: center;">Waiting for first decisions...</div>'}
+                </div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <div class="card full-width">
                 <h2>Top Performing Patterns</h2>
                 <table>
-                    <tr><th>Pattern</th><th>Win Rate</th><th>Trades</th></tr>
-                    ${topPatterns.slice(0, 8).map(p => `
-                        <tr>
+                    <tr><th>Pattern</th><th>Win Rate</th><th>Trades</th><th>Status</th></tr>
+                    ${topPatterns.slice(0, 10).map(p => {
+                        const isDisabled = tunerConfig.patterns.disabledPatterns.includes(p.pattern);
+                        const dirOverride = tunerConfig.patterns.patternDirectionOverride[p.pattern];
+                        return `<tr>
                             <td>${p.pattern}</td>
                             <td class="${p.winRate >= 55 ? 'positive' : p.winRate < 45 ? 'negative' : ''}">${p.winRate.toFixed(1)}%</td>
                             <td>${p.count}</td>
-                        </tr>
-                    `).join('')}
+                            <td>${isDisabled ? '<span class="disabled-tag">DISABLED</span>' : dirOverride ? '<span class="caution-badge">' + dirOverride + '</span>' : '<span class="enabled-tag">ACTIVE</span>'}</td>
+                        </tr>`;
+                    }).join('')}
                 </table>
             </div>
-            
-            <div class="card" style="grid-column: span 2;">
-                <h2>Recent Trades</h2>
+        </div>
+        
+        <div class="grid">
+            <div class="card full-width">
+                <h2>Recent Trades (with Entry/Exit Prices)</h2>
                 <table>
-                    <tr><th>Time</th><th>Market</th><th>Type</th><th>Direction</th><th>Result</th><th>P&L</th><th>Exit</th></tr>
+                    <tr><th>Time</th><th>Market</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Result</th><th>P&L</th><th>Exit Reason</th><th>Pattern</th></tr>
                     ${recentTrades.map(t => `
                         <tr>
                             <td>${new Date(t.timestamp).toLocaleTimeString()}</td>
                             <td>${t.symbol || 'SOL-PERP'}</td>
-                            <td>${t.type === 'simulated' ? '🔵' : '🟢'}</td>
                             <td class="${t.direction === 'LONG' ? 'positive' : 'negative'}">${t.direction}</td>
+                            <td>$${(t.entryPrice || 0).toFixed(2)}</td>
+                            <td>$${(t.exitPrice || 0).toFixed(2)}</td>
                             <td class="${t.result === 'WIN' ? 'trade-win' : 'trade-loss'}">${t.result}</td>
-                            <td class="${t.profitPercent >= 0 ? 'positive' : 'negative'}">${t.profitPercent?.toFixed(2) || 0}%</td>
+                            <td class="${(t.profitPercent || 0) >= 0 ? 'positive' : 'negative'}">${(t.profitPercent || 0).toFixed(2)}%</td>
                             <td>${t.exitReason || '-'}</td>
+                            <td style="font-size: 0.8em; color: #8b949e;">${t.patternKey || '-'}</td>
                         </tr>
                     `).join('')}
                 </table>
             </div>
         </div>
         
-        <div class="grid" style="margin-top: 20px;">
-            <div class="card" style="grid-column: span 2;">
-                <h2>Recent Shadow Trades (Signals Not Taken)</h2>
+        <div class="grid">
+            <div class="card full-width">
+                <h2>Shadow Trades (Wider Stops Test)</h2>
                 <table>
                     <tr><th>Time</th><th>Market</th><th>Signal</th><th>Why Skipped</th><th>Would Have</th><th>Result</th></tr>
                     ${recentShadows.map(s => `
@@ -1463,15 +1461,29 @@ function generateDashboardHTML() {
                             <td>${s.symbol || 'SOL-PERP'}</td>
                             <td class="${s.signalDirection === 'LONG' ? 'positive' : 'negative'}">${s.signalDirection}</td>
                             <td>${s.whySkipped}</td>
-                            <td>${s.resolved ? (s.hypotheticalProfit?.toFixed(2) || 0) + '%' : 'Pending...'}</td>
+                            <td>${s.resolved ? (s.hypotheticalProfit || 0).toFixed(2) + '%' : 'Pending...'}</td>
                             <td class="${s.hypotheticalResult === 'WIN' ? 'trade-win' : s.hypotheticalResult === 'LOSS' ? 'trade-loss' : ''}">${s.hypotheticalResult || '-'}</td>
                         </tr>
                     `).join('')}
                 </table>
             </div>
         </div>
+
+        <div class="grid">
+            <div class="card full-width">
+                <h2>Self-Tuning Changes Log</h2>
+                <div style="max-height: 200px; overflow-y: auto;">
+                    ${tuningChanges.slice(0, 20).map(t => `
+                        <div class="tuning-entry">
+                            <span class="thinking-time">${new Date(t.timestamp).toLocaleTimeString()}</span>
+                            <strong>${t.action}</strong>: ${t.before} -> ${t.after} | ${t.reason}
+                        </div>
+                    `).join('') || '<div style="color: #484f58; padding: 15px; text-align: center;">No tuning changes yet - bot needs more trades</div>'}
+                </div>
+            </div>
+        </div>
         
-        <p style="text-align: center; margin-top: 20px; color: #666;">Auto-refreshes every 5 seconds | Base interval: ${CONFIG.BASE_INTERVAL_MS/1000}s</p>
+        <p style="text-align: center; margin-top: 15px; color: #484f58; font-size: 0.85em;">Auto-refreshes every 5 seconds | Self-tuning every ${tunerConfig.tuningInterval} trades | Base interval: ${CONFIG.BASE_INTERVAL_MS/1000}s</p>
     </div>
 </body>
 </html>`;
@@ -1496,7 +1508,7 @@ function startDashboard() {
                 }
             }));
         } else {
-            res.writeHead(200, { 'Content-Type': 'text/html' });
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate' });
             res.end(generateDashboardHTML());
         }
     });
@@ -1550,6 +1562,8 @@ async function main() {
     }
 
     loadMemory();
+    selfTuner.loadConfig();
+    selfTuner.think('Bot starting up - loading self-tuning config', 'system');
     startDashboard();
 
     try {

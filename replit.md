@@ -1,85 +1,90 @@
-# Solana Futures Trading Bot v5 (Drift Protocol - Multi-Market)
+# Solana Futures Trading Bot v6 (Drift Protocol - Self-Tuning)
 
 ## Overview
-Adaptive perpetual futures trading bot using Drift Protocol on Solana mainnet. Now supports **multiple markets simultaneously** (SOL, BTC, ETH) with shared pattern learning and market-specific risk settings. Features multi-timeframe analysis, simulation mode for paper trading, volatility filtering, memory-based learning, and a live web dashboard.
+Self-adaptive perpetual futures trading bot using Drift Protocol on Solana mainnet. Trades **multiple markets simultaneously** (SOL, BTC, ETH) with a **self-tuning engine** that automatically adjusts stop losses, take profits, pattern selections, cooldowns, position sizing, and timing based on real performance data. The bot writes to its own configuration file (bot_config.json) and makes all decisions visible on a live dashboard.
 
 ## Project Structure
 ```
-├── slb-bot-futures/          # Multi-market Futures trading bot v5
-│   ├── index.js              # Main bot logic with dashboard
-│   ├── package.json          # Node.js dependencies
-│   ├── .env.example          # Environment variable template
-│   ├── trade_memory.json     # Trade history & pattern stats (gitignored)
-│   └── .gitignore            # Git ignore rules
-│
-├── old_spot_bot/             # OLD: Archived spot trading bot
-│   ├── index.js              # Kraken WS + Jupiter swap logic
-│   ├── package.json          # Old dependencies
-│   └── .env.example          # Old config template
+slb-bot-futures/
+  index.js              # Main bot logic + dashboard (v6)
+  self_tuner.js          # Self-tuning engine (63 rules, 9 categories)
+  bot_config.json        # Auto-generated config (written by self-tuner)
+  trade_memory.json      # Trade history & pattern stats (gitignored)
+  package.json           # Node.js dependencies
+  .env.example           # Environment variable template
+  .gitignore             # Git ignore rules
+
+old_spot_bot/            # OLD: Archived spot trading bot (not used)
 ```
 
-## New Features (v5)
+## Architecture
 
-### Multi-Market Trading
-- Trade SOL-PERP, BTC-PERP, and ETH-PERP simultaneously
-- Configure active markets via `ACTIVE_MARKETS` env variable
-- Separate position tracking per market
-- Independent timeframe data collection per market
-- Markets processed sequentially each loop (no position conflicts)
+### Self-Tuning Engine (self_tuner.js)
+Separate module that reads AND writes `bot_config.json`. Contains 63 adaptive rules across 9 categories:
 
-### Shared Pattern Learning
-- All markets contribute to the same pattern stats
-- Patterns are based on imbalance type, trend, and price action
-- Learning from one market helps improve trading on others
-- Faster overall learning by 3x with shared data
+1. **Stop Loss Tuning** - Widens/tightens stops based on stop-out rate
+2. **Take Profit Optimization** - Adjusts TP based on win rate and shadow trade comparison
+3. **Pattern Management** - Disables patterns below 45% win rate, direction-locks others
+4. **Time-of-Day Awareness** - Blocks unprofitable hours (UTC)
+5. **Streak Handling** - Caution mode on losing streaks, cooldown multipliers
+6. **Market Selection** - Pauses markets below 35% win rate
+7. **Volatility Response** - Multipliers for SL in high/low volatility
+8. **Position Sizing** - Reduces size after losses, increases after winning streaks
+9. **Cooldown Adjustment** - Adapts cooldown based on recent performance
 
-### Market-Specific Risk Settings
-- **SOL-PERP**: 0.8% stop loss, 1.2% take profit (more volatile)
-- **BTC-PERP**: 0.5% stop loss, 0.8% take profit (less volatile)
-- **ETH-PERP**: 0.6% stop loss, 1.0% take profit (medium)
-- Customizable via environment variables
-- Position size multipliers per market
+### How Self-Tuning Works
+- Runs tuning cycle every 20 trades (configurable)
+- Reads trade history, shadow trades, and pattern stats
+- Applies rules and writes changes to bot_config.json
+- Every decision is logged to "thinking log" visible on dashboard
+- Caution mode: Activates if daily loss exceeds 3% or win rate drops below 35%
 
-### Enhanced Dashboard
-- **Markets Overview table**: Price, mode, imbalance, volatility, position for each market
-- Updated trades table shows which market each trade was on
-- Shadow trades now tracked per market
-- Connection status aggregated across all markets
-
-### Previous Features (from v4)
-- Simulation Mode (paper trading)
-- Multi-Timeframe Analysis (30s, 2m, 5m)
-- Volatility Filter
-- Smarter Shadow Trades with SL/TP simulation
-- Heartbeat Watchdog with auto-reconnect
-- Adaptive Learning with time-weighted stats
+### Integration Points
+- `shouldTrade()` - Called before every entry, can block trades or adjust size
+- `getEffectiveStopLoss()` - Returns adjusted SL based on config + volatility
+- `getEffectiveTakeProfit()` - Returns adjusted TP from config
+- `getEffectiveTrailing()` - Returns trailing stop distance
+- `isMarketEnabled()` - Checks if market is paused by tuner
+- `think()` - Logs decisions with categories and colors
 
 ## Trading Strategy
 
 ### Entry Logic
-1. **Per-Market Analysis**: Each market analyzed independently
-2. **Timeframe Consensus**: 2+ timeframes must agree on direction
-3. **Trend Following**: Buy dips in uptrend, sell rallies in downtrend
-4. **Absorption Detection**: Contrarian signals in ranging markets
-5. **Shared Memory Check**: Pattern must have positive history across all markets
-6. **Safety Checks**: Cooldown, consecutive loss limits, volatility filter
+1. Per-market analysis with multi-timeframe consensus (30s, 2m, 5m)
+2. Trend following: Buy dips in uptrend, sell rallies in downtrend
+3. Absorption detection in ranging markets
+4. Shared memory check: Pattern must have positive history
+5. Self-tuner gate: Checks disabled patterns, blocked hours, caution mode, market pause
+6. Position size adjusted by confidence and self-tuner multiplier
 
-### Exit Logic (Market-Specific) - WIDENED v6
+### Exit Logic (Self-Tuning Defaults)
 - **SOL-PERP**: Stop-Loss 1.5%, TP 2.5%, Trailing 0.4%
 - **BTC-PERP**: Stop-Loss 1.0%, TP 1.8%, Trailing 0.3%
 - **ETH-PERP**: Stop-Loss 1.2%, TP 2.0%, Trailing 0.35%
+- All values auto-adjusted by self-tuner based on performance
 
-### Shadow Trade Learning (NEW)
-- Shadow trades use 3x WIDER stops than real trades
-- Purpose: Test "what would happen if I held longer"
-- Compares real exits vs hypothetical wider exits
-- Bot learns whether tight stops helped or hurt
+### Shadow Trade Learning
+- Shadow trades use 3x wider stops than real trades
+- Tests "what would happen if held longer"
+- Self-tuner compares shadow vs real results to decide whether to widen stops
+
+## Dashboard (v6)
+Full-width, dark theme dashboard with:
+- **System Health**: Uptime, connections, mode, caution status
+- **Markets Overview**: Price, mode, imbalance, volatility, position, entry price, P&L, SL/TP, enabled/paused status
+- **Session Stats**: Win rate, P&L, daily P&L, disabled patterns count
+- **Best/Worst Trade**: Quick reference
+- **Bot Thinking (Live)**: Color-coded decision log showing every reasoning step
+- **Top Patterns**: With enabled/disabled/direction-locked status
+- **Recent Trades**: With entry/exit prices, pattern used, exit reason
+- **Shadow Trades**: With hypothetical results
+- **Self-Tuning Changes Log**: Every config change with before/after values and reasons
 
 ## Environment Variables
 
 ### Required
 - `SOLANA_RPC_URL`: Helius RPC endpoint
-- `PRIVATE_KEY`: Wallet private key (base58) - optional in simulation mode
+- `PRIVATE_KEY`: Wallet private key (base58)
 
 ### Trading Settings
 - `LEVERAGE`: Trading leverage (default: 50)
@@ -93,52 +98,25 @@ Adaptive perpetual futures trading bot using Drift Protocol on Solana mainnet. N
 - `COOLDOWN_SECONDS`: Seconds between trades per market (default: 120)
 - `BASE_INTERVAL_MS`: Base check interval in ms (default: 30000)
 
-### Market-Specific Risk (Optional)
-- `SOL_STOP_LOSS`: SOL stop loss % (default: 0.8)
-- `SOL_TAKE_PROFIT`: SOL TP activation % (default: 1.2)
-- `BTC_STOP_LOSS`: BTC stop loss % (default: 0.5)
-- `BTC_TAKE_PROFIT`: BTC TP activation % (default: 0.8)
-- `ETH_STOP_LOSS`: ETH stop loss % (default: 0.6)
-- `ETH_TAKE_PROFIT`: ETH TP activation % (default: 1.0)
-
 ### Dashboard
-- `DASHBOARD_PORT`: Web dashboard port (default: 3000)
+- `DASHBOARD_PORT`: Web dashboard port (default: 3000, Replit uses 5000)
 
 ## Running the Bot
 
-### Local/Replit
-1. cd slb-bot-futures
-2. npm install
-3. cp .env.example .env
-4. Edit .env with your settings (keep SIMULATION_MODE=true initially)
-5. npm start
-6. Open http://localhost:3000 for dashboard
+### Replit
+Workflow configured: `cd slb-bot-futures && DASHBOARD_PORT=5000 node index.js`
 
-### VPS Deployment (with auto-restart)
-```bash
-cd ~/Slb && git pull && cd slb-bot-futures && npm install && pkill -f "node index.js"; nohup npm start > bot.log 2>&1 & tail -f bot.log
-```
-
-### VPS with PM2 (recommended for production)
+### VPS Deployment (PM2 recommended)
 ```bash
 cd ~/Slb/slb-bot-futures && npm install
 pm2 start index.js --name "drift-bot" --restart-delay=5000 --max-restarts=100
 pm2 logs drift-bot
 ```
 
-### Accessing Dashboard on VPS
-Open in browser: `http://YOUR_VPS_IP:3000`
-
-## Workflow: Simulation → Live
-
-1. **Start in simulation mode**: `SIMULATION_MODE=true`
-2. **Run for 1-2 days**: Watch dashboard, let bot learn patterns across all markets
-3. **Check results**: Look at simulated win rate and P&L per market
-4. **If good (>55% win rate, positive P&L)**:
-   - Stop bot
-   - Change to `SIMULATION_MODE=false`
-   - Restart bot
-5. **Bot now trades real money** using learned patterns
+### VPS Quick Deploy
+```bash
+cd ~/Slb && git pull && cd slb-bot-futures && npm install && pkill -f "node index.js"; nohup npm start > bot.log 2>&1 & tail -f bot.log
+```
 
 ## Dependencies
 - @drift-labs/sdk: Drift Protocol trading SDK
@@ -147,21 +125,26 @@ Open in browser: `http://YOUR_VPS_IP:3000`
 - dotenv: Environment variable management
 
 ## Recent Changes
+- 2026-02-06: v6 Self-tuning engine (63 rules, 9 categories)
+- 2026-02-06: Bot Thinking dashboard section (live decision log)
+- 2026-02-06: Self-tuning changes log on dashboard
+- 2026-02-06: Entry/exit prices shown in trade history
+- 2026-02-06: Market pause/enable by self-tuner
+- 2026-02-06: Pattern disable/direction-lock system
+- 2026-02-06: Caution mode (blocks low-confidence trades)
+- 2026-02-06: Fixed Chinese character display (UTF-8 charset)
+- 2026-02-06: Dashboard v6 redesign with GitHub-dark theme
 - 2026-02-02: v5 Multi-market support (SOL, BTC, ETH)
-- 2026-02-02: Shared pattern learning across markets
-- 2026-02-02: Market-specific risk settings (stop loss, take profit)
-- 2026-02-02: Enhanced dashboard with markets overview table
-- 2026-02-02: Position tracking per market
 - 2026-02-01: v4 complete rewrite with multi-timeframe system
-- 2026-02-01: Added simulation mode for paper trading
-- 2026-02-01: Added volatility filter to skip choppy markets
-- 2026-02-01: Smarter shadow trades that simulate SL/TP
-- 2026-02-01: Built live web dashboard with detailed stats
 
 ## User Preferences
-- Always ask before modifying code
+- Always ask before modifying code ("Don't modify anything yet, talk to me")
 - Explain every decision in detail
+- Tell the truth, never promise impossible things
+- Only give current/accurate information
+- Consider all implications of changes
 - Keep bot simple, avoid over-complication
 - No paid APIs (use free tiers only)
 - Security is critical (no key exposure)
 - Dashboard for monitoring is important
+- User deploys to VPS manually via GitHub
