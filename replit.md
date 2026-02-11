@@ -1,15 +1,16 @@
-# Solana Futures Trading Bot v6 (Drift Protocol - Self-Tuning)
+# AI Solana Futures Trading Bot v7 (Drift Protocol - GLM-4.7 Flash)
 
 ## Overview
-Self-adaptive perpetual futures trading bot using Drift Protocol on Solana mainnet. Trades **multiple markets simultaneously** (SOL, BTC, ETH) with a **self-tuning engine** that automatically adjusts stop losses, take profits, pattern selections, cooldowns, position sizing, and timing based on real performance data. The bot writes to its own configuration file (bot_config.json) and makes all decisions visible on a live dashboard.
+AI-powered perpetual futures trading bot using Drift Protocol on Solana mainnet. All trading decisions (entries, exits, stop losses, take profits) are made by **GLM-4.7-Flash** AI model via OpenRouter. Trades SOL-PERP, BTC-PERP, and ETH-PERP with 50x leverage. Safety layer with 20% daily loss limit.
 
 ## Project Structure
 ```
 slb-bot-futures/
-  index.js              # Main bot logic + dashboard (v6)
-  self_tuner.js          # Self-tuning engine (63 rules, 9 categories)
-  bot_config.json        # Auto-generated config (written by self-tuner)
-  trade_memory.json      # Trade history & pattern stats (gitignored)
+  index.js              # Main bot logic + dashboard + Drift connection
+  ai_brain.js           # AI decision engine (GLM-4.7-Flash via OpenRouter)
+  self_tuner.js          # Safety layer (daily loss limit, consecutive loss pause)
+  bot_config.json        # Safety config (auto-generated, gitignored)
+  trade_memory.json      # Trade history (gitignored)
   package.json           # Node.js dependencies
   .env.example           # Environment variable template
   .gitignore             # Git ignore rules
@@ -19,84 +20,58 @@ old_spot_bot/            # OLD: Archived spot trading bot (not used)
 
 ## Architecture
 
-### Self-Tuning Engine (self_tuner.js)
-Separate module that reads AND writes `bot_config.json`. Contains 63 adaptive rules across 9 categories:
+### AI Brain (ai_brain.js)
+- Sends market data to GLM-4.7-Flash via OpenRouter API
+- AI receives: price, trend, orderbook imbalance, volatility, recent prices, past trade results
+- AI responds with: action (LONG/SHORT/WAIT), stopLoss, takeProfit, confidence, reason, maxHoldMinutes
+- System prompt teaches AI about 50x leverage, fees, risk management
+- Each AI call costs fractions of a cent (~$0.50-1.00/day)
+- All AI reasoning visible on dashboard
 
-1. **Stop Loss Tuning** - Widens/tightens stops based on stop-out rate
-2. **Take Profit Optimization** - Adjusts TP based on win rate and shadow trade comparison
-3. **Pattern Management** - Disables patterns below 45% win rate, direction-locks others
-4. **Time-of-Day Awareness** - Blocks unprofitable hours (UTC)
-5. **Streak Handling** - Caution mode on losing streaks, cooldown multipliers
-6. **Market Selection** - Pauses markets below 35% win rate
-7. **Volatility Response** - Multipliers for SL in high/low volatility
-8. **Position Sizing** - Reduces size after losses, increases after winning streaks
-9. **Cooldown Adjustment** - Adapts cooldown based on recent performance
+### Safety Layer (self_tuner.js)
+Simple hard safety rules the AI cannot override:
+- **20% daily loss limit** - bot pauses for the day if hit
+- **8 consecutive losses** - bot pauses until reset
+- Resets automatically at midnight UTC
+- Manual unpause available
 
-### How Self-Tuning Works
-- Runs tuning cycle every 20 trades (configurable)
-- Reads trade history, shadow trades, and pattern stats
-- Applies rules and writes changes to bot_config.json
-- Every decision is logged to "thinking log" visible on dashboard
-- Caution mode: Activates if daily loss exceeds 3% or win rate drops below 35%
+### Data Flow
+1. Every 30s: Collect prices, orderbook data, calculate trend/volatility
+2. Every 3 min (configurable): Send data to AI, get trading decision
+3. Every 30s: Monitor open positions against AI's SL/TP/max hold time
+4. Safety check before every trade attempt
 
-### Integration Points
-- `shouldTrade()` - Called before every entry, can block trades or adjust size
-- `getEffectiveStopLoss()` - Returns adjusted SL based on config + volatility
-- `getEffectiveTakeProfit()` - Returns adjusted TP from config
-- `getEffectiveTrailing()` - Returns trailing stop distance
-- `isMarketEnabled()` - Checks if market is paused by tuner
-- `think()` - Logs decisions with categories and colors
-
-## Trading Strategy
-
-### Entry Logic
-1. Per-market analysis with multi-timeframe consensus (30s, 2m, 5m)
-2. Trend following: Buy dips in uptrend, sell rallies in downtrend
-3. Absorption detection in ranging markets
-4. Shared memory check: Pattern must have positive history
-5. Self-tuner gate: Checks disabled patterns, blocked hours, caution mode, market pause
-6. Position size adjusted by confidence and self-tuner multiplier
-
-### Exit Logic (Self-Tuning Defaults)
-- **SOL-PERP**: Stop-Loss 1.5%, TP 2.5%, Trailing 0.4%
-- **BTC-PERP**: Stop-Loss 1.0%, TP 1.8%, Trailing 0.3%
-- **ETH-PERP**: Stop-Loss 1.2%, TP 2.0%, Trailing 0.35%
-- All values auto-adjusted by self-tuner based on performance
-
-### Shadow Trade Learning
-- Shadow trades use 3x wider stops than real trades
-- Tests "what would happen if held longer"
-- Self-tuner compares shadow vs real results to decide whether to widen stops
-
-## Dashboard (v6)
-Full-width, dark theme dashboard with:
-- **System Health**: Uptime, connections, mode, caution status
-- **Markets Overview**: Price, mode, imbalance, volatility, position, entry price, P&L, SL/TP, enabled/paused status
-- **Session Stats**: Win rate, P&L, daily P&L, disabled patterns count
-- **Best/Worst Trade**: Quick reference
-- **Bot Thinking (Live)**: Color-coded decision log showing every reasoning step
-- **Top Patterns**: With enabled/disabled/direction-locked status
-- **Recent Trades**: With entry/exit prices, pattern used, exit reason
-- **Shadow Trades**: With hypothetical results
-- **Self-Tuning Changes Log**: Every config change with before/after values and reasons
+### Trade Execution
+- Uses Drift SDK for on-chain perp orders
+- Supports simulation mode (paper trading) and live trading
+- Position sync from chain on startup
+- Trailing take profit with 0.3% trailing distance
+- Max hold time enforced (AI sets per trade, max 120 min)
 
 ## Environment Variables
 
 ### Required
+- `OPENROUTER_API_KEY`: OpenRouter API key for GLM-4.7-Flash
 - `SOLANA_RPC_URL`: Helius RPC endpoint
-- `PRIVATE_KEY`: Wallet private key (base58)
+- `PRIVATE_KEY`: Wallet private key (base58) - only for live trading
+
+### AI Settings
+- `AI_MODEL`: AI model (default: z-ai/glm-4.7-flash)
+- `AI_BASE_URL`: API base URL (default: https://openrouter.ai/api/v1)
+- `AI_INTERVAL_MS`: How often to ask AI in ms (default: 180000 = 3 min)
+- `MIN_CONFIDENCE`: Minimum AI confidence to trade (default: 0.6)
 
 ### Trading Settings
 - `LEVERAGE`: Trading leverage (default: 50)
-- `TRADE_AMOUNT_USDC`: Base position size in USDC per market (default: 10)
+- `TRADE_AMOUNT_USDC`: Position size in USDC per market (default: 10)
 - `ACTIVE_MARKETS`: Comma-separated list (default: SOL-PERP,BTC-PERP,ETH-PERP)
 - `SIMULATION_MODE`: true for paper trading, false for real (default: true)
+- `CHECK_INTERVAL_MS`: Position monitoring interval (default: 30000 = 30s)
+- `COOLDOWN_SECONDS`: Seconds between trades per market (default: 180)
 
-### Global Thresholds
-- `IMBALANCE_THRESHOLD`: Order book imbalance threshold (default: 0.15)
-- `VOLATILITY_THRESHOLD`: Max volatility to trade (default: 0.5%)
-- `COOLDOWN_SECONDS`: Seconds between trades per market (default: 120)
-- `BASE_INTERVAL_MS`: Base check interval in ms (default: 30000)
+### Safety Limits
+- `DAILY_LOSS_LIMIT`: Max daily loss % before pause (default: 20)
+- `MAX_CONSECUTIVE_LOSSES`: Max losing streak before pause (default: 8)
 
 ### Dashboard
 - `DASHBOARD_PORT`: Web dashboard port (default: 3000, Replit uses 5000)
@@ -118,33 +93,40 @@ pm2 logs drift-bot
 cd ~/Slb && git pull && cd slb-bot-futures && npm install && pkill -f "node index.js"; nohup npm start > bot.log 2>&1 & tail -f bot.log
 ```
 
+## Dashboard
+Dark theme dashboard showing:
+- **System Health**: Uptime, connections, mode, AI model, safety status
+- **Markets Overview**: Price, trend, imbalance, volatility, position, P&L, AI's SL/TP, hold time
+- **Session Stats**: Win rate, P&L, total trades
+- **Daily Safety**: Daily P&L vs limit, consecutive losses, pause status
+- **Best/Worst Trade**: Quick reference
+- **AI Brain Live Decisions**: Color-coded log of every AI decision with reasoning
+- **Recent Trades**: Entry/exit prices, P&L, exit reason, hold time, AI reasoning
+
 ## Dependencies
 - @drift-labs/sdk: Drift Protocol trading SDK
 - @solana/web3.js: Solana blockchain SDK
+- axios: HTTP client for OpenRouter API calls
 - bs58: Base58 encoding for private keys
 - dotenv: Environment variable management
 
 ## Recent Changes
-- 2026-02-06: v6 Self-tuning engine (63 rules, 9 categories)
-- 2026-02-06: Bot Thinking dashboard section (live decision log)
-- 2026-02-06: Self-tuning changes log on dashboard
-- 2026-02-06: Entry/exit prices shown in trade history
-- 2026-02-06: Market pause/enable by self-tuner
-- 2026-02-06: Pattern disable/direction-lock system
-- 2026-02-06: Caution mode (blocks low-confidence trades)
-- 2026-02-06: Fixed Chinese character display (UTF-8 charset)
-- 2026-02-06: Dashboard v6 redesign with GitHub-dark theme
+- 2026-02-11: v7 AI-powered rewrite with GLM-4.7-Flash
+- 2026-02-11: Removed old technical analysis, patterns, shadow trades
+- 2026-02-11: AI sets dynamic SL/TP per trade based on market conditions
+- 2026-02-11: Simplified safety layer (20% daily loss limit, 8 consecutive losses max)
+- 2026-02-11: New dashboard showing AI reasoning and decisions
+- 2026-02-11: Added axios for OpenRouter API calls
+- 2026-02-11: Cleared old trade memory, starting fresh
+- 2026-02-06: v6 Self-tuning engine (replaced by AI in v7)
 - 2026-02-02: v5 Multi-market support (SOL, BTC, ETH)
-- 2026-02-01: v4 complete rewrite with multi-timeframe system
 
 ## User Preferences
-- Always ask before modifying code ("Don't modify anything yet, talk to me")
+- Always ask before modifying code
 - Explain every decision in detail
 - Tell the truth, never promise impossible things
-- Only give current/accurate information
-- Consider all implications of changes
 - Keep bot simple, avoid over-complication
-- No paid APIs (use free tiers only)
-- Security is critical (no key exposure)
+- No paid APIs (use free tiers / cheap models)
+- Security is critical (no key exposure, keys in .env only)
 - Dashboard for monitoring is important
-- User deploys to VPS manually via GitHub
+- User deploys to VPS manually via GitHub (push here, pull on VPS)

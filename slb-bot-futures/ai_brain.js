@@ -2,75 +2,172 @@ const axios = require('axios');
 const dotenv = require('dotenv');
 dotenv.config();
 
+const AI_MODEL = process.env.AI_MODEL || 'z-ai/glm-4.7-flash';
+const AI_BASE_URL = process.env.AI_BASE_URL || 'https://openrouter.ai/api/v1';
+
 let thinkingLog = [];
+let tradeHistory = [];
+
+const SYSTEM_PROMPT = `You are an expert perpetual futures trader on Drift Protocol (Solana blockchain). You analyze real-time market data and make precise trading decisions.
+
+CRITICAL FACTS ABOUT YOUR ENVIRONMENT:
+- You trade with 50x leverage. This means a 1% price move = 50% gain or loss on your position.
+- Trading fees are approximately 0.1% round trip (open + close). With 50x leverage this equals ~5% of position value.
+- You MUST only take trades where expected profit exceeds fees. Minimum 0.3% price move target.
+- You trade SOL-PERP, BTC-PERP, and ETH-PERP perpetual futures.
+- You can go LONG (profit when price rises) or SHORT (profit when price falls).
+
+YOUR TRADING STYLE:
+- Short-term trader. Hold times: 10 minutes to 2 hours maximum.
+- Never hold overnight. If unsure, say WAIT.
+- You are NOT a spot trader. You think in terms of leverage, liquidation risk, and funding rates.
+- Cut losses fast, let winners run slightly. Better to take small profit than hold for a big loss.
+
+HOW TO READ THE DATA:
+- Trend: UPTREND means price has been rising, DOWNTREND means falling, RANGING means sideways.
+- Imbalance: Positive = more buyers than sellers (bullish pressure). Negative = more sellers (bearish pressure). Above 15% is significant.
+- Volatility: How much price is moving. High volatility (>0.3%) = wider stops needed. Low volatility (<0.1%) = tight setups, smaller moves.
+- Recent price changes: Shows momentum direction and strength.
+
+ENTRY RULES:
+- LONG when: Strong uptrend + bullish imbalance + low/medium volatility. Or: Reversal signal after extended downtrend with bullish imbalance shift.
+- SHORT when: Strong downtrend + bearish imbalance + low/medium volatility. Or: Reversal signal after extended uptrend with bearish imbalance shift.
+- WAIT when: Choppy/ranging market with no clear direction, extremely high volatility, conflicting signals, or weak imbalance.
+
+STOP LOSS AND TAKE PROFIT RULES:
+- Set stop loss based on current volatility. Higher volatility = wider stop.
+- Minimum stop loss: 0.5% (with 50x leverage = 25% position risk)
+- Maximum stop loss: 3.0% (with 50x leverage = 150% = near liquidation, avoid this)
+- Typical stop loss range: 0.8% to 2.0%
+- Take profit should be at least 1.5x your stop loss (risk/reward ratio)
+- Consider nearby support/resistance when setting levels.
+
+RISK MANAGEMENT:
+- If recent trades show losses, be more conservative (wider stops, lower confidence).
+- If you are unsure, ALWAYS choose WAIT. Missing a trade is better than losing money.
+- Never chase a move that already happened. Wait for pullbacks.
+
+YOU MUST RESPOND IN THIS EXACT JSON FORMAT:
+{
+  "action": "LONG" or "SHORT" or "WAIT",
+  "stopLoss": number (percentage, e.g. 1.2 means 1.2% from entry),
+  "takeProfit": number (percentage, e.g. 2.5 means 2.5% from entry),
+  "confidence": number (0.0 to 1.0, where 1.0 = very confident),
+  "reason": "brief explanation of why this trade or why waiting",
+  "maxHoldMinutes": number (how long to hold before closing, 10-120)
+}
+
+IMPORTANT: Only output valid JSON. No markdown, no code blocks, no extra text.`;
+
+function buildMarketPrompt(marketData, recentResults) {
+    let prompt = `MARKET: ${marketData.symbol}
+CURRENT PRICE: $${marketData.price.toFixed(2)}
+TREND: ${marketData.trend}
+ORDER BOOK IMBALANCE: ${(marketData.imbalance * 100).toFixed(1)}% (${marketData.imbalance > 0 ? 'bullish' : 'bearish'} pressure)
+VOLATILITY: ${marketData.volatility.toFixed(3)}%
+5-MINUTE PRICE CHANGE: ${marketData.recentChange.toFixed(3)}%`;
+
+    if (marketData.priceHistory && marketData.priceHistory.length > 0) {
+        const prices = marketData.priceHistory.slice(-10);
+        prompt += `\nRECENT PRICES (oldest to newest): ${prices.map(p => '$' + p.toFixed(2)).join(', ')}`;
+    }
+
+    if (recentResults.length > 0) {
+        prompt += `\n\nYOUR LAST ${recentResults.length} TRADES ON ${marketData.symbol}:`;
+        for (const r of recentResults) {
+            prompt += `\n- ${r.direction} | Result: ${r.result} | P&L: ${r.profitPercent.toFixed(2)}% | Reason: ${r.exitReason}`;
+        }
+    }
+
+    prompt += `\n\nWhat is your trading decision? Respond in JSON only.`;
+    return prompt;
+}
 
 async function askBrain(marketData) {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
-        return { action: 'WAIT', reason: 'Missing OpenRouter API Key' };
+        think('No OpenRouter API key configured - AI brain disabled', 'error');
+        return { action: 'WAIT', reason: 'No API key', confidence: 0, stopLoss: 1.5, takeProfit: 2.5, maxHoldMinutes: 60 };
     }
 
-    const systemPrompt = `You are an expert Solana Perpetual Futures Trader. 
-Your goal is to analyze market data and provide precise trading signals.
-You trade with 50x leverage, so risk management is CRITICAL.
-Tight stops are necessary, but must be placed intelligently.
+    const recentResults = tradeHistory
+        .filter(t => t.symbol === marketData.symbol)
+        .slice(-5);
 
-STRICTOR RULES:
-1. Only trade when there is a clear trend or high-confidence reversal.
-2. Return response in strict JSON format.
-3. "stopLoss" and "takeProfit" are PERCENTAGES from entry.
-4. Be a "futures trader": look for momentum and liquidations.
-
-JSON Format:
-{
-  "action": "LONG" | "SHORT" | "WAIT",
-  "stopLoss": number (e.g. 1.2),
-  "takeProfit": number (e.g. 2.5),
-  "confidence": number (0 to 1),
-  "reason": "short explanation"
-}`;
-
-    const userPrompt = `Market: ${marketData.symbol}
-Price: $${marketData.price}
-Trend: ${marketData.trend}
-Imbalance: ${(marketData.imbalance * 100).toFixed(1)}%
-Volatility: ${marketData.volatility.toFixed(2)}%
-Last 5m Change: ${marketData.recentChange.toFixed(2)}%
-
-What is your move?`;
+    const userPrompt = buildMarketPrompt(marketData, recentResults);
 
     try {
-        const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-            model: 'z-ai/glm-4.7',
+        think(`Asking AI brain about ${marketData.symbol} | Price: $${marketData.price.toFixed(2)} | Trend: ${marketData.trend} | Imbalance: ${(marketData.imbalance * 100).toFixed(1)}%`, 'ai_brain');
+
+        const response = await axios.post(`${AI_BASE_URL}/chat/completions`, {
+            model: AI_MODEL,
             messages: [
-                { role: 'system', content: systemPrompt },
+                { role: 'system', content: SYSTEM_PROMPT },
                 { role: 'user', content: userPrompt }
             ],
-            response_format: { type: 'json_object' }
+            temperature: 0.3,
+            max_tokens: 300
         }, {
             headers: {
                 'Authorization': `Bearer ${apiKey}`,
                 'Content-Type': 'application/json'
             },
-            timeout: 10000
+            timeout: 15000
         });
 
-        const decision = JSON.parse(response.data.choices[0].message.content);
-        think(`AI Brain Decision for ${marketData.symbol}: ${decision.action} | SL: ${decision.stopLoss}% | TP: ${decision.takeProfit}% | Reason: ${decision.reason}`, 'ai_brain');
+        const raw = response.data.choices[0].message.content.trim();
+
+        let cleaned = raw;
+        if (cleaned.startsWith('```')) {
+            cleaned = cleaned.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+        }
+
+        const decision = JSON.parse(cleaned);
+
+        if (!decision.action || !['LONG', 'SHORT', 'WAIT'].includes(decision.action)) {
+            throw new Error('Invalid action in AI response');
+        }
+
+        decision.stopLoss = (typeof decision.stopLoss === 'number' && isFinite(decision.stopLoss)) ? decision.stopLoss : 1.5;
+        decision.takeProfit = (typeof decision.takeProfit === 'number' && isFinite(decision.takeProfit)) ? decision.takeProfit : 2.5;
+        decision.confidence = (typeof decision.confidence === 'number' && isFinite(decision.confidence)) ? decision.confidence : 0.5;
+        decision.maxHoldMinutes = (typeof decision.maxHoldMinutes === 'number' && isFinite(decision.maxHoldMinutes)) ? decision.maxHoldMinutes : 60;
+
+        decision.stopLoss = Math.max(0.5, Math.min(3.0, decision.stopLoss));
+        decision.takeProfit = Math.max(0.5, Math.min(5.0, decision.takeProfit));
+        decision.confidence = Math.max(0, Math.min(1, decision.confidence));
+        decision.maxHoldMinutes = Math.max(10, Math.min(120, decision.maxHoldMinutes));
+
+        const emoji = decision.action === 'LONG' ? '🟢' : decision.action === 'SHORT' ? '🔴' : '⚪';
+        think(`${emoji} AI Decision [${marketData.symbol}]: ${decision.action} | SL: ${decision.stopLoss}% | TP: ${decision.takeProfit}% | Confidence: ${(decision.confidence * 100).toFixed(0)}% | Max Hold: ${decision.maxHoldMinutes}min | Reason: ${decision.reason}`, 'ai_brain');
+
         return decision;
     } catch (error) {
-        console.error('AI Brain Error:', error.message);
-        return { action: 'WAIT', reason: 'Brain connection error' };
+        think(`AI Brain error for ${marketData.symbol}: ${error.message}`, 'error');
+        return { action: 'WAIT', reason: `AI error: ${error.message}`, confidence: 0, stopLoss: 1.5, takeProfit: 2.5, maxHoldMinutes: 60 };
     }
 }
 
-function think(message, category = 'general') {
+function recordTradeResult(symbol, direction, result, profitPercent, exitReason) {
+    tradeHistory.push({
+        symbol,
+        direction,
+        result,
+        profitPercent,
+        exitReason,
+        timestamp: Date.now()
+    });
+    if (tradeHistory.length > 100) tradeHistory.shift();
+}
+
+function think(message, category) {
     thinkingLog.unshift({
         time: Date.now(),
         message,
-        category
+        category: category || 'general'
     });
     if (thinkingLog.length > 100) thinkingLog.pop();
+    console.log(`[AI] ${message}`);
 }
 
 function getThinkingLog() {
@@ -79,5 +176,7 @@ function getThinkingLog() {
 
 module.exports = {
     askBrain,
+    recordTradeResult,
+    think,
     getThinkingLog
 };

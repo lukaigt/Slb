@@ -1,85 +1,18 @@
 {
-  "version": 1,
-  "lastUpdated": "2026-02-06T11:51:54.981Z",
-  "lastTuningRun": null,
-  "tuningInterval": 20,
-  "markets": {
-    "SOL-PERP": {
-      "stopLoss": 1.5,
-      "takeProfit": 2.5,
-      "trailingNormal": 0.4,
-      "trailingDanger": 0.2,
-      "positionMultiplier": 1,
-      "enabled": true,
-      "pausedUntil": null,
-      "confidenceMultiplier": 1
-    },
-    "BTC-PERP": {
-      "stopLoss": 1,
-      "takeProfit": 1.8,
-      "trailingNormal": 0.3,
-      "trailingDanger": 0.15,
-      "positionMultiplier": 1.2,
-      "enabled": true,
-      "pausedUntil": null,
-      "confidenceMultiplier": 1
-    },
-    "ETH-PERP": {
-      "stopLoss": 1.2,
-      "takeProfit": 2,
-      "trailingNormal": 0.35,
-      "trailingDanger": 0.18,
-      "positionMultiplier": 1,
-      "enabled": true,
-      "pausedUntil": null,
-      "confidenceMultiplier": 1
-    }
-  },
-  "patterns": {
-    "disabledPatterns": [],
-    "disabledUntil": {},
-    "patternDirectionOverride": {},
-    "minWinRateToTrade": 0.45,
-    "minTradesForConfidence": 5
-  },
-  "timing": {
-    "blockedHours": [],
-    "hourlyPerformance": {},
-    "lastHourlyReview": null
-  },
-  "streaks": {
-    "maxConsecutiveLossesBeforePause": 3,
-    "pauseDurationAfterStreakMs": 1800000,
-    "postLossCooldownMultiplier": 2,
-    "postWinCooldownMultiplier": 0.5,
-    "dailyLossLimitPercent": 3,
-    "dailyLossToday": 0,
-    "dailyLossDate": null,
-    "cautionMode": false,
-    "cautionModeMinWinRate": 0.7
-  },
-  "positioning": {
-    "highConfidenceMultiplier": 1.5,
-    "mediumConfidenceMultiplier": 1,
-    "lowConfidenceMultiplier": 0.5,
-    "maxRiskPerTradePercent": 3,
-    "postLossSizeReduction": 0.7,
-    "lossReductionActive": false
-  },
-  "volatility": {
-    "extremeVolatilityThreshold": 2,
-    "highVolStopMultiplier": 1.5,
-    "lowVolStopMultiplier": 0.8,
-    "postSpikeWaitMs": 300000,
-    "lastSpikeTime": null
-  },
-  "cooldown": {
-    "baseCooldownMs": 120000,
-    "currentCooldownMs": 120000,
-    "minCooldownMs": 30000,
-    "maxCooldownMs": 600000
-  },
-  "sameDirectionLimit": {
-    "maxSameDirectionAcrossMarkets": 2
+  "version": 2,
+  "lastUpdated": "2026-02-11T11:02:37.572Z",
+  "dailyLossLimit": 20,
+  "maxConsecutiveLosses": 8,
+  "maxPositionRiskPercent": 3,
+  "paused": false,
+  "pauseReason": null,
+  "pausedUntil": null,
+  "dailyStats": {
+    "date": "2026-02-11",
+    "totalPnl": 0,
+    "trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "consecutiveLosses": 0
   }
 }

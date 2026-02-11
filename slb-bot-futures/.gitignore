@@ -3,3 +3,5 @@ node_modules
 .DS_Store
 *.log
 trade_memory.json
+bot_config.json
+tuning_log.json

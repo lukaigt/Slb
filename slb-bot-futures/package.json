@@ -13,8 +13,8 @@
   "dependencies": {
     "@drift-labs/sdk": "^2.148.0",
     "@solana/web3.js": "^1.98.4",
+    "axios": "^1.13.5",
     "bs58": "^6.0.0",
-    "dotenv": "^17.2.3",
-    "technicalindicators": "^3.1.0"
+    "dotenv": "^17.2.3"
   }
 }
