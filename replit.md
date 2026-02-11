@@ -111,6 +111,7 @@ Dark theme dashboard showing:
 - dotenv: Environment variable management
 
 ## Recent Changes
+- 2026-02-11: Stepped trailing TP - tightens from 0.3% at TP target to 0.1% at 35%+ profit to lock in big wins
 - 2026-02-11: v7 AI-powered rewrite with GLM-4.7-Flash
 - 2026-02-11: Removed old technical analysis, patterns, shadow trades
 - 2026-02-11: AI sets dynamic SL/TP per trade based on market conditions

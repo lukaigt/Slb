@@ -400,21 +400,28 @@ function checkStopLoss(currentPrice, marketState, symbol) {
     return false;
 }
 
+function getSteppedTrailingDistance(profitPercent) {
+    if (profitPercent >= 35) return 0.1;
+    if (profitPercent >= 20) return 0.15;
+    if (profitPercent >= 10) return 0.2;
+    return 0.3;
+}
+
 function checkTakeProfit(currentPrice, marketState, symbol) {
     const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
     if (!pos || !marketState.aiTakeProfit) return false;
-
-    const trailingDistance = 0.3;
 
     if (pos === 'LONG') {
         const profitPercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
         if (currentPrice > marketState.highestPriceSinceEntry) marketState.highestPriceSinceEntry = currentPrice;
         if (profitPercent >= marketState.aiTakeProfit) marketState.trailingStopActive = true;
         if (marketState.trailingStopActive) {
+            const peakProfit = ((marketState.highestPriceSinceEntry - marketState.entryPrice) / marketState.entryPrice) * 100;
+            const trailingDistance = getSteppedTrailingDistance(peakProfit);
             const dropFromHigh = ((marketState.highestPriceSinceEntry - currentPrice) / marketState.highestPriceSinceEntry) * 100;
             if (dropFromHigh >= trailingDistance) {
-                log(`[${symbol}] TRAILING TP (LONG): Profit=${profitPercent.toFixed(2)}%`);
-                aiBrain.think(`[${symbol}] TRAILING TP on LONG | Profit: ${profitPercent.toFixed(2)}% | TP target was ${marketState.aiTakeProfit}%`, 'exit');
+                log(`[${symbol}] TRAILING TP (LONG): Profit=${profitPercent.toFixed(2)}% | Peak=${peakProfit.toFixed(2)}% | Trail=${trailingDistance}%`);
+                aiBrain.think(`[${symbol}] TRAILING TP on LONG | Profit: ${profitPercent.toFixed(2)}% | Peak: ${peakProfit.toFixed(2)}% | Trail distance: ${trailingDistance}%`, 'exit');
                 return true;
             }
         }
@@ -423,10 +430,12 @@ function checkTakeProfit(currentPrice, marketState, symbol) {
         if (currentPrice < marketState.lowestPriceSinceEntry) marketState.lowestPriceSinceEntry = currentPrice;
         if (profitPercent >= marketState.aiTakeProfit) marketState.trailingStopActive = true;
         if (marketState.trailingStopActive) {
+            const peakProfit = ((marketState.entryPrice - marketState.lowestPriceSinceEntry) / marketState.entryPrice) * 100;
+            const trailingDistance = getSteppedTrailingDistance(peakProfit);
             const riseFromLow = ((currentPrice - marketState.lowestPriceSinceEntry) / marketState.lowestPriceSinceEntry) * 100;
             if (riseFromLow >= trailingDistance) {
-                log(`[${symbol}] TRAILING TP (SHORT): Profit=${profitPercent.toFixed(2)}%`);
-                aiBrain.think(`[${symbol}] TRAILING TP on SHORT | Profit: ${profitPercent.toFixed(2)}% | TP target was ${marketState.aiTakeProfit}%`, 'exit');
+                log(`[${symbol}] TRAILING TP (SHORT): Profit=${profitPercent.toFixed(2)}% | Peak=${peakProfit.toFixed(2)}% | Trail=${trailingDistance}%`);
+                aiBrain.think(`[${symbol}] TRAILING TP on SHORT | Profit: ${profitPercent.toFixed(2)}% | Peak: ${peakProfit.toFixed(2)}% | Trail distance: ${trailingDistance}%`, 'exit');
                 return true;
             }
         }
