@@ -3,10 +3,12 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 const AI_MODEL = process.env.AI_MODEL || 'z-ai/glm-4.7-flash';
+const AI_FALLBACK_MODEL = process.env.AI_FALLBACK_MODEL || 'meta-llama/llama-3.1-8b-instruct:free';
 const AI_BASE_URL = process.env.AI_BASE_URL || 'https://openrouter.ai/api/v1';
 
 let thinkingLog = [];
 let tradeHistory = [];
+let consecutiveFailures = 0;
 
 const SYSTEM_PROMPT = `You are an expert perpetual futures trader on Drift Protocol (Solana blockchain). You analyze real-time market data and make precise trading decisions.
 
@@ -83,6 +85,63 @@ VOLATILITY: ${marketData.volatility.toFixed(3)}%
     return prompt;
 }
 
+async function callAI(model, apiKey, userPrompt) {
+    const response = await axios.post(`${AI_BASE_URL}/chat/completions`, {
+        model: model,
+        messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.3,
+        max_tokens: 500
+    }, {
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
+        },
+        timeout: 30000
+    });
+
+    if (!response.data || !response.data.choices || !response.data.choices[0]) {
+        throw new Error('Empty API response');
+    }
+
+    const raw = (response.data.choices[0].message.content || '').trim();
+    if (!raw) {
+        throw new Error('Empty content from model');
+    }
+
+    return raw;
+}
+
+function parseAIResponse(raw) {
+    let cleaned = raw;
+    if (cleaned.startsWith('```')) {
+        cleaned = cleaned.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+    }
+    if (cleaned.includes('{') && cleaned.includes('}')) {
+        cleaned = cleaned.substring(cleaned.indexOf('{'), cleaned.lastIndexOf('}') + 1);
+    }
+
+    const decision = JSON.parse(cleaned);
+
+    if (!decision.action || !['LONG', 'SHORT', 'WAIT'].includes(decision.action)) {
+        throw new Error('Invalid action');
+    }
+
+    decision.stopLoss = (typeof decision.stopLoss === 'number' && isFinite(decision.stopLoss)) ? decision.stopLoss : 1.5;
+    decision.takeProfit = (typeof decision.takeProfit === 'number' && isFinite(decision.takeProfit)) ? decision.takeProfit : 2.5;
+    decision.confidence = (typeof decision.confidence === 'number' && isFinite(decision.confidence)) ? decision.confidence : 0.5;
+    decision.maxHoldMinutes = (typeof decision.maxHoldMinutes === 'number' && isFinite(decision.maxHoldMinutes)) ? decision.maxHoldMinutes : 60;
+
+    decision.stopLoss = Math.max(0.5, Math.min(3.0, decision.stopLoss));
+    decision.takeProfit = Math.max(0.5, Math.min(5.0, decision.takeProfit));
+    decision.confidence = Math.max(0, Math.min(1, decision.confidence));
+    decision.maxHoldMinutes = Math.max(10, Math.min(120, decision.maxHoldMinutes));
+
+    return decision;
+}
+
 async function askBrain(marketData) {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
@@ -96,74 +155,34 @@ async function askBrain(marketData) {
 
     const userPrompt = buildMarketPrompt(marketData, recentResults);
 
-    try {
-        think(`Asking AI brain about ${marketData.symbol} | Price: $${marketData.price.toFixed(2)} | Trend: ${marketData.trend} | Imbalance: ${(marketData.imbalance * 100).toFixed(1)}%`, 'ai_brain');
+    think(`Asking AI brain about ${marketData.symbol} | Price: $${marketData.price.toFixed(2)} | Trend: ${marketData.trend} | Imbalance: ${(marketData.imbalance * 100).toFixed(1)}%`, 'ai_brain');
 
-        const response = await axios.post(`${AI_BASE_URL}/chat/completions`, {
-            model: AI_MODEL,
-            messages: [
-                { role: 'system', content: SYSTEM_PROMPT },
-                { role: 'user', content: userPrompt }
-            ],
-            temperature: 0.3,
-            max_tokens: 500
-        }, {
-            headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'Content-Type': 'application/json'
-            },
-            timeout: 30000
-        });
+    const modelsToTry = consecutiveFailures >= 3
+        ? [AI_FALLBACK_MODEL, AI_MODEL]
+        : [AI_MODEL, AI_FALLBACK_MODEL];
 
-        if (!response.data || !response.data.choices || !response.data.choices[0]) {
-            throw new Error('Empty response from AI API - check API key and credits');
-        }
-
-        const raw = (response.data.choices[0].message.content || '').trim();
-
-        if (!raw) {
-            throw new Error('AI returned empty content - model may be unavailable');
-        }
-
-        think(`Raw AI response for ${marketData.symbol}: ${raw.substring(0, 200)}`, 'ai_brain');
-
-        let cleaned = raw;
-        if (cleaned.startsWith('```')) {
-            cleaned = cleaned.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
-        }
-        if (cleaned.includes('{') && cleaned.includes('}')) {
-            cleaned = cleaned.substring(cleaned.indexOf('{'), cleaned.lastIndexOf('}') + 1);
-        }
-
-        let decision;
+    for (const model of modelsToTry) {
         try {
-            decision = JSON.parse(cleaned);
-        } catch (parseErr) {
-            throw new Error(`JSON parse failed. Raw: ${raw.substring(0, 300)}`);
+            const raw = await callAI(model, apiKey, userPrompt);
+            think(`Raw AI response (${model}) for ${marketData.symbol}: ${raw.substring(0, 200)}`, 'ai_brain');
+
+            const decision = parseAIResponse(raw);
+            consecutiveFailures = 0;
+
+            const emoji = decision.action === 'LONG' ? '🟢' : decision.action === 'SHORT' ? '🔴' : '⚪';
+            think(`${emoji} AI Decision [${marketData.symbol}] via ${model}: ${decision.action} | SL: ${decision.stopLoss}% | TP: ${decision.takeProfit}% | Conf: ${(decision.confidence * 100).toFixed(0)}% | Hold: ${decision.maxHoldMinutes}min | ${decision.reason}`, 'ai_brain');
+
+            return decision;
+        } catch (error) {
+            think(`Model ${model} failed for ${marketData.symbol}: ${error.message}`, 'error');
+            if (model === modelsToTry[modelsToTry.length - 1]) {
+                consecutiveFailures++;
+                think(`Both models failed (${consecutiveFailures} consecutive failures). Will try fallback first next time if this continues.`, 'error');
+            }
         }
-
-        if (!decision.action || !['LONG', 'SHORT', 'WAIT'].includes(decision.action)) {
-            throw new Error('Invalid action in AI response');
-        }
-
-        decision.stopLoss = (typeof decision.stopLoss === 'number' && isFinite(decision.stopLoss)) ? decision.stopLoss : 1.5;
-        decision.takeProfit = (typeof decision.takeProfit === 'number' && isFinite(decision.takeProfit)) ? decision.takeProfit : 2.5;
-        decision.confidence = (typeof decision.confidence === 'number' && isFinite(decision.confidence)) ? decision.confidence : 0.5;
-        decision.maxHoldMinutes = (typeof decision.maxHoldMinutes === 'number' && isFinite(decision.maxHoldMinutes)) ? decision.maxHoldMinutes : 60;
-
-        decision.stopLoss = Math.max(0.5, Math.min(3.0, decision.stopLoss));
-        decision.takeProfit = Math.max(0.5, Math.min(5.0, decision.takeProfit));
-        decision.confidence = Math.max(0, Math.min(1, decision.confidence));
-        decision.maxHoldMinutes = Math.max(10, Math.min(120, decision.maxHoldMinutes));
-
-        const emoji = decision.action === 'LONG' ? '🟢' : decision.action === 'SHORT' ? '🔴' : '⚪';
-        think(`${emoji} AI Decision [${marketData.symbol}]: ${decision.action} | SL: ${decision.stopLoss}% | TP: ${decision.takeProfit}% | Confidence: ${(decision.confidence * 100).toFixed(0)}% | Max Hold: ${decision.maxHoldMinutes}min | Reason: ${decision.reason}`, 'ai_brain');
-
-        return decision;
-    } catch (error) {
-        think(`AI Brain error for ${marketData.symbol}: ${error.message}`, 'error');
-        return { action: 'WAIT', reason: `AI error: ${error.message}`, confidence: 0, stopLoss: 1.5, takeProfit: 2.5, maxHoldMinutes: 60 };
     }
+
+    return { action: 'WAIT', reason: 'All AI models failed', confidence: 0, stopLoss: 1.5, takeProfit: 2.5, maxHoldMinutes: 60 };
 }
 
 function recordTradeResult(symbol, direction, result, profitPercent, exitReason) {
