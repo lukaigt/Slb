@@ -93,7 +93,8 @@ async function callAI(model, apiKey, userPrompt) {
             { role: 'user', content: userPrompt }
         ],
         temperature: 0.3,
-        max_tokens: 500
+        max_tokens: 1000,
+        reasoning: { enabled: false }
     }, {
         headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -106,9 +107,20 @@ async function callAI(model, apiKey, userPrompt) {
         throw new Error('Empty API response');
     }
 
-    const raw = (response.data.choices[0].message.content || '').trim();
+    const msg = response.data.choices[0].message;
+    let raw = (msg.content || '').trim();
+
+    if (!raw && msg.reasoning) {
+        think('Model used reasoning mode - extracting from reasoning field', 'ai_brain');
+        const reasoningText = typeof msg.reasoning === 'string' ? msg.reasoning : 
+            (msg.reasoning_details && msg.reasoning_details[0] ? msg.reasoning_details[0].text : '');
+        if (reasoningText && reasoningText.includes('{')) {
+            raw = reasoningText;
+        }
+    }
+
     if (!raw) {
-        throw new Error('Empty content from model');
+        throw new Error('Empty content from model (reasoning mode may have consumed all tokens)');
     }
 
     return raw;
