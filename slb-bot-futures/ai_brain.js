@@ -106,23 +106,41 @@ async function askBrain(marketData) {
                 { role: 'user', content: userPrompt }
             ],
             temperature: 0.3,
-            max_tokens: 300
+            max_tokens: 500
         }, {
             headers: {
                 'Authorization': `Bearer ${apiKey}`,
                 'Content-Type': 'application/json'
             },
-            timeout: 15000
+            timeout: 30000
         });
 
-        const raw = response.data.choices[0].message.content.trim();
+        if (!response.data || !response.data.choices || !response.data.choices[0]) {
+            throw new Error('Empty response from AI API - check API key and credits');
+        }
+
+        const raw = (response.data.choices[0].message.content || '').trim();
+
+        if (!raw) {
+            throw new Error('AI returned empty content - model may be unavailable');
+        }
+
+        think(`Raw AI response for ${marketData.symbol}: ${raw.substring(0, 200)}`, 'ai_brain');
 
         let cleaned = raw;
         if (cleaned.startsWith('```')) {
             cleaned = cleaned.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
         }
+        if (cleaned.includes('{') && cleaned.includes('}')) {
+            cleaned = cleaned.substring(cleaned.indexOf('{'), cleaned.lastIndexOf('}') + 1);
+        }
 
-        const decision = JSON.parse(cleaned);
+        let decision;
+        try {
+            decision = JSON.parse(cleaned);
+        } catch (parseErr) {
+            throw new Error(`JSON parse failed. Raw: ${raw.substring(0, 300)}`);
+        }
 
         if (!decision.action || !['LONG', 'SHORT', 'WAIT'].includes(decision.action)) {
             throw new Error('Invalid action in AI response');
