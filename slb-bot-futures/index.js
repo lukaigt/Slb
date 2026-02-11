@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const selfTuner = require('./self_tuner');
+const aiBrain = require('./ai_brain');
 
 dotenv.config();
 
@@ -797,7 +798,8 @@ function checkStopLoss(currentPrice, marketState, marketConfig, symbol) {
     const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
     if (!pos) return false;
 
-    const effectiveSL = selfTuner.getEffectiveStopLoss(symbol, marketState.volatility);
+    // Use AI's dynamic stop loss if available, otherwise fallback to self-tuner
+    const effectiveSL = marketState.aiStopLoss || selfTuner.getEffectiveStopLoss(symbol, marketState.volatility);
     const priceMovePercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
 
     if (pos === 'LONG') {
@@ -821,7 +823,8 @@ function checkTrailingTakeProfit(currentPrice, marketState, marketConfig, symbol
     const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
     if (!pos) return false;
 
-    const effectiveTP = selfTuner.getEffectiveTakeProfit(symbol);
+    // Use AI's dynamic take profit if available, otherwise fallback to self-tuner
+    const effectiveTP = marketState.aiTakeProfit || selfTuner.getEffectiveTakeProfit(symbol);
     const trailingDistance = selfTuner.getEffectiveTrailing(symbol, marketState.dangerMode);
     let profitPercent = 0;
 
@@ -1155,16 +1158,37 @@ async function processMarket(symbol) {
             const decision = shouldOpenPosition(consensus, pattern, marketState);
             
             if (decision.open) {
-                const tunerDecision = selfTuner.shouldTrade(symbol, decision.direction, pattern.patternKey, decision.confidence, marketState);
+                // Ask the AI Brain for final confirmation and dynamic TP/SL
+                const brainData = {
+                    symbol,
+                    price,
+                    trend: fastAnalysis.mode,
+                    imbalance,
+                    volatility: marketState.volatility,
+                    recentChange: ((price - marketState.timeframeData.fast.prices[0]) / marketState.timeframeData.fast.prices[0]) * 100
+                };
                 
-                if (tunerDecision.allowed) {
-                    log(`[${symbol}] ${decision.direction} SIGNAL: ${decision.reason} (confidence: ${(decision.confidence * 100).toFixed(0)}%) [size: x${tunerDecision.sizeMultiplier.toFixed(2)}]`);
-                    selfTuner.think(`[${symbol}] OPENING ${decision.direction} | Price: $${price.toFixed(2)} | Pattern: ${pattern.patternKey} | Confidence: ${(decision.confidence * 100).toFixed(0)}% | Size: x${tunerDecision.sizeMultiplier.toFixed(2)} | Reasons: ${tunerDecision.reasons.join('; ')}`, 'entry');
-                    marketState._sizeMultiplier = tunerDecision.sizeMultiplier;
-                    await openPosition(decision.direction, pattern, marketState, marketConfig, symbol);
+                const brainDecision = await aiBrain.askBrain(brainData);
+                
+                if (brainDecision.action !== 'WAIT' && brainDecision.action === decision.direction) {
+                    const tunerDecision = selfTuner.shouldTrade(symbol, decision.direction, pattern.patternKey, brainDecision.confidence || decision.confidence, marketState);
+                    
+                    if (tunerDecision.allowed) {
+                        log(`[${symbol}] AI BRAIN ${decision.direction} CONFIRMED: ${brainDecision.reason}`);
+                        selfTuner.think(`[${symbol}] AI BRAIN OPENING ${decision.direction} | SL: ${brainDecision.stopLoss}% | TP: ${brainDecision.takeProfit}% | Reason: ${brainDecision.reason}`, 'entry');
+                        
+                        // Override with AI's dynamic TP/SL
+                        marketState.aiStopLoss = brainDecision.stopLoss;
+                        marketState.aiTakeProfit = brainDecision.takeProfit;
+                        marketState._sizeMultiplier = tunerDecision.sizeMultiplier;
+                        
+                        await openPosition(decision.direction, pattern, marketState, marketConfig, symbol);
+                    } else {
+                        selfTuner.think(`[${symbol}] AI Signal blocked by self-tuner: ${tunerDecision.reasons.join('; ')}`, 'blocked');
+                    }
                 } else {
-                    selfTuner.think(`[${symbol}] BLOCKED ${decision.direction} by self-tuner: ${tunerDecision.reasons.join('; ')}`, 'blocked');
-                    recordShadowTrade(pattern, consensus.signal, `tuner: ${tunerDecision.reasons[0]}`, price, symbol);
+                    selfTuner.think(`[${symbol}] AI Brain disagreed or said WAIT: ${brainDecision.reason}`, 'skip');
+                    recordShadowTrade(pattern, consensus.signal, `brain: ${brainDecision.reason}`, price, symbol);
                 }
             } else if (decision.hasSignal) {
                 selfTuner.think(`[${symbol}] Signal skipped: ${decision.reason} | Pattern: ${pattern.patternKey}`, 'skip');
@@ -1249,10 +1273,11 @@ function generateDashboardHTML() {
     const tunerConfig = selfTuner.getConfig();
     const thinkingLog = selfTuner.getThinkingLog();
     const tuningChanges = selfTuner.getTuningLog();
+    const brainLog = aiBrain.getThinkingLog();
 
     const categoryColors = {
         entry: '#00ff88', exit: '#ff4444', monitor: '#00d4ff', decision: '#ffaa00',
-        blocked: '#ff6600', skip: '#888', scan: '#555', tuning: '#aa44ff',
+        blocked: '#ff6600', skip: '#888', scan: '#555', tuning: '#aa44ff', ai_brain: '#ff00ff',
         stop_loss: '#ff4444', take_profit: '#00ff88', pattern: '#00d4ff',
         timing: '#ffaa00', streak: '#ff6600', market_selection: '#aa44ff',
         volatility: '#ff8800', position_size: '#00aaff', cooldown: '#aaaaaa',
@@ -1395,9 +1420,9 @@ function generateDashboardHTML() {
 
         <div class="grid">
             <div class="card full-width">
-                <h2>Bot Thinking (Live Decisions)</h2>
-                <div style="max-height: 300px; overflow-y: auto;">
-                    ${thinkingLog.slice(0, 30).map(t => {
+                <h2>AI Brain & Bot Thinking (Live Decisions)</h2>
+                <div style="max-height: 350px; overflow-y: auto;">
+                    ${[...thinkingLog, ...brainLog].sort((a,b) => b.time - a.time).slice(0, 40).map(t => {
                         const color = categoryColors[t.category] || '#888';
                         return `<div class="thinking-entry" style="border-left-color: ${color};">
                             <span class="thinking-time">${new Date(t.time).toLocaleTimeString()}</span>
