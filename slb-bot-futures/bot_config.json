@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "lastUpdated": "2026-02-11T15:43:56.790Z",
+  "lastUpdated": "2026-02-11T15:47:02.157Z",
   "dailyLossLimit": 20,
   "maxConsecutiveLosses": 8,
   "maxPositionRiskPercent": 3,
