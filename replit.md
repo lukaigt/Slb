@@ -1,7 +1,7 @@
 # AI Solana Futures Trading Bot v7 (Drift Protocol - GLM-4.7 Flash)
 
 ## Overview
-AI-powered perpetual futures trading bot using Drift Protocol on Solana mainnet. All trading decisions (entries, exits, stop losses, take profits) are made by **GLM-4.7-Flash** AI model via OpenRouter. Trades SOL-PERP, BTC-PERP, and ETH-PERP with 50x leverage. Safety layer with 20% daily loss limit.
+AI-powered perpetual futures trading bot using Drift Protocol on Solana mainnet. All trading decisions (entries, exits, stop losses, take profits) are made by **GLM-4.7-Flash** AI model via OpenRouter. Trades SOL-PERP, BTC-PERP, and ETH-PERP with 20x leverage. Safety layer with 20% daily loss limit.
 
 ## Project Structure
 ```
@@ -24,7 +24,8 @@ old_spot_bot/            # OLD: Archived spot trading bot (not used)
 - Sends market data to GLM-4.7-Flash via OpenRouter API
 - AI receives: price, trend, orderbook imbalance, volatility, recent prices, past trade results
 - AI responds with: action (LONG/SHORT/WAIT), stopLoss, takeProfit, confidence, reason, maxHoldMinutes
-- System prompt teaches AI about 50x leverage, fees, risk management
+- System prompt teaches AI about 20x leverage, fees, risk management
+- Phase 2: Retrieves similar past trades (by trend/volatility/imbalance) and includes lessons in prompt
 - Each AI call costs fractions of a cent (~$0.50-1.00/day)
 - All AI reasoning visible on dashboard
 
@@ -36,17 +37,19 @@ Simple hard safety rules the AI cannot override:
 - Manual unpause available
 
 ### Data Flow
-1. Every 30s: Collect prices, orderbook data, calculate trend/volatility
-2. Every 3 min (configurable): Send data to AI, get trading decision
-3. Every 30s: Monitor open positions against AI's SL/TP/max hold time
+1. Every 15s: Collect prices, orderbook data, calculate trend/volatility
+2. Every 3 min (configurable): Send data + past trade memories to AI, get trading decision
+3. Every 15s: Monitor open positions against AI's SL/TP/max hold time
 4. Safety check before every trade attempt
 
 ### Trade Execution
 - Uses Drift SDK for on-chain perp orders
 - Supports simulation mode (paper trading) and live trading
 - Position sync from chain on startup
-- Trailing take profit with 0.3% trailing distance
-- Max hold time enforced (AI sets per trade, max 120 min)
+- P&L-based stepped trailing TP (10%→0.25%, 15%→0.20%, 30%→0.15%, 50%→0.10%)
+- Profit protection floor: trailing activates at 10% P&L regardless of AI's TP target
+- Emergency SL/TP defaults (1.5%) auto-assigned when position has null values after restart
+- Max hold time enforced (AI sets per trade, max 240 min)
 
 ## Environment Variables
 
@@ -62,11 +65,11 @@ Simple hard safety rules the AI cannot override:
 - `MIN_CONFIDENCE`: Minimum AI confidence to trade (default: 0.6)
 
 ### Trading Settings
-- `LEVERAGE`: Trading leverage (default: 50)
+- `LEVERAGE`: Trading leverage (default: 20)
 - `TRADE_AMOUNT_USDC`: Position size in USDC per market (default: 10)
 - `ACTIVE_MARKETS`: Comma-separated list (default: SOL-PERP,BTC-PERP,ETH-PERP)
 - `SIMULATION_MODE`: true for paper trading, false for real (default: true)
-- `CHECK_INTERVAL_MS`: Position monitoring interval (default: 30000 = 30s)
+- `CHECK_INTERVAL_MS`: Position monitoring interval (default: 15000 = 15s)
 - `COOLDOWN_SECONDS`: Seconds between trades per market (default: 180)
 
 ### Safety Limits
@@ -111,6 +114,12 @@ Dark theme dashboard showing:
 - dotenv: Environment variable management
 
 ## Recent Changes
+- 2026-02-12: Phase 2 AI Memory - AI now retrieves similar past trades and their lessons before making decisions
+- 2026-02-12: P&L-based trailing TP system - uses leverage-aware P&L% instead of raw price%, profit floor at 10% P&L
+- 2026-02-12: Emergency SL/TP defaults (1.5% each) auto-assigned when position has null values after restart
+- 2026-02-12: Position monitoring sped up from 30s to 15s for faster response at leverage
+- 2026-02-12: All P&L calculations now leverage-aware (price move * leverage)
+- 2026-02-12: AI prompt updated for 20x leverage with realistic TP targets (0.5-2.0% price move)
 - 2026-02-12: Phase 1 Memory Recorder - stores market snapshots (trend, volatility, imbalance) with each trade for future AI learning
 - 2026-02-12: Fixed crazy P&L display (977888%) - added sanity checks on entry price sync and P&L calculations
 - 2026-02-12: Increased max hold time from 2h to 4h (AI can now hold trades longer)

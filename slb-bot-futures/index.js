@@ -23,12 +23,12 @@ dotenv.config();
 const CONFIG = {
     RPC_URL: process.env.SOLANA_RPC_URL,
     PRIVATE_KEY: process.env.PRIVATE_KEY,
-    LEVERAGE: parseInt(process.env.LEVERAGE) || 50,
+    LEVERAGE: parseInt(process.env.LEVERAGE) || 20,
     TRADE_AMOUNT_USDC: parseFloat(process.env.TRADE_AMOUNT_USDC) || 10,
     SIMULATION_MODE: process.env.SIMULATION_MODE === 'true' || process.env.SIMULATION_MODE === '1',
     COOLDOWN_MS: (parseInt(process.env.COOLDOWN_SECONDS) || 180) * 1000,
     AI_INTERVAL_MS: parseInt(process.env.AI_INTERVAL_MS) || 180000,
-    CHECK_INTERVAL_MS: parseInt(process.env.CHECK_INTERVAL_MS) || 30000,
+    CHECK_INTERVAL_MS: parseInt(process.env.CHECK_INTERVAL_MS) || 15000,
     DLOB_URL: 'https://dlob.drift.trade',
     DASHBOARD_PORT: parseInt(process.env.DASHBOARD_PORT) || 3000,
     MEMORY_FILE: path.join(__dirname, 'trade_memory.json'),
@@ -259,15 +259,16 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
         return true;
     }
 
-    let profitPercent = 0;
+    let priceMove = 0;
     if (pos === 'LONG') {
-        profitPercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
+        priceMove = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
     } else {
-        profitPercent = ((marketState.entryPrice - currentPrice) / marketState.entryPrice) * 100;
+        priceMove = ((marketState.entryPrice - currentPrice) / marketState.entryPrice) * 100;
     }
+    let profitPercent = priceMove * CONFIG.LEVERAGE;
 
-    if (Math.abs(profitPercent) > 100) {
-        profitPercent = profitPercent > 0 ? 100 : -100;
+    if (Math.abs(profitPercent) > 500) {
+        profitPercent = profitPercent > 0 ? 500 : -500;
     }
 
     const result = profitPercent > 0 ? 'WIN' : 'LOSS';
@@ -441,42 +442,76 @@ function checkStopLoss(currentPrice, marketState, symbol) {
     return false;
 }
 
-function getSteppedTrailingDistance(profitPercent) {
-    if (profitPercent >= 35) return 0.1;
-    if (profitPercent >= 20) return 0.15;
-    if (profitPercent >= 10) return 0.2;
-    return 0.3;
+const PROFIT_PROTECTION_FLOOR = 0.5;
+
+function getSteppedTrailingDistance(pnlPercent) {
+    if (pnlPercent >= 50) return 0.10;
+    if (pnlPercent >= 30) return 0.15;
+    if (pnlPercent >= 15) return 0.20;
+    return 0.25;
 }
 
 function checkTakeProfit(currentPrice, marketState, symbol) {
     const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
-    if (!pos || !marketState.aiTakeProfit) return false;
+    if (!pos || !marketState.entryPrice || marketState.entryPrice <= 0) return false;
+
+    const leverage = CONFIG.LEVERAGE;
 
     if (pos === 'LONG') {
-        const profitPercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
+        const priceMove = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
+        const pnlPercent = priceMove * leverage;
         if (currentPrice > marketState.highestPriceSinceEntry) marketState.highestPriceSinceEntry = currentPrice;
-        if (profitPercent >= marketState.aiTakeProfit) marketState.trailingStopActive = true;
+
+        if (marketState.aiTakeProfit && priceMove >= marketState.aiTakeProfit) {
+            if (!marketState.trailingStopActive) {
+                aiBrain.think(`[${symbol}] TRAILING ACTIVATED (AI TP hit) | P&L: ${pnlPercent.toFixed(1)}%`, 'exit');
+            }
+            marketState.trailingStopActive = true;
+        }
+        if (pnlPercent >= 10 && priceMove >= PROFIT_PROTECTION_FLOOR) {
+            if (!marketState.trailingStopActive) {
+                aiBrain.think(`[${symbol}] TRAILING ACTIVATED (Profit Floor) | P&L: ${pnlPercent.toFixed(1)}%`, 'exit');
+            }
+            marketState.trailingStopActive = true;
+        }
+
         if (marketState.trailingStopActive) {
-            const peakProfit = ((marketState.highestPriceSinceEntry - marketState.entryPrice) / marketState.entryPrice) * 100;
-            const trailingDistance = getSteppedTrailingDistance(peakProfit);
+            const peakPriceMove = ((marketState.highestPriceSinceEntry - marketState.entryPrice) / marketState.entryPrice) * 100;
+            const peakPnl = peakPriceMove * leverage;
+            const trailingDistance = getSteppedTrailingDistance(peakPnl);
             const dropFromHigh = ((marketState.highestPriceSinceEntry - currentPrice) / marketState.highestPriceSinceEntry) * 100;
             if (dropFromHigh >= trailingDistance) {
-                log(`[${symbol}] TRAILING TP (LONG): Profit=${profitPercent.toFixed(2)}% | Peak=${peakProfit.toFixed(2)}% | Trail=${trailingDistance}%`);
-                aiBrain.think(`[${symbol}] TRAILING TP on LONG | Profit: ${profitPercent.toFixed(2)}% | Peak: ${peakProfit.toFixed(2)}% | Trail distance: ${trailingDistance}%`, 'exit');
+                log(`[${symbol}] TRAILING TP (LONG): P&L=${pnlPercent.toFixed(1)}% | PeakP&L=${peakPnl.toFixed(1)}% | Trail=${trailingDistance}%`);
+                aiBrain.think(`[${symbol}] TRAILING TP on LONG | P&L: ${pnlPercent.toFixed(1)}% | Peak P&L: ${peakPnl.toFixed(1)}% | Trail: ${trailingDistance}%`, 'exit');
                 return true;
             }
         }
     } else if (pos === 'SHORT') {
-        const profitPercent = ((marketState.entryPrice - currentPrice) / marketState.entryPrice) * 100;
+        const priceMove = ((marketState.entryPrice - currentPrice) / marketState.entryPrice) * 100;
+        const pnlPercent = priceMove * leverage;
         if (currentPrice < marketState.lowestPriceSinceEntry) marketState.lowestPriceSinceEntry = currentPrice;
-        if (profitPercent >= marketState.aiTakeProfit) marketState.trailingStopActive = true;
+
+        if (marketState.aiTakeProfit && priceMove >= marketState.aiTakeProfit) {
+            if (!marketState.trailingStopActive) {
+                aiBrain.think(`[${symbol}] TRAILING ACTIVATED (AI TP hit) | P&L: ${pnlPercent.toFixed(1)}%`, 'exit');
+            }
+            marketState.trailingStopActive = true;
+        }
+        if (pnlPercent >= 10 && priceMove >= PROFIT_PROTECTION_FLOOR) {
+            if (!marketState.trailingStopActive) {
+                aiBrain.think(`[${symbol}] TRAILING ACTIVATED (Profit Floor) | P&L: ${pnlPercent.toFixed(1)}%`, 'exit');
+            }
+            marketState.trailingStopActive = true;
+        }
+
         if (marketState.trailingStopActive) {
-            const peakProfit = ((marketState.entryPrice - marketState.lowestPriceSinceEntry) / marketState.entryPrice) * 100;
-            const trailingDistance = getSteppedTrailingDistance(peakProfit);
+            const peakPriceMove = ((marketState.entryPrice - marketState.lowestPriceSinceEntry) / marketState.entryPrice) * 100;
+            const peakPnl = peakPriceMove * leverage;
+            const trailingDistance = getSteppedTrailingDistance(peakPnl);
             const riseFromLow = ((currentPrice - marketState.lowestPriceSinceEntry) / marketState.lowestPriceSinceEntry) * 100;
             if (riseFromLow >= trailingDistance) {
-                log(`[${symbol}] TRAILING TP (SHORT): Profit=${profitPercent.toFixed(2)}% | Peak=${peakProfit.toFixed(2)}% | Trail=${trailingDistance}%`);
-                aiBrain.think(`[${symbol}] TRAILING TP on SHORT | Profit: ${profitPercent.toFixed(2)}% | Peak: ${peakProfit.toFixed(2)}% | Trail distance: ${trailingDistance}%`, 'exit');
+                log(`[${symbol}] TRAILING TP (SHORT): P&L=${pnlPercent.toFixed(1)}% | PeakP&L=${peakPnl.toFixed(1)}% | Trail=${trailingDistance}%`);
+                aiBrain.think(`[${symbol}] TRAILING TP on SHORT | P&L: ${pnlPercent.toFixed(1)}% | Peak P&L: ${peakPnl.toFixed(1)}% | Trail: ${trailingDistance}%`, 'exit');
                 return true;
             }
         }
@@ -545,10 +580,22 @@ async function processMarket(symbol) {
                 marketState.lowestPriceSinceEntry = price;
                 if (!marketState.entryTime) marketState.entryTime = Date.now();
             }
-            let pnl = pos === 'LONG'
+            if (marketState.aiStopLoss == null) {
+                marketState.aiStopLoss = 1.5;
+                aiBrain.think(`[${symbol}] Emergency SL assigned: 1.5% (position had no stop loss)`, 'safety');
+            }
+            if (marketState.aiTakeProfit == null) {
+                marketState.aiTakeProfit = 1.5;
+                aiBrain.think(`[${symbol}] Emergency TP assigned: 1.5% (position had no take profit)`, 'safety');
+            }
+            if (marketState.aiMaxHoldMinutes == null) {
+                marketState.aiMaxHoldMinutes = 120;
+            }
+            const priceMovePct = pos === 'LONG'
                 ? ((price - marketState.entryPrice) / marketState.entryPrice * 100)
                 : ((marketState.entryPrice - price) / marketState.entryPrice * 100);
-            if (Math.abs(pnl) > 500) {
+            let pnl = priceMovePct * CONFIG.LEVERAGE;
+            if (Math.abs(pnl) > 1000) {
                 aiBrain.think(`[${symbol}] P&L looks wrong (${pnl.toFixed(0)}%) - entry price may be stale, resetting`, 'error');
                 marketState.entryPrice = price;
                 marketState.highestPriceSinceEntry = price;
@@ -556,9 +603,7 @@ async function processMarket(symbol) {
                 pnl = 0;
             }
             const holdMin = marketState.entryTime ? ((Date.now() - marketState.entryTime) / 60000).toFixed(0) : '?';
-            const slDisplay = marketState.aiStopLoss != null ? marketState.aiStopLoss + '%' : 'none';
-            const tpDisplay = marketState.aiTakeProfit != null ? marketState.aiTakeProfit + '%' : 'none';
-            aiBrain.think(`[${symbol}] Monitoring ${pos} | P&L: ${pnl.toFixed(2)}% | Hold: ${holdMin}min | SL: ${slDisplay} | TP: ${tpDisplay}`, 'monitor');
+            aiBrain.think(`[${symbol}] Monitoring ${pos} | P&L: ${pnl.toFixed(1)}% | Hold: ${holdMin}min | SL: ${marketState.aiStopLoss}% | TP: ${marketState.aiTakeProfit}%`, 'monitor');
 
             if (checkStopLoss(price, marketState, symbol)) {
                 await closePosition('stop_loss', marketState, marketConfig, symbol);
@@ -610,7 +655,7 @@ async function processMarket(symbol) {
                 priceHistory: marketState.prices.slice(-20)
             };
 
-            const decision = await aiBrain.askBrain(marketData);
+            const decision = await aiBrain.askBrain(marketData, tradeMemory.trades);
 
             if (decision.action === 'WAIT') {
                 aiBrain.think(`[${symbol}] AI says WAIT: ${decision.reason}`, 'scan');
@@ -711,7 +756,7 @@ function generateDashboardHTML() {
 <body>
     <div class="container">
         <h1>AI Trading Bot - GLM-4.7 Flash</h1>
-        <div class="subtitle">Drift Protocol | 50x Leverage | AI-Driven Entries & Exits</div>
+        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven Entries & Exits</div>
         
         <div class="grid">
             <div class="card">
@@ -739,10 +784,11 @@ function generateDashboardHTML() {
                             const volClass = (m.volatility || 0) < 0.2 ? 'positive' : (m.volatility || 0) < 0.4 ? 'neutral' : 'negative';
                             let pnlVal = 0;
                             if (pos && ms.entryPrice > 0 && m.price > 0) {
-                                pnlVal = pos === 'LONG' 
+                                const pm = pos === 'LONG' 
                                     ? ((m.price - ms.entryPrice) / ms.entryPrice * 100)
                                     : ((ms.entryPrice - m.price) / ms.entryPrice * 100);
-                                if (Math.abs(pnlVal) > 500) pnlVal = 0;
+                                pnlVal = pm * CONFIG.LEVERAGE;
+                                if (Math.abs(pnlVal) > 1000) pnlVal = 0;
                             }
                             const holdMin = pos && ms.entryTime ? ((Date.now() - ms.entryTime) / 60000).toFixed(0) + 'm' : '-';
                             return `<tr>
@@ -857,7 +903,7 @@ function startDashboard() {
 async function main() {
     log('═══════════════════════════════════════════════════════════');
     log('   AI TRADING BOT - GLM-4.7 Flash');
-    log('   Drift Protocol | 50x Leverage | AI-Driven');
+    log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);
     log(`Leverage: ${CONFIG.LEVERAGE}x`);

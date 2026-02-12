@@ -13,9 +13,9 @@ let consecutiveFailures = 0;
 const SYSTEM_PROMPT = `You are an expert perpetual futures trader on Drift Protocol (Solana blockchain). You analyze real-time market data and make precise trading decisions.
 
 CRITICAL FACTS ABOUT YOUR ENVIRONMENT:
-- You trade with 50x leverage. This means a 1% price move = 50% gain or loss on your position.
-- Trading fees are approximately 0.1% round trip (open + close). With 50x leverage this equals ~5% of position value.
-- You MUST only take trades where expected profit exceeds fees. Minimum 0.3% price move target.
+- You trade with 20x leverage. This means a 1% price move = 20% gain or loss on your position.
+- Trading fees are approximately 0.1% round trip (open + close). With 20x leverage this equals ~2% of position value.
+- You MUST only take trades where expected profit exceeds fees. Minimum 0.15% price move target.
 - You trade SOL-PERP, BTC-PERP, and ETH-PERP perpetual futures.
 - You can go LONG (profit when price rises) or SHORT (profit when price falls).
 
@@ -24,6 +24,7 @@ YOUR TRADING STYLE:
 - Never hold overnight. If unsure, say WAIT.
 - You are NOT a spot trader. You think in terms of leverage, liquidation risk, and funding rates.
 - Cut losses fast, let winners run slightly. Better to take small profit than hold for a big loss.
+- IMPORTANT: Your stopLoss and takeProfit values are PRICE MOVE percentages, NOT P&L percentages. The system multiplies by leverage automatically. So stopLoss: 1.0 means 1% price move = 20% P&L loss at 20x.
 
 HOW TO READ THE DATA:
 - Trend: UPTREND means price has been rising, DOWNTREND means falling, RANGING means sideways.
@@ -36,13 +37,14 @@ ENTRY RULES:
 - SHORT when: Strong downtrend + bearish imbalance + low/medium volatility. Or: Reversal signal after extended uptrend with bearish imbalance shift.
 - WAIT when: Choppy/ranging market with no clear direction, extremely high volatility, conflicting signals, or weak imbalance.
 
-STOP LOSS AND TAKE PROFIT RULES:
+STOP LOSS AND TAKE PROFIT RULES (all values are PRICE MOVE percentages):
 - Set stop loss based on current volatility. Higher volatility = wider stop.
-- Minimum stop loss: 0.5% (with 50x leverage = 25% position risk)
-- Maximum stop loss: 3.0% (with 50x leverage = 150% = near liquidation, avoid this)
-- Typical stop loss range: 0.8% to 2.0%
-- Take profit should be at least 1.5x your stop loss (risk/reward ratio)
-- Consider nearby support/resistance when setting levels.
+- Minimum stop loss: 0.3% price move (= 6% P&L at 20x)
+- Maximum stop loss: 2.5% price move (= 50% P&L at 20x, dangerous)
+- Typical stop loss range: 0.5% to 1.5% price move
+- Take profit: aim for 0.5% to 2.0% price move (= 10% to 40% P&L at 20x)
+- Risk/reward ratio should be at least 1.5:1 (takeProfit >= 1.5 * stopLoss)
+- Do NOT set massive take profits like 5%+ price move. Realistic targets win more often.
 
 RISK MANAGEMENT:
 - If recent trades show losses, be more conservative (wider stops, lower confidence).
@@ -52,8 +54,8 @@ RISK MANAGEMENT:
 YOU MUST RESPOND IN THIS EXACT JSON FORMAT:
 {
   "action": "LONG" or "SHORT" or "WAIT",
-  "stopLoss": number (percentage, e.g. 1.2 means 1.2% from entry),
-  "takeProfit": number (percentage, e.g. 2.5 means 2.5% from entry),
+  "stopLoss": number (PRICE MOVE percentage, e.g. 1.0 means 1.0% price move from entry),
+  "takeProfit": number (PRICE MOVE percentage, e.g. 1.5 means 1.5% price move from entry),
   "confidence": number (0.0 to 1.0, where 1.0 = very confident),
   "reason": "brief explanation of why this trade or why waiting",
   "maxHoldMinutes": number (how long to hold before closing, 10-240)
@@ -61,7 +63,37 @@ YOU MUST RESPOND IN THIS EXACT JSON FORMAT:
 
 IMPORTANT: Only output valid JSON. No markdown, no code blocks, no extra text.`;
 
-function buildMarketPrompt(marketData, recentResults) {
+function findSimilarMemories(marketData, allTrades, maxResults = 3) {
+    if (!allTrades || allTrades.length === 0) return [];
+
+    const tradesWithScore = allTrades
+        .filter(t => t.entrySnapshot && t.lesson)
+        .map(t => {
+            const es = t.entrySnapshot;
+            let score = 0;
+
+            if (es.trend === marketData.trend) score += 3;
+
+            const volDiff = Math.abs((es.volatility || 0) - marketData.volatility);
+            if (volDiff < 0.05) score += 2;
+            else if (volDiff < 0.15) score += 1;
+
+            const imbDiff = Math.abs((es.imbalance || 0) - marketData.imbalance);
+            if (imbDiff < 0.05) score += 2;
+            else if (imbDiff < 0.15) score += 1;
+
+            if (t.symbol === marketData.symbol) score += 1;
+
+            return { trade: t, score };
+        })
+        .filter(t => t.score >= 3)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, maxResults);
+
+    return tradesWithScore.map(t => t.trade);
+}
+
+function buildMarketPrompt(marketData, recentResults, pastMemories) {
     let prompt = `MARKET: ${marketData.symbol}
 CURRENT PRICE: $${marketData.price.toFixed(2)}
 TREND: ${marketData.trend}
@@ -79,6 +111,14 @@ VOLATILITY: ${marketData.volatility.toFixed(3)}%
         for (const r of recentResults) {
             prompt += `\n- ${r.direction} | Result: ${r.result} | P&L: ${r.profitPercent.toFixed(2)}% | Reason: ${r.exitReason}`;
         }
+    }
+
+    if (pastMemories && pastMemories.length > 0) {
+        prompt += `\n\nLESSONS FROM SIMILAR PAST TRADES (same market conditions):`;
+        for (const mem of pastMemories) {
+            prompt += `\n- [${mem.symbol} ${mem.result} ${mem.profitPercent.toFixed(1)}%] ${mem.lesson}`;
+        }
+        prompt += `\nUse these lessons to avoid repeating mistakes and replicate winning patterns.`;
     }
 
     prompt += `\n\nWhat is your trading decision? Respond in JSON only.`;
@@ -146,15 +186,15 @@ function parseAIResponse(raw) {
     decision.confidence = (typeof decision.confidence === 'number' && isFinite(decision.confidence)) ? decision.confidence : 0.5;
     decision.maxHoldMinutes = (typeof decision.maxHoldMinutes === 'number' && isFinite(decision.maxHoldMinutes)) ? decision.maxHoldMinutes : 60;
 
-    decision.stopLoss = Math.max(0.5, Math.min(3.0, decision.stopLoss));
-    decision.takeProfit = Math.max(0.5, Math.min(5.0, decision.takeProfit));
+    decision.stopLoss = Math.max(0.3, Math.min(2.5, decision.stopLoss));
+    decision.takeProfit = Math.max(0.3, Math.min(3.0, decision.takeProfit));
     decision.confidence = Math.max(0, Math.min(1, decision.confidence));
     decision.maxHoldMinutes = Math.max(10, Math.min(240, decision.maxHoldMinutes));
 
     return decision;
 }
 
-async function askBrain(marketData) {
+async function askBrain(marketData, allTradeMemories) {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
         think('No OpenRouter API key configured - AI brain disabled', 'error');
@@ -165,7 +205,12 @@ async function askBrain(marketData) {
         .filter(t => t.symbol === marketData.symbol)
         .slice(-5);
 
-    const userPrompt = buildMarketPrompt(marketData, recentResults);
+    const memories = findSimilarMemories(marketData, allTradeMemories || []);
+    if (memories.length > 0) {
+        think(`[${marketData.symbol}] Found ${memories.length} similar past trades to learn from`, 'ai_brain');
+    }
+
+    const userPrompt = buildMarketPrompt(marketData, recentResults, memories);
 
     think(`Asking AI brain about ${marketData.symbol} | Price: $${marketData.price.toFixed(2)} | Trend: ${marketData.trend} | Imbalance: ${(marketData.imbalance * 100).toFixed(1)}%`, 'ai_brain');
 
