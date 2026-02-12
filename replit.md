@@ -111,6 +111,9 @@ Dark theme dashboard showing:
 - dotenv: Environment variable management
 
 ## Recent Changes
+- 2026-02-12: Phase 1 Memory Recorder - stores market snapshots (trend, volatility, imbalance) with each trade for future AI learning
+- 2026-02-12: Fixed crazy P&L display (977888%) - added sanity checks on entry price sync and P&L calculations
+- 2026-02-12: Increased max hold time from 2h to 4h (AI can now hold trades longer)
 - 2026-02-11: Stepped trailing TP - tightens from 0.3% at TP target to 0.1% at 35%+ profit to lock in big wins
 - 2026-02-11: v7 AI-powered rewrite with GLM-4.7-Flash
 - 2026-02-11: Removed old technical analysis, patterns, shadow trades

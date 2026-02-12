@@ -20,7 +20,7 @@ CRITICAL FACTS ABOUT YOUR ENVIRONMENT:
 - You can go LONG (profit when price rises) or SHORT (profit when price falls).
 
 YOUR TRADING STYLE:
-- Short-term trader. Hold times: 10 minutes to 2 hours maximum.
+- Short-term trader. Hold times: 10 minutes to 4 hours maximum.
 - Never hold overnight. If unsure, say WAIT.
 - You are NOT a spot trader. You think in terms of leverage, liquidation risk, and funding rates.
 - Cut losses fast, let winners run slightly. Better to take small profit than hold for a big loss.
@@ -56,7 +56,7 @@ YOU MUST RESPOND IN THIS EXACT JSON FORMAT:
   "takeProfit": number (percentage, e.g. 2.5 means 2.5% from entry),
   "confidence": number (0.0 to 1.0, where 1.0 = very confident),
   "reason": "brief explanation of why this trade or why waiting",
-  "maxHoldMinutes": number (how long to hold before closing, 10-120)
+  "maxHoldMinutes": number (how long to hold before closing, 10-240)
 }
 
 IMPORTANT: Only output valid JSON. No markdown, no code blocks, no extra text.`;
@@ -149,7 +149,7 @@ function parseAIResponse(raw) {
     decision.stopLoss = Math.max(0.5, Math.min(3.0, decision.stopLoss));
     decision.takeProfit = Math.max(0.5, Math.min(5.0, decision.takeProfit));
     decision.confidence = Math.max(0, Math.min(1, decision.confidence));
-    decision.maxHoldMinutes = Math.max(10, Math.min(120, decision.maxHoldMinutes));
+    decision.maxHoldMinutes = Math.max(10, Math.min(240, decision.maxHoldMinutes));
 
     return decision;
 }

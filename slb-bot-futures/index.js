@@ -238,6 +238,13 @@ async function openPosition(direction, marketState, marketConfig, symbol) {
     marketState.lowestPriceSinceEntry = currentPrice;
     marketState.trailingStopActive = false;
     marketState.currentTradeDirection = direction;
+    marketState.entrySnapshot = {
+        trend: marketState.trend,
+        volatility: marketState.volatility,
+        imbalance: marketState.lastImbalance || 0,
+        priceHistory: (marketState.prices || []).slice(-10),
+        timestamp: Date.now()
+    };
     return true;
 }
 
@@ -298,6 +305,28 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
 
     const holdTimeMin = marketState.entryTime ? ((Date.now() - marketState.entryTime) / 60000).toFixed(1) : '?';
 
+    const exitSnapshot = {
+        trend: marketState.trend,
+        volatility: marketState.volatility,
+        imbalance: marketState.lastImbalance || 0,
+        timestamp: Date.now()
+    };
+
+    let lesson = '';
+    if (result === 'LOSS' && marketState.entrySnapshot) {
+        const es = marketState.entrySnapshot;
+        if (exitReason === 'stop_loss') {
+            lesson = `Entered ${pos} during ${es.trend} with ${(es.imbalance * 100).toFixed(0)}% imbalance and ${es.volatility.toFixed(2)}% volatility. Hit stop loss - market reversed against entry.`;
+        } else if (exitReason === 'max_hold_time') {
+            lesson = `Entered ${pos} during ${es.trend} with ${(es.imbalance * 100).toFixed(0)}% imbalance. Trade went nowhere within hold time - weak momentum.`;
+        } else {
+            lesson = `Entered ${pos} during ${es.trend}. Lost on ${exitReason}.`;
+        }
+    } else if (result === 'WIN' && marketState.entrySnapshot) {
+        const es = marketState.entrySnapshot;
+        lesson = `Entered ${pos} during ${es.trend} with ${(es.imbalance * 100).toFixed(0)}% imbalance and ${es.volatility.toFixed(2)}% volatility. Won via ${exitReason} - good setup.`;
+    }
+
     const trade = {
         timestamp: new Date().toISOString(),
         symbol,
@@ -311,7 +340,10 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
         aiStopLoss: marketState.aiStopLoss,
         aiTakeProfit: marketState.aiTakeProfit,
         aiReason: marketState.aiReason,
-        simulated: CONFIG.SIMULATION_MODE
+        simulated: CONFIG.SIMULATION_MODE,
+        entrySnapshot: marketState.entrySnapshot || null,
+        exitSnapshot,
+        lesson
     };
     tradeMemory.trades.push(trade);
     tradeMemory.sessionStats.totalTrades++;
@@ -347,6 +379,7 @@ function resetPositionState(marketState) {
     marketState.aiTakeProfit = null;
     marketState.aiMaxHoldMinutes = null;
     marketState.aiReason = null;
+    marketState.entrySnapshot = null;
 }
 
 async function syncPositionFromChain(marketState, marketConfig, symbol) {
@@ -362,12 +395,20 @@ async function syncPositionFromChain(marketState, marketConfig, symbol) {
                 marketState.currentPosition = onChainDirection;
                 const quoteEntry = perpPosition.quoteEntryAmount;
                 const baseAmount = perpPosition.baseAssetAmount.abs();
+                const oracleData = driftClient.getOracleDataForPerpMarket(marketConfig.marketIndex);
+                const oraclePrice = convertToNumber(oracleData.price, PRICE_PRECISION);
                 if (!baseAmount.eq(new BN(0))) {
                     const entryPriceRaw = quoteEntry.abs().mul(PRICE_PRECISION).div(baseAmount);
-                    marketState.entryPrice = convertToNumber(entryPriceRaw, PRICE_PRECISION);
+                    const calcEntry = convertToNumber(entryPriceRaw, PRICE_PRECISION);
+                    const priceDiff = Math.abs(calcEntry - oraclePrice) / oraclePrice * 100;
+                    if (calcEntry > 0 && priceDiff < 50) {
+                        marketState.entryPrice = calcEntry;
+                    } else {
+                        log(`[${symbol}] Synced entry price looks wrong ($${calcEntry.toFixed(2)} vs oracle $${oraclePrice.toFixed(2)}) - using oracle`);
+                        marketState.entryPrice = oraclePrice;
+                    }
                 } else {
-                    const oracleData = driftClient.getOracleDataForPerpMarket(marketConfig.marketIndex);
-                    marketState.entryPrice = convertToNumber(oracleData.price, PRICE_PRECISION);
+                    marketState.entryPrice = oraclePrice;
                 }
                 marketState.highestPriceSinceEntry = marketState.entryPrice;
                 marketState.lowestPriceSinceEntry = marketState.entryPrice;
@@ -497,11 +538,27 @@ async function processMarket(symbol) {
         log(`[${symbol}] ${modeStr} $${price.toFixed(2)} | ${marketState.trend} | Imb: ${(imbalance * 100).toFixed(0)}% | Vol: ${marketState.volatility.toFixed(2)}% | Pos: ${posStr}`);
 
         if (pos) {
-            const pnl = pos === 'LONG'
+            if (!marketState.entryPrice || marketState.entryPrice <= 0) {
+                aiBrain.think(`[${symbol}] Position found but entry price invalid - using current price as entry`, 'error');
+                marketState.entryPrice = price;
+                marketState.highestPriceSinceEntry = price;
+                marketState.lowestPriceSinceEntry = price;
+                if (!marketState.entryTime) marketState.entryTime = Date.now();
+            }
+            let pnl = pos === 'LONG'
                 ? ((price - marketState.entryPrice) / marketState.entryPrice * 100)
                 : ((marketState.entryPrice - price) / marketState.entryPrice * 100);
+            if (Math.abs(pnl) > 500) {
+                aiBrain.think(`[${symbol}] P&L looks wrong (${pnl.toFixed(0)}%) - entry price may be stale, resetting`, 'error');
+                marketState.entryPrice = price;
+                marketState.highestPriceSinceEntry = price;
+                marketState.lowestPriceSinceEntry = price;
+                pnl = 0;
+            }
             const holdMin = marketState.entryTime ? ((Date.now() - marketState.entryTime) / 60000).toFixed(0) : '?';
-            aiBrain.think(`[${symbol}] Monitoring ${pos} | P&L: ${pnl.toFixed(2)}% | Hold: ${holdMin}min | SL: ${marketState.aiStopLoss}% | TP: ${marketState.aiTakeProfit}%`, 'monitor');
+            const slDisplay = marketState.aiStopLoss != null ? marketState.aiStopLoss + '%' : 'none';
+            const tpDisplay = marketState.aiTakeProfit != null ? marketState.aiTakeProfit + '%' : 'none';
+            aiBrain.think(`[${symbol}] Monitoring ${pos} | P&L: ${pnl.toFixed(2)}% | Hold: ${holdMin}min | SL: ${slDisplay} | TP: ${tpDisplay}`, 'monitor');
 
             if (checkStopLoss(price, marketState, symbol)) {
                 await closePosition('stop_loss', marketState, marketConfig, symbol);
@@ -685,6 +742,7 @@ function generateDashboardHTML() {
                                 pnlVal = pos === 'LONG' 
                                     ? ((m.price - ms.entryPrice) / ms.entryPrice * 100)
                                     : ((ms.entryPrice - m.price) / ms.entryPrice * 100);
+                                if (Math.abs(pnlVal) > 500) pnlVal = 0;
                             }
                             const holdMin = pos && ms.entryTime ? ((Date.now() - ms.entryTime) / 60000).toFixed(0) + 'm' : '-';
                             return `<tr>
@@ -696,7 +754,7 @@ function generateDashboardHTML() {
                                 <td class="${pos === 'LONG' ? 'positive' : pos === 'SHORT' ? 'negative' : ''}">${pos || 'NONE'}</td>
                                 <td>${pos ? '$' + ms.entryPrice.toFixed(2) : '-'}</td>
                                 <td class="${pnlVal >= 0 ? 'positive' : 'negative'}">${pos ? pnlVal.toFixed(2) + '%' : '-'}</td>
-                                <td>${pos && ms.aiStopLoss ? ms.aiStopLoss.toFixed(1) + '/' + ms.aiTakeProfit.toFixed(1) : '-'}</td>
+                                <td>${pos && ms.aiStopLoss != null ? ms.aiStopLoss.toFixed(1) + '/' + (ms.aiTakeProfit != null ? ms.aiTakeProfit.toFixed(1) : '?') : (pos ? 'synced' : '-')}</td>
                                 <td>${holdMin}</td>
                             </tr>`;
                         }).join('')}
