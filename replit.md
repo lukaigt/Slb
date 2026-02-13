@@ -8,9 +8,11 @@ AI-powered perpetual futures trading bot using Drift Protocol on Solana mainnet.
 slb-bot-futures/
   index.js              # Main bot logic + dashboard + Drift connection
   ai_brain.js           # AI decision engine (GLM-4.7-Flash via OpenRouter)
+  indicators.js          # Technical indicators (RSI, EMA, MACD, BB, ATR, StochRSI, ADX)
   self_tuner.js          # Safety layer (daily loss limit, consecutive loss pause)
   bot_config.json        # Safety config (auto-generated, gitignored)
   trade_memory.json      # Trade history (gitignored)
+  price_history.json     # Saved price data for indicator persistence (gitignored)
   package.json           # Node.js dependencies
   .env.example           # Environment variable template
   .gitignore             # Git ignore rules
@@ -21,13 +23,20 @@ old_spot_bot/            # OLD: Archived spot trading bot (not used)
 ## Architecture
 
 ### AI Brain (ai_brain.js)
-- Sends market data to GLM-4.7-Flash via OpenRouter API
-- AI receives: price, trend, orderbook imbalance, volatility, recent prices, past trade results
+- Sends market data + technical indicators to GLM-4.7-Flash via OpenRouter API
+- AI receives: price, trend, orderbook imbalance, volatility, recent prices, past trade results, 9 technical indicators across 3 timeframes
 - AI responds with: action (LONG/SHORT/WAIT), stopLoss, takeProfit, confidence, reason, maxHoldMinutes
-- System prompt teaches AI about 20x leverage, fees, risk management
+- System prompt teaches AI about 20x leverage, fees, risk management, and all 9 technical indicators with interpretation rules
 - Phase 2: Retrieves similar past trades (by trend/volatility/imbalance) and includes lessons in prompt
 - Each AI call costs fractions of a cent (~$0.50-1.00/day)
 - All AI reasoning visible on dashboard
+
+### Technical Indicators (indicators.js)
+- 9 indicators calculated from on-chain oracle prices: RSI(14), EMA(9/21/50), MACD(12/26/9), Bollinger Bands(20,2), ATR(14), Stochastic RSI(14,14,3,3), ADX(14)
+- 3 timeframes: 1-minute, 5-minute, 15-minute candles built from raw price data
+- OHLC candles constructed from 15-second price samples
+- Indicators progressively become available as enough data accumulates (ADX/MACD need ~35+ candles)
+- Price history saved to disk every 5 minutes and on shutdown; loaded on startup with 1-hour max age filter
 
 ### Safety Layer (self_tuner.js)
 Simple hard safety rules the AI cannot override:
@@ -114,6 +123,11 @@ Dark theme dashboard showing:
 - dotenv: Environment variable management
 
 ## Recent Changes
+- 2026-02-13: Technical Indicators - 9 indicators (RSI, EMA 9/21/50, MACD, Bollinger Bands, ATR, StochRSI, ADX) across 3 timeframes (1m, 5m, 15m)
+- 2026-02-13: AI system prompt rewritten to teach technical analysis, multi-timeframe confirmation rules, indicator-based entry/exit criteria
+- 2026-02-13: Dashboard now shows full indicator table with color-coded values matching what AI sees
+- 2026-02-13: Price history persistence for indicator continuity across restarts (saves every 5 min + on shutdown)
+- 2026-02-13: AI max_tokens increased to 1500 for longer indicator-rich responses
 - 2026-02-12: Phase 2 AI Memory - AI now retrieves similar past trades and their lessons before making decisions
 - 2026-02-12: P&L-based trailing TP system - uses leverage-aware P&L% instead of raw price%, profit floor at 10% P&L
 - 2026-02-12: Emergency SL/TP defaults (1.5% each) auto-assigned when position has null values after restart

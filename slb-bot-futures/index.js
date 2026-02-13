@@ -17,6 +17,7 @@ const path = require('path');
 const http = require('http');
 const aiBrain = require('./ai_brain');
 const safety = require('./self_tuner');
+const indicators = require('./indicators');
 
 dotenv.config();
 
@@ -32,6 +33,7 @@ const CONFIG = {
     DLOB_URL: 'https://dlob.drift.trade',
     DASHBOARD_PORT: parseInt(process.env.DASHBOARD_PORT) || 3000,
     MEMORY_FILE: path.join(__dirname, 'trade_memory.json'),
+    PRICE_HISTORY_FILE: path.join(__dirname, 'price_history.json'),
     MIN_CONFIDENCE: parseFloat(process.env.MIN_CONFIDENCE) || 0.6,
 };
 
@@ -60,13 +62,17 @@ function createEmptyMarketState() {
         entryTime: null,
         lastAiCall: 0,
         prices: [],
+        priceTimestamps: [],
         imbalances: [],
         lastPrice: 0,
         lastImbalance: 0,
         volatility: 0,
         trend: 'UNKNOWN',
         rpcConnected: false,
-        dlobConnected: false
+        dlobConnected: false,
+        indicators1m: null,
+        indicators5m: null,
+        indicators15m: null
     };
 }
 
@@ -138,6 +144,74 @@ function saveMemory() {
         fs.writeFileSync(CONFIG.MEMORY_FILE, JSON.stringify(tradeMemory, null, 2));
     } catch (error) {
         log(`Error saving memory: ${error.message}`);
+    }
+}
+
+function savePriceHistory() {
+    try {
+        const data = {};
+        for (const symbol of ACTIVE_MARKETS) {
+            const ms = marketStates[symbol];
+            if (ms && ms.prices.length > 0) {
+                data[symbol] = {
+                    prices: ms.prices.slice(-1200),
+                    timestamps: ms.priceTimestamps.slice(-1200)
+                };
+            }
+        }
+        fs.writeFileSync(CONFIG.PRICE_HISTORY_FILE, JSON.stringify(data));
+    } catch (error) {
+        log(`Warning: Failed to save price history: ${error.message}`);
+    }
+}
+
+function loadPriceHistory() {
+    try {
+        if (fs.existsSync(CONFIG.PRICE_HISTORY_FILE)) {
+            const data = JSON.parse(fs.readFileSync(CONFIG.PRICE_HISTORY_FILE, 'utf8'));
+            let loaded = 0;
+            for (const symbol of ACTIVE_MARKETS) {
+                if (data[symbol] && data[symbol].prices && data[symbol].timestamps) {
+                    const ms = marketStates[symbol];
+                    const maxAge = 60 * 60 * 1000;
+                    const now = Date.now();
+                    const validIndices = [];
+                    for (let i = 0; i < data[symbol].timestamps.length; i++) {
+                        if (now - data[symbol].timestamps[i] < maxAge) {
+                            validIndices.push(i);
+                        }
+                    }
+                    if (validIndices.length > 10) {
+                        ms.prices = validIndices.map(i => data[symbol].prices[i]);
+                        ms.priceTimestamps = validIndices.map(i => data[symbol].timestamps[i]);
+                        ms.lastPrice = ms.prices[ms.prices.length - 1];
+                        ms.trend = detectTrend(ms.prices);
+                        ms.volatility = calculateVolatility(ms.prices);
+                        loaded += validIndices.length;
+                        log(`[${symbol}] Loaded ${validIndices.length} price points from history (max 1h old)`);
+                    }
+                }
+            }
+            if (loaded > 0) {
+                log(`Price history restored: ${loaded} total data points`);
+                recalculateAllIndicators();
+            }
+        }
+    } catch (error) {
+        log(`Error loading price history: ${error.message}`);
+    }
+}
+
+function recalculateAllIndicators() {
+    for (const symbol of ACTIVE_MARKETS) {
+        const ms = marketStates[symbol];
+        if (!ms || ms.prices.length < 5) continue;
+        const candles1m = indicators.buildCandles(ms.prices, ms.priceTimestamps, 60000);
+        const candles5m = indicators.buildCandles(ms.prices, ms.priceTimestamps, 300000);
+        const candles15m = indicators.buildCandles(ms.prices, ms.priceTimestamps, 900000);
+        ms.indicators1m = indicators.calculateAllIndicators(candles1m);
+        ms.indicators5m = indicators.calculateAllIndicators(candles5m);
+        ms.indicators15m = indicators.calculateAllIndicators(candles15m);
     }
 }
 
@@ -550,9 +624,14 @@ async function processMarket(symbol) {
 
         const imbalance = calculateImbalance(orderBook);
 
+        const now = Date.now();
         marketState.prices.push(price);
+        marketState.priceTimestamps.push(now);
         marketState.imbalances.push(imbalance);
-        if (marketState.prices.length > 60) marketState.prices = marketState.prices.slice(-60);
+        if (marketState.prices.length > 1200) {
+            marketState.prices = marketState.prices.slice(-1200);
+            marketState.priceTimestamps = marketState.priceTimestamps.slice(-1200);
+        }
         if (marketState.imbalances.length > 60) marketState.imbalances = marketState.imbalances.slice(-60);
 
         marketState.lastPrice = price;
@@ -560,14 +639,24 @@ async function processMarket(symbol) {
         marketState.trend = detectTrend(marketState.prices);
         marketState.volatility = calculateVolatility(marketState.prices);
 
+        const candles1m = indicators.buildCandles(marketState.prices, marketState.priceTimestamps, 60000);
+        const candles5m = indicators.buildCandles(marketState.prices, marketState.priceTimestamps, 300000);
+        const candles15m = indicators.buildCandles(marketState.prices, marketState.priceTimestamps, 900000);
+        marketState.indicators1m = indicators.calculateAllIndicators(candles1m);
+        marketState.indicators5m = indicators.calculateAllIndicators(candles5m);
+        marketState.indicators15m = indicators.calculateAllIndicators(candles15m);
+
         const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
         const modeStr = CONFIG.SIMULATION_MODE ? 'SIM' : 'LIVE';
         const posStr = pos || 'NONE';
 
+        const ind1m = marketState.indicators1m || {};
+        const indStatus = ind1m.ready ? `${ind1m.indicatorsAvailable}/${ind1m.indicatorsTotal}` : 'building';
+
         botStatus.markets[symbol] = {
             price, imbalance, trend: marketState.trend, volatility: marketState.volatility,
             position: pos, rpcConnected: true, dlobConnected: true,
-            dataPoints: marketState.prices.length
+            dataPoints: marketState.prices.length, indicatorStatus: indStatus
         };
 
         log(`[${symbol}] ${modeStr} $${price.toFixed(2)} | ${marketState.trend} | Imb: ${(imbalance * 100).toFixed(0)}% | Vol: ${marketState.volatility.toFixed(2)}% | Pos: ${posStr}`);
@@ -652,7 +741,10 @@ async function processMarket(symbol) {
                 imbalance,
                 volatility: marketState.volatility,
                 recentChange,
-                priceHistory: marketState.prices.slice(-20)
+                priceHistory: marketState.prices.slice(-20),
+                indicators1m: marketState.indicators1m,
+                indicators5m: marketState.indicators5m,
+                indicators15m: marketState.indicators15m
             };
 
             const decision = await aiBrain.askBrain(marketData, tradeMemory.trades);
@@ -810,6 +902,46 @@ function generateDashboardHTML() {
         </div>
 
         <div class="grid">
+            <div class="card full-width">
+                <h2>Technical Indicators (What AI Sees)</h2>
+                <table>
+                    <thead><tr><th>Market</th><th>TF</th><th>RSI</th><th>EMA 9/21</th><th>MACD</th><th>BB Position</th><th>ATR</th><th>StochRSI</th><th>ADX</th><th>Data</th></tr></thead>
+                    <tbody>
+                        ${ACTIVE_MARKETS.map(symbol => {
+                            const ms = marketStates[symbol] || {};
+                            return ['1m', '5m', '15m'].map(tf => {
+                                const ind = tf === '1m' ? ms.indicators1m : tf === '5m' ? ms.indicators5m : ms.indicators15m;
+                                if (!ind || !ind.ready) return '<tr><td>' + symbol + '</td><td>' + tf + '</td><td colspan="8" style="color:#484f58;">Building data...</td></tr>';
+                                const rsiVal = ind.rsi !== null ? ind.rsi.toFixed(1) : '-';
+                                const rsiClass = ind.rsi > 70 ? 'negative' : ind.rsi < 30 ? 'positive' : '';
+                                const rsiLabel = ind.rsi > 70 ? ' OB' : ind.rsi < 30 ? ' OS' : '';
+                                const emaText = ind.ema9 !== null && ind.ema21 !== null ? (ind.ema9 > ind.ema21 ? 'BULL' : 'BEAR') : '-';
+                                const emaClass = emaText === 'BULL' ? 'positive' : emaText === 'BEAR' ? 'negative' : '';
+                                const macdText = ind.macd ? (ind.macd.histogram > 0 ? '+' + ind.macd.histogram.toFixed(4) : ind.macd.histogram.toFixed(4)) : '-';
+                                const macdClass = ind.macd ? (ind.macd.histogram > 0 ? 'positive' : 'negative') : '';
+                                const bbText = ind.bollinger ? ((ind.ema9 || ind.bollinger.middle) > ind.bollinger.lower ? (((ind.ema9 || ind.bollinger.middle) - ind.bollinger.lower) / (ind.bollinger.upper - ind.bollinger.lower) * 100).toFixed(0) + '%' : '-') : '-';
+                                const atrText = ind.atr !== null ? ind.atr.toFixed(4) : '-';
+                                const stochText = ind.stochRSI ? 'K:' + ind.stochRSI.k.toFixed(0) + ' D:' + ind.stochRSI.d.toFixed(0) : '-';
+                                const stochClass = ind.stochRSI ? (ind.stochRSI.k > 80 ? 'negative' : ind.stochRSI.k < 20 ? 'positive' : '') : '';
+                                const adxText = ind.adx ? ind.adx.adx.toFixed(1) + (ind.adx.plusDI > ind.adx.minusDI ? ' +' : ' -') : '-';
+                                const adxClass = ind.adx ? (ind.adx.adx > 25 ? 'positive' : ind.adx.adx < 20 ? 'negative' : 'neutral') : '';
+                                return '<tr><td>' + (tf === '1m' ? '<strong>' + symbol + '</strong>' : '') + '</td><td>' + tf + '</td>' +
+                                    '<td class="' + rsiClass + '">' + rsiVal + rsiLabel + '</td>' +
+                                    '<td class="' + emaClass + '">' + emaText + '</td>' +
+                                    '<td class="' + macdClass + '">' + macdText + '</td>' +
+                                    '<td>' + bbText + '</td>' +
+                                    '<td>' + atrText + '</td>' +
+                                    '<td class="' + stochClass + '">' + stochText + '</td>' +
+                                    '<td class="' + adxClass + '">' + adxText + '</td>' +
+                                    '<td style="color:#484f58;">' + (ind.indicatorsAvailable || 0) + '/' + (ind.indicatorsTotal || 9) + '</td></tr>';
+                            }).join('');
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="grid">
             <div class="card">
                 <h2>Session Stats</h2>
                 <div class="stat-row"><span class="stat-label">Total Trades</span><span class="stat-value">${stats.totalTrades}</span></div>
@@ -931,10 +1063,11 @@ async function main() {
     }
 
     loadMemory();
+    loadPriceHistory();
     safety.loadConfig();
     startDashboard();
 
-    aiBrain.think('Bot starting up - AI brain online', 'ai_brain');
+    aiBrain.think('Bot starting up - AI brain online with technical indicators (RSI, EMA, MACD, BB, ATR, StochRSI, ADX)', 'ai_brain');
 
     try {
         const connection = new Connection(CONFIG.RPC_URL, { commitment: 'confirmed' });
@@ -1002,6 +1135,8 @@ async function main() {
         log('Starting AI trading loop...');
         setInterval(tradingLoop, CONFIG.CHECK_INTERVAL_MS);
 
+        setInterval(savePriceHistory, 300000);
+
         setInterval(() => {
             const timeSinceHeartbeat = Date.now() - lastHeartbeat;
             const maxIdleTime = CONFIG.CHECK_INTERVAL_MS * 5;
@@ -1025,6 +1160,7 @@ async function main() {
             log('Shutting down...');
             botStatus.running = false;
             saveMemory();
+            savePriceHistory();
             const openPositions = ACTIVE_MARKETS.filter(s => {
                 const ms = marketStates[s];
                 return ms && (CONFIG.SIMULATION_MODE ? ms.simulatedPosition : ms.currentPosition);
