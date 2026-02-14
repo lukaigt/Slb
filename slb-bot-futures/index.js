@@ -695,18 +695,34 @@ async function processMarket(symbol) {
                 marketState.lowestPriceSinceEntry = price;
                 pnl = 0;
             }
-            const holdMin = marketState.entryTime ? ((Date.now() - marketState.entryTime) / 60000).toFixed(0) : '?';
-            aiBrain.think(`[${symbol}] Monitoring ${pos} | P&L: ${pnl.toFixed(1)}% | Hold: ${holdMin}min | SL: ${marketState.aiStopLoss}% | TP: ${marketState.aiTakeProfit}%`, 'monitor');
+            const holdMin = marketState.entryTime ? ((Date.now() - marketState.entryTime) / 60000) : 0;
+            aiBrain.think(`[${symbol}] Monitoring ${pos} | P&L: ${pnl.toFixed(1)}% | Hold: ${holdMin.toFixed(0)}min | SL: ${marketState.aiStopLoss}% | TP: ${marketState.aiTakeProfit}%`, 'monitor');
 
+            // 1. Emergency Circuit Breaker (-25% P&L)
             if (pnl <= -25) {
                 aiBrain.think(`[${symbol}] EMERGENCY CIRCUIT BREAKER: P&L at ${pnl.toFixed(1)}% exceeded -25% limit. Force closing.`, 'safety');
-                await closePosition('emergency_stop', marketState, marketConfig, symbol);
-                return;
+                await closePosition('circuit_breaker', marketState, marketConfig, symbol);
+                continue;
             }
 
+            // 2. Breakeven Trigger (Risk Neutralization)
+            // If P&L > +5%, move SL to entry price (0% move)
+            if (pnl >= 5.0 && marketState.aiStopLoss !== null && marketState.aiStopLoss > 0) {
+                log(`[${symbol}] Hit +5% P&L. Moving Stop Loss to Breakeven.`);
+                marketState.aiStopLoss = 0; // 0% price move = entry price
+            }
+
+            // 3. Time-Based Decay (30 min stagnation)
+            if (holdMin >= 30 && pnl > -2.0 && pnl < 2.0) {
+                log(`[${symbol}] Stagnant for 30m (${pnl.toFixed(2)}% P&L). Closing dead wood.`);
+                await closePosition('time_decay', marketState, marketConfig, symbol);
+                continue;
+            }
+
+            // 4. Standard Stop Loss / Take Profit
             if (checkStopLoss(price, marketState, symbol)) {
                 await closePosition('stop_loss', marketState, marketConfig, symbol);
-                return;
+                continue;
             }
             if (checkTakeProfit(price, marketState, symbol)) {
                 await closePosition('trailing_tp', marketState, marketConfig, symbol);
