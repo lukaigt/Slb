@@ -6,8 +6,8 @@ const CONFIG_FILE = path.join(__dirname, 'bot_config.json');
 const DEFAULT_CONFIG = {
     version: 2,
     lastUpdated: null,
-    dailyLossLimit: parseFloat(process.env.DAILY_LOSS_LIMIT) || 20,
-    maxConsecutiveLosses: parseInt(process.env.MAX_CONSECUTIVE_LOSSES) || 8,
+    dailyLossLimit: parseFloat(process.env.DAILY_LOSS_LIMIT) || 10,
+    maxConsecutiveLosses: parseInt(process.env.MAX_CONSECUTIVE_LOSSES) || 4,
     maxPositionRiskPercent: 3.0,
     paused: false,
     pauseReason: null,
@@ -30,6 +30,8 @@ function loadConfig() {
             const data = fs.readFileSync(CONFIG_FILE, 'utf8');
             const loaded = JSON.parse(data);
             config = { ...DEFAULT_CONFIG, ...loaded, dailyStats: { ...DEFAULT_CONFIG.dailyStats, ...(loaded.dailyStats || {}) } };
+            config.dailyLossLimit = DEFAULT_CONFIG.dailyLossLimit;
+            config.maxConsecutiveLosses = DEFAULT_CONFIG.maxConsecutiveLosses;
         }
     } catch (e) {
         console.log(`[Safety] Config load error: ${e.message}, using defaults`);
@@ -109,6 +111,23 @@ function unpause() {
     saveConfig();
 }
 
+function isPaused() {
+    return config.paused;
+}
+
+function pause(reason) {
+    config.paused = true;
+    config.pauseReason = reason;
+    saveConfig();
+}
+
+function getStats() {
+    resetDayIfNeeded();
+    return {
+        dailyProfitPercent: config.dailyStats.totalPnl
+    };
+}
+
 function getStatus() {
     resetDayIfNeeded();
     return {
@@ -133,5 +152,8 @@ module.exports = {
     recordTradeResult,
     canTrade,
     unpause,
+    isPaused,
+    pause,
+    getStats,
     getStatus
 };

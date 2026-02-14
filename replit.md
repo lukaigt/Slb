@@ -79,11 +79,11 @@ Simple hard safety rules the AI cannot override:
 - `ACTIVE_MARKETS`: Comma-separated list (default: SOL-PERP,BTC-PERP,ETH-PERP)
 - `SIMULATION_MODE`: true for paper trading, false for real (default: true)
 - `CHECK_INTERVAL_MS`: Position monitoring interval (default: 15000 = 15s)
-- `COOLDOWN_SECONDS`: Seconds between trades per market (default: 180)
+- `COOLDOWN_SECONDS`: Seconds between trades per market (default: 600)
 
 ### Safety Limits
-- `DAILY_LOSS_LIMIT`: Max daily loss % before pause (default: 20)
-- `MAX_CONSECUTIVE_LOSSES`: Max losing streak before pause (default: 8)
+- `DAILY_LOSS_LIMIT`: Max daily loss % before pause (default: 10)
+- `MAX_CONSECUTIVE_LOSSES`: Max losing streak before pause (default: 4)
 
 ### Dashboard
 - `DASHBOARD_PORT`: Web dashboard port (default: 3000, Replit uses 5000)
@@ -123,6 +123,14 @@ Dark theme dashboard showing:
 - dotenv: Environment variable management
 
 ## Recent Changes
+- 2026-02-14: CRITICAL SAFETY OVERHAUL - Max stop loss capped to 1.0% price move (=20% P&L max per trade, was 2.5%/50%)
+- 2026-02-14: Emergency circuit breaker - force close any position at -25% P&L regardless of stop loss
+- 2026-02-14: Hard-coded indicator gates - blocks trades when 15m ADX<20 (choppy), timeframes conflict, or price vs EMA50 disagrees with direction
+- 2026-02-14: Enforced 2:1 minimum reward-to-risk ratio on all trades
+- 2026-02-14: Daily loss limit tightened from -20% to -10%, consecutive losses limit from 8 to 4
+- 2026-02-14: 15-minute cooldown after every losing trade per market
+- 2026-02-14: Minimum AI confidence raised from 0.6 to 0.75
+- 2026-02-14: AI check interval increased from 3min to 5min, cooldown from 3min to 10min
 - 2026-02-13: Technical Indicators - 9 indicators (RSI, EMA 9/21/50, MACD, Bollinger Bands, ATR, StochRSI, ADX) across 3 timeframes (1m, 5m, 15m)
 - 2026-02-13: AI system prompt rewritten to teach technical analysis, multi-timeframe confirmation rules, indicator-based entry/exit criteria
 - 2026-02-13: Dashboard now shows full indicator table with color-coded values matching what AI sees

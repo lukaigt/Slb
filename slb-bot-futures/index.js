@@ -674,8 +674,8 @@ async function processMarket(symbol) {
                 if (!marketState.entryTime) marketState.entryTime = Date.now();
             }
             if (marketState.aiStopLoss == null) {
-                marketState.aiStopLoss = 1.5;
-                aiBrain.think(`[${symbol}] Emergency SL assigned: 1.5% (position had no stop loss)`, 'safety');
+                marketState.aiStopLoss = 0.75;
+                aiBrain.think(`[${symbol}] Emergency SL assigned: 0.75% (position had no stop loss)`, 'safety');
             }
             if (marketState.aiTakeProfit == null) {
                 marketState.aiTakeProfit = 1.5;
@@ -697,6 +697,12 @@ async function processMarket(symbol) {
             }
             const holdMin = marketState.entryTime ? ((Date.now() - marketState.entryTime) / 60000).toFixed(0) : '?';
             aiBrain.think(`[${symbol}] Monitoring ${pos} | P&L: ${pnl.toFixed(1)}% | Hold: ${holdMin}min | SL: ${marketState.aiStopLoss}% | TP: ${marketState.aiTakeProfit}%`, 'monitor');
+
+            if (pnl <= -25) {
+                aiBrain.think(`[${symbol}] EMERGENCY CIRCUIT BREAKER: P&L at ${pnl.toFixed(1)}% exceeded -25% limit. Force closing.`, 'safety');
+                await closePosition('emergency_stop', marketState, marketConfig, symbol);
+                return;
+            }
 
             if (checkStopLoss(price, marketState, symbol)) {
                 await closePosition('stop_loss', marketState, marketConfig, symbol);
@@ -734,6 +740,22 @@ async function processMarket(symbol) {
 
             marketState.lastAiCall = now;
 
+            const ind15m = marketState.indicators15m;
+            const ind5m = marketState.indicators5m;
+            if (ind15m && ind15m.ready && ind15m.adx && ind15m.adx.adx < 20) {
+                aiBrain.think(`[${symbol}] HARD GATE: 15m ADX=${ind15m.adx.adx.toFixed(1)} < 20. Market is choppy. Skipping AI call.`, 'safety');
+                return;
+            }
+
+            if (ind15m && ind15m.ready && ind5m && ind5m.ready) {
+                const ema15mBull = ind15m.ema9 && ind15m.ema21 && ind15m.ema9 > ind15m.ema21;
+                const ema5mBull = ind5m.ema9 && ind5m.ema21 && ind5m.ema9 > ind5m.ema21;
+                if (ema15mBull !== ema5mBull) {
+                    aiBrain.think(`[${symbol}] HARD GATE: 15m EMA ${ema15mBull ? 'BULL' : 'BEAR'} vs 5m EMA ${ema5mBull ? 'BULL' : 'BEAR'}. Timeframes conflict. Skipping.`, 'safety');
+                    return;
+                }
+            }
+
             const recentChange = marketState.prices.length >= 2
                 ? ((price - marketState.prices[marketState.prices.length - 10] || price) / (marketState.prices[marketState.prices.length - 10] || price)) * 100
                 : 0;
@@ -763,6 +785,17 @@ async function processMarket(symbol) {
                 return;
             }
 
+            if (ind15m && ind15m.ready && ind15m.ema50) {
+                if (decision.action === 'LONG' && price < ind15m.ema50) {
+                    aiBrain.think(`[${symbol}] HARD GATE: AI says LONG but price ($${price.toFixed(2)}) is below 15m EMA50 ($${ind15m.ema50.toFixed(2)}). Blocked.`, 'safety');
+                    return;
+                }
+                if (decision.action === 'SHORT' && price > ind15m.ema50) {
+                    aiBrain.think(`[${symbol}] HARD GATE: AI says SHORT but price ($${price.toFixed(2)}) is above 15m EMA50 ($${ind15m.ema50.toFixed(2)}). Blocked.`, 'safety');
+                    return;
+                }
+            }
+
             marketState.aiStopLoss = decision.stopLoss;
             marketState.aiTakeProfit = decision.takeProfit;
             marketState.aiMaxHoldMinutes = decision.maxHoldMinutes;
@@ -783,9 +816,9 @@ async function tradingLoop() {
     try {
         // Daily Hard Stop Check
         const dailyStats = safety.getStats();
-        if (dailyStats && dailyStats.dailyProfitPercent <= -20) {
+        if (dailyStats && dailyStats.dailyProfitPercent <= -10) {
             if (!safety.isPaused()) {
-                log('CRITICAL: Daily loss limit (-20%) reached. Hard stopping bot.');
+                log('CRITICAL: Daily loss limit (-10%) reached. Hard stopping bot.');
                 safety.pause('daily_loss_limit');
             }
             return;

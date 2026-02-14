@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "lastUpdated": "2026-02-14T09:16:19.665Z",
-  "dailyLossLimit": 20,
-  "maxConsecutiveLosses": 8,
+  "lastUpdated": "2026-02-14T09:25:42.482Z",
+  "dailyLossLimit": 10,
+  "maxConsecutiveLosses": 4,
   "maxPositionRiskPercent": 3,
   "paused": false,
   "pauseReason": null,
