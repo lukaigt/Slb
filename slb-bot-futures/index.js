@@ -702,7 +702,7 @@ async function processMarket(symbol) {
             if (pnl <= -25) {
                 aiBrain.think(`[${symbol}] EMERGENCY CIRCUIT BREAKER: P&L at ${pnl.toFixed(1)}% exceeded -25% limit. Force closing.`, 'safety');
                 await closePosition('circuit_breaker', marketState, marketConfig, symbol);
-                continue;
+                return;
             }
 
             // 2. Breakeven Trigger (Risk Neutralization)
@@ -716,13 +716,13 @@ async function processMarket(symbol) {
             if (holdMin >= 30 && pnl > -2.0 && pnl < 2.0) {
                 log(`[${symbol}] Stagnant for 30m (${pnl.toFixed(2)}% P&L). Closing dead wood.`);
                 await closePosition('time_decay', marketState, marketConfig, symbol);
-                continue;
+                return;
             }
 
             // 4. Standard Stop Loss / Take Profit
             if (checkStopLoss(price, marketState, symbol)) {
                 await closePosition('stop_loss', marketState, marketConfig, symbol);
-                continue;
+                return;
             }
             if (checkTakeProfit(price, marketState, symbol)) {
                 await closePosition('trailing_tp', marketState, marketConfig, symbol);
