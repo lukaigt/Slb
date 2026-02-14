@@ -27,14 +27,14 @@ const CONFIG = {
     LEVERAGE: parseInt(process.env.LEVERAGE) || 20,
     TRADE_AMOUNT_USDC: parseFloat(process.env.TRADE_AMOUNT_USDC) || 10,
     SIMULATION_MODE: process.env.SIMULATION_MODE === 'true' || process.env.SIMULATION_MODE === '1',
-    COOLDOWN_MS: (parseInt(process.env.COOLDOWN_SECONDS) || 180) * 1000,
-    AI_INTERVAL_MS: parseInt(process.env.AI_INTERVAL_MS) || 180000,
+    COOLDOWN_MS: (parseInt(process.env.COOLDOWN_SECONDS) || 600) * 1000,
+    AI_INTERVAL_MS: parseInt(process.env.AI_INTERVAL_MS) || 300000,
     CHECK_INTERVAL_MS: parseInt(process.env.CHECK_INTERVAL_MS) || 15000,
     DLOB_URL: 'https://dlob.drift.trade',
     DASHBOARD_PORT: parseInt(process.env.DASHBOARD_PORT) || 3000,
     MEMORY_FILE: path.join(__dirname, 'trade_memory.json'),
     PRICE_HISTORY_FILE: path.join(__dirname, 'price_history.json'),
-    MIN_CONFIDENCE: parseFloat(process.env.MIN_CONFIDENCE) || 0.6,
+    MIN_CONFIDENCE: parseFloat(process.env.MIN_CONFIDENCE) || 0.75,
 };
 
 const MARKETS = {
@@ -430,10 +430,14 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
     aiBrain.recordTradeResult(symbol, pos, result, profitPercent, exitReason);
     safety.recordTradeResult(profitPercent, result === 'WIN');
 
-    const modeStr = CONFIG.SIMULATION_MODE ? '[SIM]' : '[REAL]';
-    aiBrain.think(`${modeStr} ${symbol} ${pos} ${result} | P&L: ${profitPercent.toFixed(2)}% | Exit: ${exitReason} | Hold: ${holdTimeMin}min | Entry: $${marketState.entryPrice.toFixed(2)} Exit: $${currentPrice.toFixed(2)}`, result === 'WIN' ? 'trade_win' : 'trade_loss');
-
-    marketState.lastOrderTime = Date.now();
+    if (result === 'LOSS') {
+        const lossCooldown = 15 * 60 * 1000; // 15 minute cooldown after a loss
+        marketState.lastOrderTime = Date.now() + lossCooldown;
+        log(`[${symbol}] Loss detected. Cooldown active for 15 minutes.`);
+    } else {
+        marketState.lastOrderTime = Date.now();
+    }
+    
     resetPositionState(marketState);
     return true;
 }
@@ -777,6 +781,24 @@ async function tradingLoop() {
     botStatus.lastUpdate = new Date().toISOString();
 
     try {
+        // Daily Hard Stop Check
+        const dailyStats = safety.getStats();
+        if (dailyStats && dailyStats.dailyProfitPercent <= -20) {
+            if (!safety.isPaused()) {
+                log('CRITICAL: Daily loss limit (-20%) reached. Hard stopping bot.');
+                safety.pause('daily_loss_limit');
+            }
+            return;
+        }
+
+        if (safety.isPaused()) {
+            if (Date.now() - lastLogTime > 60000) {
+                log('Bot is currently PAUSED by safety layer.');
+                lastLogTime = Date.now();
+            }
+            return;
+        }
+        
         botStatus.driftConnected = !!driftClient;
         for (const symbol of ACTIVE_MARKETS) {
             await processMarket(symbol);
