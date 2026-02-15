@@ -341,6 +341,9 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
     }
     let profitPercent = priceMove * CONFIG.LEVERAGE;
 
+    const ROUND_TRIP_FEE_PCT = 0.1;
+    profitPercent -= (ROUND_TRIP_FEE_PCT * CONFIG.LEVERAGE);
+
     if (Math.abs(profitPercent) > 500) {
         profitPercent = profitPercent > 0 ? 500 : -500;
     }
@@ -503,7 +506,7 @@ async function syncPositionFromChain(marketState, marketConfig, symbol) {
 
 function checkStopLoss(currentPrice, marketState, symbol) {
     const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
-    if (!pos || !marketState.aiStopLoss) return false;
+    if (!pos || marketState.aiStopLoss === null || marketState.aiStopLoss === undefined) return false;
 
     const priceMovePercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
 
@@ -687,7 +690,7 @@ async function processMarket(symbol) {
             const priceMovePct = pos === 'LONG'
                 ? ((price - marketState.entryPrice) / marketState.entryPrice * 100)
                 : ((marketState.entryPrice - price) / marketState.entryPrice * 100);
-            let pnl = priceMovePct * CONFIG.LEVERAGE;
+            let pnl = (priceMovePct * CONFIG.LEVERAGE) - (0.1 * CONFIG.LEVERAGE);
             if (Math.abs(pnl) > 1000) {
                 aiBrain.think(`[${symbol}] P&L looks wrong (${pnl.toFixed(0)}%) - entry price may be stale, resetting`, 'error');
                 marketState.entryPrice = price;
@@ -754,71 +757,35 @@ async function processMarket(symbol) {
                 return;
             }
 
+            const hasOpenPosition = ACTIVE_MARKETS.some(s => {
+                const ms = marketStates[s];
+                return ms && (CONFIG.SIMULATION_MODE ? ms.simulatedPosition : ms.currentPosition);
+            });
+            if (hasOpenPosition) {
+                return;
+            }
+
             marketState.lastAiCall = now;
 
-            const ind15m = marketState.indicators15m;
-            const ind5m = marketState.indicators5m;
-            if (ind15m && ind15m.ready && ind15m.adx && ind15m.adx.adx < 20) {
-                aiBrain.think(`[${symbol}] HARD GATE: 15m ADX=${ind15m.adx.adx.toFixed(1)} < 20. Market is choppy. Skipping AI call.`, 'safety');
+            const signal = indicators.generateSignal(marketState.indicators5m, marketState.indicators15m, price);
+
+            if (signal.action === 'WAIT') {
+                aiBrain.think(`[${symbol}] SIGNAL: WAIT - ${signal.reason}`, 'scan');
                 return;
             }
 
-            if (ind15m && ind15m.ready && ind5m && ind5m.ready) {
-                const ema15mBull = ind15m.ema9 && ind15m.ema21 && ind15m.ema9 > ind15m.ema21;
-                const ema5mBull = ind5m.ema9 && ind5m.ema21 && ind5m.ema9 > ind5m.ema21;
-                if (ema15mBull !== ema5mBull) {
-                    aiBrain.think(`[${symbol}] HARD GATE: 15m EMA ${ema15mBull ? 'BULL' : 'BEAR'} vs 5m EMA ${ema5mBull ? 'BULL' : 'BEAR'}. Timeframes conflict. Skipping.`, 'safety');
-                    return;
-                }
-            }
-
-            const recentChange = marketState.prices.length >= 2
-                ? ((price - marketState.prices[marketState.prices.length - 10] || price) / (marketState.prices[marketState.prices.length - 10] || price)) * 100
-                : 0;
-
-            const marketData = {
-                symbol,
-                price,
-                trend: marketState.trend,
-                imbalance,
-                volatility: marketState.volatility,
-                recentChange,
-                priceHistory: marketState.prices.slice(-20),
-                indicators1m: marketState.indicators1m,
-                indicators5m: marketState.indicators5m,
-                indicators15m: marketState.indicators15m
-            };
-
-            const decision = await aiBrain.askBrain(marketData, tradeMemory.trades);
-
-            if (decision.action === 'WAIT') {
-                aiBrain.think(`[${symbol}] AI says WAIT: ${decision.reason}`, 'scan');
+            if (signal.confidence < CONFIG.MIN_CONFIDENCE) {
+                aiBrain.think(`[${symbol}] Signal confidence too low (${(signal.confidence * 100).toFixed(0)}% < ${(CONFIG.MIN_CONFIDENCE * 100).toFixed(0)}%) - skipping`, 'skip');
                 return;
             }
 
-            if (decision.confidence < CONFIG.MIN_CONFIDENCE) {
-                aiBrain.think(`[${symbol}] AI confidence too low (${(decision.confidence * 100).toFixed(0)}% < ${(CONFIG.MIN_CONFIDENCE * 100).toFixed(0)}%) - skipping`, 'skip');
-                return;
-            }
+            marketState.aiStopLoss = signal.stopLoss;
+            marketState.aiTakeProfit = signal.takeProfit;
+            marketState.aiMaxHoldMinutes = signal.maxHoldMinutes;
+            marketState.aiReason = signal.reason;
 
-            if (ind15m && ind15m.ready && ind15m.ema50) {
-                if (decision.action === 'LONG' && price < ind15m.ema50) {
-                    aiBrain.think(`[${symbol}] HARD GATE: AI says LONG but price ($${price.toFixed(2)}) is below 15m EMA50 ($${ind15m.ema50.toFixed(2)}). Blocked.`, 'safety');
-                    return;
-                }
-                if (decision.action === 'SHORT' && price > ind15m.ema50) {
-                    aiBrain.think(`[${symbol}] HARD GATE: AI says SHORT but price ($${price.toFixed(2)}) is above 15m EMA50 ($${ind15m.ema50.toFixed(2)}). Blocked.`, 'safety');
-                    return;
-                }
-            }
-
-            marketState.aiStopLoss = decision.stopLoss;
-            marketState.aiTakeProfit = decision.takeProfit;
-            marketState.aiMaxHoldMinutes = decision.maxHoldMinutes;
-            marketState.aiReason = decision.reason;
-
-            aiBrain.think(`[${symbol}] EXECUTING ${decision.action} | SL: ${decision.stopLoss}% | TP: ${decision.takeProfit}% | Conf: ${(decision.confidence * 100).toFixed(0)}% | Hold: ${decision.maxHoldMinutes}min`, 'entry');
-            await openPosition(decision.action, marketState, marketConfig, symbol);
+            aiBrain.think(`[${symbol}] EXECUTING ${signal.action} | SL: ${signal.stopLoss.toFixed(2)}% | TP: ${signal.takeProfit.toFixed(2)}% | Conf: ${(signal.confidence * 100).toFixed(0)}% | Hold: ${signal.maxHoldMinutes}min | ${signal.reason}`, 'entry');
+            await openPosition(signal.action, marketState, marketConfig, symbol);
         }
     } catch (error) {
         log(`[${symbol}] Error: ${error.message}`);
@@ -1203,8 +1170,17 @@ async function main() {
             tradeMemory.sessionStats.startTime = new Date().toISOString();
         }
 
-        log('Starting AI trading loop...');
-        setInterval(tradingLoop, CONFIG.CHECK_INTERVAL_MS);
+        log('Starting trading loop (rule-based signals)...');
+        async function dynamicLoop() {
+            await tradingLoop();
+            const hasPos = ACTIVE_MARKETS.some(s => {
+                const ms = marketStates[s];
+                return ms && (CONFIG.SIMULATION_MODE ? ms.simulatedPosition : ms.currentPosition);
+            });
+            const interval = hasPos ? 5000 : CONFIG.CHECK_INTERVAL_MS;
+            setTimeout(dynamicLoop, interval);
+        }
+        dynamicLoop();
 
         setInterval(savePriceHistory, 300000);
 

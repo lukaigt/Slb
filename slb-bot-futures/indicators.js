@@ -250,12 +250,131 @@ function calculateAllIndicators(candles) {
     result.stochRSI = calcStochRSI(closes, 14, 14, 3, 3);
     result.adx = calcADX(candles, 14);
 
+    if (closes.length >= 22) {
+        const prevCloses = closes.slice(0, -1);
+        result.prevEma9 = calcEMA(prevCloses, 9);
+        result.prevEma21 = calcEMA(prevCloses, 21);
+    } else {
+        result.prevEma9 = null;
+        result.prevEma21 = null;
+    }
+
     const available = [
         result.ema9, result.ema21, result.ema50, result.rsi, result.macd,
         result.bollinger, result.atr, result.stochRSI, result.adx
     ].filter(v => v !== null).length;
     result.indicatorsAvailable = available;
     result.indicatorsTotal = 9;
+
+    return result;
+}
+
+function generateSignal(ind5m, ind15m, currentPrice) {
+    const result = { action: 'WAIT', reason: '', stopLoss: null, takeProfit: null, confidence: 0, maxHoldMinutes: 120 };
+
+    if (!ind5m || !ind5m.ready || !ind15m || !ind15m.ready) {
+        result.reason = 'Indicators not ready';
+        return result;
+    }
+    if (!ind5m.ema9 || !ind5m.ema21 || !ind5m.prevEma9 || !ind5m.prevEma21) {
+        result.reason = 'EMA data insufficient for crossover detection';
+        return result;
+    }
+    if (!ind15m.ema50 || !ind15m.adx || !ind5m.rsi || !ind5m.atr) {
+        result.reason = 'Missing critical indicators (EMA50/ADX/RSI/ATR)';
+        return result;
+    }
+
+    const adx = ind15m.adx.adx;
+    if (adx < 25) {
+        result.reason = `ADX ${adx.toFixed(1)} < 25 - no strong trend`;
+        return result;
+    }
+
+    const bullishCross = ind5m.prevEma9 <= ind5m.prevEma21 && ind5m.ema9 > ind5m.ema21;
+    const bearishCross = ind5m.prevEma9 >= ind5m.prevEma21 && ind5m.ema9 < ind5m.ema21;
+
+    if (!bullishCross && !bearishCross) {
+        result.reason = 'No EMA 9/21 crossover on 5m';
+        return result;
+    }
+
+    const ema15mBullish = ind15m.ema9 && ind15m.ema21 && ind15m.ema9 > ind15m.ema21;
+    const macd15mBullish = ind15m.macd && ind15m.macd.histogram > 0;
+
+    const atrPrice = (ind5m.atr / currentPrice) * 100;
+    const slPercent = Math.max(0.3, Math.min(1.0, atrPrice * 1.5));
+    const tpPercent = Math.max(slPercent * 2.0, Math.min(2.5, atrPrice * 3.0));
+
+    if (bullishCross) {
+        if (currentPrice < ind15m.ema50) {
+            result.reason = `Bullish cross but price $${currentPrice.toFixed(2)} below 15m EMA50 $${ind15m.ema50.toFixed(2)}`;
+            return result;
+        }
+        if (!ema15mBullish) {
+            result.reason = '15m EMAs not bullish - no alignment';
+            return result;
+        }
+        if (ind5m.rsi > 65) {
+            result.reason = `RSI ${ind5m.rsi.toFixed(1)} > 65 - too overbought for LONG entry`;
+            return result;
+        }
+        if (ind5m.rsi < 40) {
+            result.reason = `RSI ${ind5m.rsi.toFixed(1)} < 40 - momentum too weak for LONG`;
+            return result;
+        }
+
+        let conf = 0.6;
+        if (adx > 30) conf += 0.1;
+        if (adx > 40) conf += 0.05;
+        if (macd15mBullish) conf += 0.1;
+        if (ind5m.macd && ind5m.macd.histogram > 0) conf += 0.05;
+        if (ind5m.stochRSI && ind5m.stochRSI.k < 80) conf += 0.05;
+        conf = Math.min(0.95, conf);
+
+        result.action = 'LONG';
+        result.stopLoss = slPercent;
+        result.takeProfit = tpPercent;
+        result.confidence = conf;
+        result.reason = `5m EMA9/21 bullish cross | 15m aligned bullish | ADX ${adx.toFixed(1)} | RSI ${ind5m.rsi.toFixed(1)} | ATR-SL ${slPercent.toFixed(2)}%`;
+        result.maxHoldMinutes = adx > 35 ? 180 : 120;
+        return result;
+    }
+
+    if (bearishCross) {
+        if (currentPrice > ind15m.ema50) {
+            result.reason = `Bearish cross but price $${currentPrice.toFixed(2)} above 15m EMA50 $${ind15m.ema50.toFixed(2)}`;
+            return result;
+        }
+        if (ema15mBullish) {
+            result.reason = '15m EMAs still bullish - no alignment for SHORT';
+            return result;
+        }
+        if (ind5m.rsi < 35) {
+            result.reason = `RSI ${ind5m.rsi.toFixed(1)} < 35 - too oversold for SHORT entry`;
+            return result;
+        }
+        if (ind5m.rsi > 60) {
+            result.reason = `RSI ${ind5m.rsi.toFixed(1)} > 60 - momentum too strong for SHORT`;
+            return result;
+        }
+
+        let conf = 0.6;
+        if (adx > 30) conf += 0.1;
+        if (adx > 40) conf += 0.05;
+        if (!macd15mBullish) conf += 0.1;
+        if (ind5m.macd && ind5m.macd.histogram < 0) conf += 0.05;
+        if (ind5m.stochRSI && ind5m.stochRSI.k > 20) conf += 0.05;
+        conf = Math.min(0.95, conf);
+
+        result.action = 'SHORT';
+        result.stopLoss = slPercent;
+        result.takeProfit = tpPercent;
+        result.confidence = conf;
+        result.reason = `5m EMA9/21 bearish cross | 15m aligned bearish | ADX ${adx.toFixed(1)} | RSI ${ind5m.rsi.toFixed(1)} | ATR-SL ${slPercent.toFixed(2)}%`;
+        result.maxHoldMinutes = adx > 35 ? 180 : 120;
+        return result;
+    }
 
     return result;
 }
@@ -308,6 +427,7 @@ module.exports = {
     buildCandles,
     calculateAllIndicators,
     formatIndicatorsForAI,
+    generateSignal,
     calcEMA,
     calcRSI,
     calcMACD,

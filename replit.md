@@ -1,7 +1,7 @@
-# AI Solana Futures Trading Bot v7 (Drift Protocol - GLM-4.7 Flash)
+# Solana Futures Trading Bot v8 (Drift Protocol - Rule-Based Signals)
 
 ## Overview
-AI-powered perpetual futures trading bot using Drift Protocol on Solana mainnet. All trading decisions (entries, exits, stop losses, take profits) are made by **GLM-4.7-Flash** AI model via OpenRouter. Trades SOL-PERP, BTC-PERP, and ETH-PERP with 20x leverage. Safety layer with 20% daily loss limit.
+Rule-based perpetual futures trading bot using Drift Protocol on Solana mainnet. Entry signals use **EMA 9/21 crossovers** on 5m timeframe with RSI filters, ADX>25 trend confirmation, 15m timeframe alignment, and ATR-based dynamic SL/TP. AI (GLM-4.7-Flash) still provides post-trade analysis. One position at a time across all markets. Fee-aware P&L (2% round-trip at 20x). Trades SOL-PERP, BTC-PERP, and ETH-PERP with 20x leverage. Safety layer with 10% daily loss limit.
 
 ## Project Structure
 ```
@@ -123,6 +123,13 @@ Dark theme dashboard showing:
 - dotenv: Environment variable management
 
 ## Recent Changes
+- 2026-02-15: v8 RULE-BASED REWRITE - Replaced AI-only entries with mathematical signal system (EMA crossover + RSI + ADX + ATR)
+- 2026-02-15: CRITICAL BUG FIX - checkStopLoss treated SL=0 (breakeven) as falsy, silently disabling stop loss protection
+- 2026-02-15: Fee-aware P&L - all P&L now subtracts 0.1% round-trip fees (2% at 20x leverage) for real profitability tracking
+- 2026-02-15: One position at a time across ALL markets - eliminates correlated exposure risk
+- 2026-02-15: Dynamic monitoring interval - 5s when position open, 15s when scanning for entries
+- 2026-02-15: ATR-based dynamic SL (1.5x ATR capped at 1.0%) and TP (3x ATR with 2:1 R:R minimum)
+- 2026-02-15: Signal generator in indicators.js with multi-timeframe confirmation rules
 - 2026-02-14: CRITICAL SAFETY OVERHAUL - Max stop loss capped to 1.0% price move (=20% P&L max per trade, was 2.5%/50%)
 - 2026-02-14: Emergency circuit breaker - force close any position at -25% P&L regardless of stop loss
 - 2026-02-14: Hard-coded indicator gates - blocks trades when 15m ADX<20 (choppy), timeframes conflict, or price vs EMA50 disagrees with direction
