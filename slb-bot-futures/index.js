@@ -154,8 +154,8 @@ function savePriceHistory() {
             const ms = marketStates[symbol];
             if (ms && ms.prices.length > 0) {
                 data[symbol] = {
-                    prices: ms.prices.slice(-1200),
-                    timestamps: ms.priceTimestamps.slice(-1200)
+                    prices: ms.prices.slice(-3600),
+                    timestamps: ms.priceTimestamps.slice(-3600)
                 };
             }
         }
@@ -173,7 +173,7 @@ function loadPriceHistory() {
             for (const symbol of ACTIVE_MARKETS) {
                 if (data[symbol] && data[symbol].prices && data[symbol].timestamps) {
                     const ms = marketStates[symbol];
-                    const maxAge = 60 * 60 * 1000;
+                    const maxAge = 16 * 60 * 60 * 1000;
                     const now = Date.now();
                     const validIndices = [];
                     for (let i = 0; i < data[symbol].timestamps.length; i++) {
@@ -188,7 +188,7 @@ function loadPriceHistory() {
                         ms.trend = detectTrend(ms.prices);
                         ms.volatility = calculateVolatility(ms.prices);
                         loaded += validIndices.length;
-                        log(`[${symbol}] Loaded ${validIndices.length} price points from history (max 1h old)`);
+                        log(`[${symbol}] Loaded ${validIndices.length} price points from history (max 16h old)`);
                     }
                 }
             }
