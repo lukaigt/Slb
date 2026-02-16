@@ -635,9 +635,9 @@ async function processMarket(symbol) {
         marketState.prices.push(price);
         marketState.priceTimestamps.push(now);
         marketState.imbalances.push(imbalance);
-        if (marketState.prices.length > 1200) {
-            marketState.prices = marketState.prices.slice(-1200);
-            marketState.priceTimestamps = marketState.priceTimestamps.slice(-1200);
+        if (marketState.prices.length > 3600) {
+            marketState.prices = marketState.prices.slice(-3600);
+            marketState.priceTimestamps = marketState.priceTimestamps.slice(-3600);
         }
         if (marketState.imbalances.length > 60) marketState.imbalances = marketState.imbalances.slice(-60);
 
