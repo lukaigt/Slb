@@ -28,7 +28,7 @@ const CONFIG = {
     TRADE_AMOUNT_USDC: parseFloat(process.env.TRADE_AMOUNT_USDC) || 10,
     SIMULATION_MODE: process.env.SIMULATION_MODE === 'true' || process.env.SIMULATION_MODE === '1',
     COOLDOWN_MS: (parseInt(process.env.COOLDOWN_SECONDS) || 600) * 1000,
-    AI_INTERVAL_MS: parseInt(process.env.AI_INTERVAL_MS) || 300000,
+    AI_INTERVAL_MS: parseInt(process.env.AI_INTERVAL_MS) || 180000,
     CHECK_INTERVAL_MS: parseInt(process.env.CHECK_INTERVAL_MS) || 15000,
     DLOB_URL: 'https://dlob.drift.trade',
     DASHBOARD_PORT: parseInt(process.env.DASHBOARD_PORT) || 3000,

@@ -286,8 +286,8 @@ function generateSignal(ind5m, ind15m, currentPrice) {
     }
 
     const adx = ind15m.adx.adx;
-    if (adx < 25) {
-        result.reason = `ADX ${adx.toFixed(1)} < 25 - no strong trend`;
+    if (adx < 20) {
+        result.reason = `ADX ${adx.toFixed(1)} < 20 - no trend`;
         return result;
     }
 
@@ -315,12 +315,12 @@ function generateSignal(ind5m, ind15m, currentPrice) {
             result.reason = '15m EMAs not bullish - no alignment';
             return result;
         }
-        if (ind5m.rsi > 65) {
-            result.reason = `RSI ${ind5m.rsi.toFixed(1)} > 65 - too overbought for LONG entry`;
+        if (ind5m.rsi > 70) {
+            result.reason = `RSI ${ind5m.rsi.toFixed(1)} > 70 - too overbought for LONG entry`;
             return result;
         }
-        if (ind5m.rsi < 40) {
-            result.reason = `RSI ${ind5m.rsi.toFixed(1)} < 40 - momentum too weak for LONG`;
+        if (ind5m.rsi < 35) {
+            result.reason = `RSI ${ind5m.rsi.toFixed(1)} < 35 - momentum too weak for LONG`;
             return result;
         }
 
@@ -350,12 +350,12 @@ function generateSignal(ind5m, ind15m, currentPrice) {
             result.reason = '15m EMAs still bullish - no alignment for SHORT';
             return result;
         }
-        if (ind5m.rsi < 35) {
-            result.reason = `RSI ${ind5m.rsi.toFixed(1)} < 35 - too oversold for SHORT entry`;
+        if (ind5m.rsi < 30) {
+            result.reason = `RSI ${ind5m.rsi.toFixed(1)} < 30 - too oversold for SHORT entry`;
             return result;
         }
-        if (ind5m.rsi > 60) {
-            result.reason = `RSI ${ind5m.rsi.toFixed(1)} > 60 - momentum too strong for SHORT`;
+        if (ind5m.rsi > 65) {
+            result.reason = `RSI ${ind5m.rsi.toFixed(1)} > 65 - momentum too strong for SHORT`;
             return result;
         }
 
