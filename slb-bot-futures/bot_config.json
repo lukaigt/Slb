@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "lastUpdated": "2026-02-16T19:50:58.049Z",
+  "lastUpdated": "2026-02-18T13:40:45.469Z",
   "dailyLossLimit": 10,
   "maxConsecutiveLosses": 4,
   "maxPositionRiskPercent": 3,
@@ -8,7 +8,7 @@
   "pauseReason": null,
   "pausedUntil": null,
   "dailyStats": {
-    "date": "2026-02-16",
+    "date": "2026-02-18",
     "totalPnl": 0,
     "trades": 0,
     "wins": 0,
