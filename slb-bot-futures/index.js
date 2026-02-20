@@ -650,18 +650,7 @@ async function processMarket(symbol) {
         marketState.indicators5m = indicators.calculateAllIndicators(candles5m);
         marketState.indicators15m = indicators.calculateAllIndicators(candles15m);
 
-        const sr5mDash = indicators.findSupportResistance(candles5m, price);
-        const sr15mDash = indicators.findSupportResistance(candles15m, price);
-        marketState.supportResistance = {
-            supports: [...sr15mDash.supports, ...sr5mDash.supports]
-                .sort((a, b) => b.price - a.price)
-                .filter((s, i, arr) => i === 0 || Math.abs(s.price - arr[i-1].price) / price > 0.002)
-                .slice(0, 3),
-            resistances: [...sr15mDash.resistances, ...sr5mDash.resistances]
-                .sort((a, b) => a.price - b.price)
-                .filter((r, i, arr) => i === 0 || Math.abs(r.price - arr[i-1].price) / price > 0.002)
-                .slice(0, 3)
-        };
+        marketState.supportResistance = indicators.findSupportResistance(marketState.prices, marketState.priceTimestamps, price);
         marketState.candlePatterns = indicators.analyzeCandlePatterns(candles5m);
 
         const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
@@ -836,9 +825,9 @@ async function processMarket(symbol) {
             const sampledPrices = [];
             const totalPoints = allPrices.length;
             if (totalPoints > 0) {
-                const samplesToTake = Math.min(30, totalPoints);
+                const samplesToTake = Math.min(120, totalPoints);
                 const step = Math.max(1, Math.floor(totalPoints / samplesToTake));
-                for (let i = Math.max(0, totalPoints - (samplesToTake * step)); i < totalPoints; i += step) {
+                for (let i = 0; i < totalPoints; i += step) {
                     sampledPrices.push(allPrices[i]);
                 }
                 if (sampledPrices[sampledPrices.length - 1] !== currentP) {
@@ -877,18 +866,24 @@ async function processMarket(symbol) {
             }
 
             const sr = marketState.supportResistance;
-            if (sr && decision.action === 'LONG' && sr.resistances && sr.resistances.length > 0) {
-                const nearestRes = sr.resistances[0];
-                if (nearestRes && Math.abs(nearestRes.distancePercent) < 0.5) {
-                    aiBrain.think(`[${symbol}] S/R GATE BLOCKED LONG — price is ${Math.abs(nearestRes.distancePercent).toFixed(2)}% from resistance at $${nearestRes.price.toFixed(2)} [${nearestRes.strength}]`, 'safety');
-                    return;
+            const srSpread = (sr && sr.resistances.length > 0 && sr.supports.length > 0)
+                ? Math.abs(sr.resistances[0].distancePercent) + Math.abs(sr.supports[0].distancePercent)
+                : 999;
+
+            if (srSpread >= 1.0) {
+                if (sr && decision.action === 'LONG' && sr.resistances && sr.resistances.length > 0) {
+                    const nearestRes = sr.resistances[0];
+                    if (nearestRes && nearestRes.strength === 'STRONG' && Math.abs(nearestRes.distancePercent) < 0.3) {
+                        aiBrain.think(`[${symbol}] S/R GATE BLOCKED LONG — price is ${Math.abs(nearestRes.distancePercent).toFixed(2)}% from STRONG resistance at $${nearestRes.price.toFixed(2)} [${nearestRes.touches} touches, tested over ${nearestRes.timeSpanMinutes || 0}min]`, 'safety');
+                        return;
+                    }
                 }
-            }
-            if (sr && decision.action === 'SHORT' && sr.supports && sr.supports.length > 0) {
-                const nearestSup = sr.supports[0];
-                if (nearestSup && Math.abs(nearestSup.distancePercent) < 0.5) {
-                    aiBrain.think(`[${symbol}] S/R GATE BLOCKED SHORT — price is ${Math.abs(nearestSup.distancePercent).toFixed(2)}% from support at $${nearestSup.price.toFixed(2)} [${nearestSup.strength}]`, 'safety');
-                    return;
+                if (sr && decision.action === 'SHORT' && sr.supports && sr.supports.length > 0) {
+                    const nearestSup = sr.supports[0];
+                    if (nearestSup && nearestSup.strength === 'STRONG' && Math.abs(nearestSup.distancePercent) < 0.3) {
+                        aiBrain.think(`[${symbol}] S/R GATE BLOCKED SHORT — price is ${Math.abs(nearestSup.distancePercent).toFixed(2)}% from STRONG support at $${nearestSup.price.toFixed(2)} [${nearestSup.touches} touches, tested over ${nearestSup.timeSpanMinutes || 0}min]`, 'safety');
+                        return;
+                    }
                 }
             }
 
@@ -1103,10 +1098,10 @@ function generateDashboardHTML() {
                             const sr = ms.supportResistance;
                             const cp = ms.candlePatterns;
                             const supText = sr && sr.supports.length > 0
-                                ? sr.supports.map(s => '$' + s.price.toFixed(2) + ' [' + s.strength + ', ' + s.touches + 'x] ' + Math.abs(s.distancePercent).toFixed(2) + '% below').join('<br>')
+                                ? sr.supports.map(s => '$' + s.price.toFixed(2) + ' [' + s.strength + ', ' + s.touches + 'x, ' + (s.timeSpanMinutes || 0) + 'min] ' + Math.abs(s.distancePercent).toFixed(2) + '% below').join('<br>')
                                 : '<span style="color:#484f58;">Building...</span>';
                             const resText = sr && sr.resistances.length > 0
-                                ? sr.resistances.map(r => '$' + r.price.toFixed(2) + ' [' + r.strength + ', ' + r.touches + 'x] ' + r.distancePercent.toFixed(2) + '% above').join('<br>')
+                                ? sr.resistances.map(r => '$' + r.price.toFixed(2) + ' [' + r.strength + ', ' + r.touches + 'x, ' + (r.timeSpanMinutes || 0) + 'min] ' + r.distancePercent.toFixed(2) + '% above').join('<br>')
                                 : '<span style="color:#484f58;">Building...</span>';
                             const cpText = cp && cp.patterns.length > 0
                                 ? cp.patterns.slice(-3).map(p => '<span class="' + (p.signal.includes('BULLISH') ? 'positive' : p.signal.includes('BEARISH') ? 'negative' : 'neutral') + '">' + p.type + '</span>').join(', ')

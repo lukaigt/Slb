@@ -34,7 +34,7 @@ old_spot_bot/            # OLD: Archived spot trading bot (not used)
 ### Technical Indicators (indicators.js)
 - 9 indicators: RSI(14), EMA(9/21/50), MACD(12/26/9), Bollinger Bands(20,2), ATR(14), Stochastic RSI(14,14,3,3), ADX(14)
 - 3 timeframes: 1-minute, 5-minute, 15-minute candles built from raw price data
-- **Support/Resistance Calculator**: Detects swing highs/lows, clusters nearby levels (0.3% threshold), counts touches for strength (WEAK/MODERATE/STRONG), returns top 3 support + top 3 resistance with distance from current price
+- **Support/Resistance Calculator**: Scans ALL 3600 raw price points (up to 15 hours), finds real swing highs/lows using 40-point window (10min+ confirmation each side), clusters within 0.5%, strength scored by time span (STRONG = tested 30+ min apart, MODERATE = 10-30min, WEAK = brief), returns top 5 support + top 5 resistance with distance and time span
 - **Candle Pattern Analyzer**: Detects doji, shooting star, hammer, bullish/bearish engulfing, upper/lower wick rejections from last 5 candles on 5m timeframe
 - OHLC candles constructed from 15-second price samples
 - Price history saved to disk every 5 minutes and on shutdown; loaded on startup with 16-hour max age filter
@@ -130,6 +130,12 @@ Dark theme dashboard showing:
 - dotenv: Environment variable management
 
 ## Recent Changes
+- 2026-02-20: v10.1 S/R OVERHAUL - S/R detector now scans all 3600 raw price points instead of 5m/15m candles; finds real higher highs and lower lows across hours
+- 2026-02-20: S/R swing window widened to 40 points (10min+ confirmation) so only real structural levels are detected, not micro-noise
+- 2026-02-20: S/R strength now based on time span between touches (hours apart = STRONG) instead of just touch count in chop
+- 2026-02-20: AI receives 120 sampled price points covering full session (hours) instead of 30 points covering 30min
+- 2026-02-20: S/R gate relaxed: only blocks STRONG levels within 0.3% (was 0.5% for all levels), skips gate entirely if S/R spread < 1%
+- 2026-02-20: AI prompt updated: S/R used as guidance for SL/TP anchoring, not as rigid trade-blocking rules; encourages trading between wide S/R levels
 - 2026-02-20: v10 CRITICAL DATA PIPELINE OVERHAUL - Fixed AI only seeing 2.5min of data; now gets full chart history
 - 2026-02-20: 6-window price changes (1m/5m/10m/15m/30min/1hr) replace single 5-min number
 - 2026-02-20: Trend/volatility detection expanded from 10 points (2.5min) to 40 points (10min) with STRONG/SLIGHT labels

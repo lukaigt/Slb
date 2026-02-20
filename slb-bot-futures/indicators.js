@@ -423,31 +423,34 @@ function formatIndicatorsForAI(indicators, timeframeLabel) {
     return text;
 }
 
-function findSupportResistance(candles, currentPrice) {
-    if (!candles || candles.length < 10) return { supports: [], resistances: [] };
+function findSupportResistance(prices, timestamps, currentPrice) {
+    if (!prices || prices.length < 100) return { supports: [], resistances: [] };
 
+    const swingWindow = 40;
     const swingHighs = [];
     const swingLows = [];
 
-    for (let i = 2; i < candles.length - 2; i++) {
-        if (candles[i].high > candles[i-1].high && candles[i].high > candles[i-2].high &&
-            candles[i].high > candles[i+1].high && candles[i].high > candles[i+2].high) {
-            swingHighs.push(candles[i].high);
+    for (let i = swingWindow; i < prices.length - swingWindow; i++) {
+        let isHigh = true;
+        let isLow = true;
+        for (let j = i - swingWindow; j <= i + swingWindow; j++) {
+            if (j === i) continue;
+            if (prices[j] >= prices[i]) isHigh = false;
+            if (prices[j] <= prices[i]) isLow = false;
+            if (!isHigh && !isLow) break;
         }
-        if (candles[i].low < candles[i-1].low && candles[i].low < candles[i-2].low &&
-            candles[i].low < candles[i+1].low && candles[i].low < candles[i+2].low) {
-            swingLows.push(candles[i].low);
-        }
+        if (isHigh) swingHighs.push({ price: prices[i], time: timestamps[i], index: i });
+        if (isLow) swingLows.push({ price: prices[i], time: timestamps[i], index: i });
     }
 
     const allLevels = [
-        ...swingHighs.map(p => ({ price: p, type: 'high' })),
-        ...swingLows.map(p => ({ price: p, type: 'low' }))
+        ...swingHighs.map(s => ({ price: s.price, time: s.time, type: 'high' })),
+        ...swingLows.map(s => ({ price: s.price, time: s.time, type: 'low' }))
     ];
 
     const clusters = [];
     const used = new Set();
-    const clusterThreshold = currentPrice * 0.003;
+    const clusterThreshold = currentPrice * 0.005;
 
     for (let i = 0; i < allLevels.length; i++) {
         if (used.has(i)) continue;
@@ -461,9 +464,23 @@ function findSupportResistance(candles, currentPrice) {
             }
         }
         const avgPrice = cluster.reduce((s, c) => s + c.price, 0) / cluster.length;
+        const times = cluster.map(c => c.time).sort((a, b) => a - b);
+        const timeSpanMs = times[times.length - 1] - times[0];
+        const timeSpanMinutes = timeSpanMs / 60000;
+
+        let strength;
+        if (cluster.length >= 3 && timeSpanMinutes >= 60) strength = 'STRONG';
+        else if (cluster.length >= 2 && timeSpanMinutes >= 30) strength = 'STRONG';
+        else if (cluster.length >= 2 && timeSpanMinutes >= 10) strength = 'MODERATE';
+        else if (cluster.length >= 2) strength = 'WEAK';
+        else if (timeSpanMinutes >= 60) strength = 'MODERATE';
+        else strength = 'WEAK';
+
         clusters.push({
             price: avgPrice,
             touches: cluster.length,
+            strength,
+            timeSpanMinutes: Math.round(timeSpanMinutes),
             distance: ((avgPrice - currentPrice) / currentPrice * 100)
         });
     }
@@ -471,22 +488,24 @@ function findSupportResistance(candles, currentPrice) {
     const supports = clusters
         .filter(c => c.price < currentPrice)
         .sort((a, b) => b.price - a.price)
-        .slice(0, 3)
+        .slice(0, 5)
         .map(c => ({
             price: c.price,
             touches: c.touches,
-            strength: c.touches >= 3 ? 'STRONG' : c.touches >= 2 ? 'MODERATE' : 'WEAK',
+            strength: c.strength,
+            timeSpanMinutes: c.timeSpanMinutes,
             distancePercent: c.distance
         }));
 
     const resistances = clusters
         .filter(c => c.price > currentPrice)
         .sort((a, b) => a.price - b.price)
-        .slice(0, 3)
+        .slice(0, 5)
         .map(c => ({
             price: c.price,
             touches: c.touches,
-            strength: c.touches >= 3 ? 'STRONG' : c.touches >= 2 ? 'MODERATE' : 'WEAK',
+            strength: c.strength,
+            timeSpanMinutes: c.timeSpanMinutes,
             distancePercent: c.distance
         }));
 
@@ -564,14 +583,16 @@ function formatSRForAI(sr, currentPrice) {
     let text = '\nSUPPORT/RESISTANCE LEVELS:';
     if (sr.resistances.length > 0) {
         for (const r of sr.resistances) {
-            text += `\n  RESISTANCE: $${r.price.toFixed(2)} [${r.strength}, ${r.touches} touches] ${r.distancePercent.toFixed(2)}% above`;
+            const span = r.timeSpanMinutes ? `, tested over ${r.timeSpanMinutes}min` : '';
+            text += `\n  RESISTANCE: $${r.price.toFixed(2)} [${r.strength}, ${r.touches} touches${span}] ${r.distancePercent.toFixed(2)}% above`;
         }
     } else {
         text += '\n  RESISTANCE: None detected nearby';
     }
     if (sr.supports.length > 0) {
         for (const s of sr.supports) {
-            text += `\n  SUPPORT: $${s.price.toFixed(2)} [${s.strength}, ${s.touches} touches] ${Math.abs(s.distancePercent).toFixed(2)}% below`;
+            const span = s.timeSpanMinutes ? `, tested over ${s.timeSpanMinutes}min` : '';
+            text += `\n  SUPPORT: $${s.price.toFixed(2)} [${s.strength}, ${s.touches} touches${span}] ${Math.abs(s.distancePercent).toFixed(2)}% below`;
         }
     } else {
         text += '\n  SUPPORT: None detected nearby';

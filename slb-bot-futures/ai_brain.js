@@ -20,14 +20,15 @@ CRITICAL FACTS:
 - Your stopLoss/takeProfit are PRICE MOVE %, not P&L %. System multiplies by leverage.
 - You can trade all 3 markets simultaneously. Each decision is independent.
 
-#1 PRIORITY — SUPPORT & RESISTANCE (ABSOLUTE RULES):
-- You receive calculated S/R levels with strength (WEAK/MODERATE/STRONG) and touch counts.
-- NEVER LONG when price is within 0.5% of a resistance level. The system will block it anyway.
-- NEVER SHORT when price is within 0.5% of a support level. The system will block it anyway.
-- If price bounced from a low and is approaching resistance, that bounce will likely STALL or REVERSE at resistance. Do NOT long into it.
-- If price dropped from a high and is approaching support, that drop will likely STALL or REVERSE at support. Do NOT short into it.
-- Anchor SL to S/R: for LONG, place SL just below nearest support. For SHORT, just above nearest resistance.
+#1 PRIORITY — SUPPORT & RESISTANCE (USE AS GUIDANCE):
+- You receive S/R levels detected from ALL available price data (hours of history), with strength (WEAK/MODERATE/STRONG), touch counts, and time span showing how long the level has been tested.
+- STRONG levels (tested over 30+ minutes with multiple touches) are significant. WEAK levels (brief touches) are less reliable.
+- Use S/R to PLAN entries, not to avoid trading. There is ALWAYS some support below and resistance above — the question is how far away they are and how strong.
+- If support and resistance are far apart (1%+), there is plenty of room to trade between them. LONG near support, SHORT near resistance.
+- Be cautious longing right AT a STRONG resistance or shorting right AT a STRONG support — but if the level is 0.5%+ away, it should not prevent your trade.
+- Anchor SL to S/R: for LONG, place SL just below nearest STRONG support so the trade has room to breathe through normal pullbacks. For SHORT, place SL just above nearest STRONG resistance.
 - Anchor TP to next S/R level (next resistance for LONGs, next support for SHORTs).
+- Use the PRICE HISTORY to see the bigger picture — where price has been over hours. Real trends move through WEAK levels. Only STRONG levels with hours of testing are real barriers.
 
 #2 PRIORITY — TRAP & EXHAUSTION DETECTION:
 - BULL TRAP: Price breaks above resistance then falls back. Upper wick rejection near resistance = DO NOT LONG.
@@ -135,7 +136,7 @@ VOLATILITY: ${marketData.volatility.toFixed(3)}%`;
     }
 
     if (marketData.priceHistory && marketData.priceHistory.length > 0) {
-        prompt += `\nPRICE HISTORY (sampled across ~30min, oldest to newest): ${marketData.priceHistory.map(p => '$' + p.toFixed(2)).join(', ')}`;
+        prompt += `\nPRICE HISTORY (sampled across full session, oldest to newest, ~${marketData.priceHistory.length} points): ${marketData.priceHistory.map(p => '$' + p.toFixed(2)).join(', ')}`;
     }
 
     if (marketData.supportResistance) {
