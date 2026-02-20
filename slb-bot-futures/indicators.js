@@ -423,11 +423,180 @@ function formatIndicatorsForAI(indicators, timeframeLabel) {
     return text;
 }
 
+function findSupportResistance(candles, currentPrice) {
+    if (!candles || candles.length < 10) return { supports: [], resistances: [] };
+
+    const swingHighs = [];
+    const swingLows = [];
+
+    for (let i = 2; i < candles.length - 2; i++) {
+        if (candles[i].high > candles[i-1].high && candles[i].high > candles[i-2].high &&
+            candles[i].high > candles[i+1].high && candles[i].high > candles[i+2].high) {
+            swingHighs.push(candles[i].high);
+        }
+        if (candles[i].low < candles[i-1].low && candles[i].low < candles[i-2].low &&
+            candles[i].low < candles[i+1].low && candles[i].low < candles[i+2].low) {
+            swingLows.push(candles[i].low);
+        }
+    }
+
+    const allLevels = [
+        ...swingHighs.map(p => ({ price: p, type: 'high' })),
+        ...swingLows.map(p => ({ price: p, type: 'low' }))
+    ];
+
+    const clusters = [];
+    const used = new Set();
+    const clusterThreshold = currentPrice * 0.003;
+
+    for (let i = 0; i < allLevels.length; i++) {
+        if (used.has(i)) continue;
+        const cluster = [allLevels[i]];
+        used.add(i);
+        for (let j = i + 1; j < allLevels.length; j++) {
+            if (used.has(j)) continue;
+            if (Math.abs(allLevels[j].price - allLevels[i].price) <= clusterThreshold) {
+                cluster.push(allLevels[j]);
+                used.add(j);
+            }
+        }
+        const avgPrice = cluster.reduce((s, c) => s + c.price, 0) / cluster.length;
+        clusters.push({
+            price: avgPrice,
+            touches: cluster.length,
+            distance: ((avgPrice - currentPrice) / currentPrice * 100)
+        });
+    }
+
+    const supports = clusters
+        .filter(c => c.price < currentPrice)
+        .sort((a, b) => b.price - a.price)
+        .slice(0, 3)
+        .map(c => ({
+            price: c.price,
+            touches: c.touches,
+            strength: c.touches >= 3 ? 'STRONG' : c.touches >= 2 ? 'MODERATE' : 'WEAK',
+            distancePercent: c.distance
+        }));
+
+    const resistances = clusters
+        .filter(c => c.price > currentPrice)
+        .sort((a, b) => a.price - b.price)
+        .slice(0, 3)
+        .map(c => ({
+            price: c.price,
+            touches: c.touches,
+            strength: c.touches >= 3 ? 'STRONG' : c.touches >= 2 ? 'MODERATE' : 'WEAK',
+            distancePercent: c.distance
+        }));
+
+    return { supports, resistances };
+}
+
+function analyzeCandlePatterns(candles) {
+    if (!candles || candles.length < 5) return { patterns: [], summary: 'Not enough candle data' };
+
+    const recent = candles.slice(-5);
+    const patterns = [];
+
+    for (let i = 0; i < recent.length; i++) {
+        const c = recent[i];
+        const body = Math.abs(c.close - c.open);
+        const totalRange = c.high - c.low;
+        if (totalRange === 0) continue;
+
+        const upperWick = c.high - Math.max(c.open, c.close);
+        const lowerWick = Math.min(c.open, c.close) - c.low;
+        const isBullish = c.close > c.open;
+        const bodyRatio = body / totalRange;
+        const upperWickRatio = upperWick / totalRange;
+        const lowerWickRatio = lowerWick / totalRange;
+
+        if (bodyRatio < 0.1 && totalRange > 0) {
+            patterns.push({ candle: i + 1, type: 'DOJI', signal: 'INDECISION', desc: 'tiny body, market undecided' });
+        }
+
+        if (upperWickRatio > 0.6 && bodyRatio < 0.3) {
+            patterns.push({ candle: i + 1, type: 'SHOOTING_STAR', signal: 'BEARISH_REVERSAL', desc: 'long upper wick rejection, sellers pushing down' });
+        }
+
+        if (lowerWickRatio > 0.6 && bodyRatio < 0.3) {
+            patterns.push({ candle: i + 1, type: 'HAMMER', signal: 'BULLISH_REVERSAL', desc: 'long lower wick defense, buyers pushing up' });
+        }
+
+        if (upperWickRatio > 0.4 && body > 0) {
+            patterns.push({ candle: i + 1, type: 'UPPER_WICK_REJECTION', signal: 'BEARISH', desc: `upper wick ${(upperWickRatio * 100).toFixed(0)}% of range` });
+        }
+
+        if (lowerWickRatio > 0.4 && body > 0) {
+            patterns.push({ candle: i + 1, type: 'LOWER_WICK_DEFENSE', signal: 'BULLISH', desc: `lower wick ${(lowerWickRatio * 100).toFixed(0)}% of range` });
+        }
+
+        if (i > 0) {
+            const prev = recent[i - 1];
+            const prevBullish = prev.close > prev.open;
+            const prevBody = Math.abs(prev.close - prev.open);
+            if (isBullish && !prevBullish && body > prevBody * 1.2 &&
+                c.close > prev.open && c.open < prev.close) {
+                patterns.push({ candle: i + 1, type: 'BULLISH_ENGULFING', signal: 'BULLISH_REVERSAL', desc: 'bullish candle engulfs previous bearish' });
+            }
+            if (!isBullish && prevBullish && body > prevBody * 1.2 &&
+                c.open > prev.close && c.close < prev.open) {
+                patterns.push({ candle: i + 1, type: 'BEARISH_ENGULFING', signal: 'BEARISH_REVERSAL', desc: 'bearish candle engulfs previous bullish' });
+            }
+        }
+    }
+
+    let summary = 'No significant patterns';
+    if (patterns.length > 0) {
+        const bullish = patterns.filter(p => p.signal.includes('BULLISH')).length;
+        const bearish = patterns.filter(p => p.signal.includes('BEARISH')).length;
+        if (bullish > bearish) summary = `Bullish bias (${bullish} bullish vs ${bearish} bearish patterns)`;
+        else if (bearish > bullish) summary = `Bearish bias (${bearish} bearish vs ${bullish} bullish patterns)`;
+        else summary = `Mixed signals (${bullish} bullish, ${bearish} bearish patterns)`;
+    }
+
+    return { patterns, summary };
+}
+
+function formatSRForAI(sr, currentPrice) {
+    if (!sr) return '\nSUPPORT/RESISTANCE: Not enough data yet';
+    let text = '\nSUPPORT/RESISTANCE LEVELS:';
+    if (sr.resistances.length > 0) {
+        for (const r of sr.resistances) {
+            text += `\n  RESISTANCE: $${r.price.toFixed(2)} [${r.strength}, ${r.touches} touches] ${r.distancePercent.toFixed(2)}% above`;
+        }
+    } else {
+        text += '\n  RESISTANCE: None detected nearby';
+    }
+    if (sr.supports.length > 0) {
+        for (const s of sr.supports) {
+            text += `\n  SUPPORT: $${s.price.toFixed(2)} [${s.strength}, ${s.touches} touches] ${Math.abs(s.distancePercent).toFixed(2)}% below`;
+        }
+    } else {
+        text += '\n  SUPPORT: None detected nearby';
+    }
+    return text;
+}
+
+function formatCandlePatternsForAI(analysis) {
+    if (!analysis || analysis.patterns.length === 0) return '\nCANDLE PATTERNS (5m): No significant patterns';
+    let text = `\nCANDLE PATTERNS (5m): ${analysis.summary}`;
+    for (const p of analysis.patterns.slice(-5)) {
+        text += `\n  Candle ${p.candle}: ${p.type} [${p.signal}] - ${p.desc}`;
+    }
+    return text;
+}
+
 module.exports = {
     buildCandles,
     calculateAllIndicators,
     formatIndicatorsForAI,
     generateSignal,
+    findSupportResistance,
+    analyzeCandlePatterns,
+    formatSRForAI,
+    formatCandlePatternsForAI,
     calcEMA,
     calcRSI,
     calcMACD,

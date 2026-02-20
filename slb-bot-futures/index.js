@@ -72,7 +72,9 @@ function createEmptyMarketState() {
         dlobConnected: false,
         indicators1m: null,
         indicators5m: null,
-        indicators15m: null
+        indicators15m: null,
+        supportResistance: null,
+        candlePatterns: null
     };
 }
 
@@ -653,6 +655,20 @@ async function processMarket(symbol) {
         marketState.indicators5m = indicators.calculateAllIndicators(candles5m);
         marketState.indicators15m = indicators.calculateAllIndicators(candles15m);
 
+        const sr5mDash = indicators.findSupportResistance(candles5m, price);
+        const sr15mDash = indicators.findSupportResistance(candles15m, price);
+        marketState.supportResistance = {
+            supports: [...sr15mDash.supports, ...sr5mDash.supports]
+                .sort((a, b) => b.price - a.price)
+                .filter((s, i, arr) => i === 0 || Math.abs(s.price - arr[i-1].price) / price > 0.002)
+                .slice(0, 3),
+            resistances: [...sr15mDash.resistances, ...sr5mDash.resistances]
+                .sort((a, b) => a.price - b.price)
+                .filter((r, i, arr) => i === 0 || Math.abs(r.price - arr[i-1].price) / price > 0.002)
+                .slice(0, 3)
+        };
+        marketState.candlePatterns = indicators.analyzeCandlePatterns(candles5m);
+
         const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
         const modeStr = CONFIG.SIMULATION_MODE ? 'SIM' : 'LIVE';
         const posStr = pos || 'NONE';
@@ -708,11 +724,32 @@ async function processMarket(symbol) {
                 return;
             }
 
-            // 2. Breakeven Trigger (Risk Neutralization)
-            // If P&L > +5%, move SL to entry price (0% move)
-            if (pnl >= 5.0 && marketState.aiStopLoss !== null && marketState.aiStopLoss > 0) {
-                log(`[${symbol}] Hit +5% P&L. Moving Stop Loss to Breakeven.`);
-                marketState.aiStopLoss = 0; // 0% price move = entry price
+            // 2. Stepped Profit Protection
+            if (marketState.aiStopLoss !== null) {
+                const leverage = CONFIG.LEVERAGE;
+                let newSLPriceMove = null;
+                let lockLabel = '';
+                if (pnl >= 20) {
+                    newSLPriceMove = 12 / leverage;
+                    lockLabel = '+20% P&L → locking +12%';
+                } else if (pnl >= 12) {
+                    newSLPriceMove = 6 / leverage;
+                    lockLabel = '+12% P&L → locking +6%';
+                } else if (pnl >= 8) {
+                    newSLPriceMove = 3 / leverage;
+                    lockLabel = '+8% P&L → locking +3%';
+                } else if (pnl >= 5) {
+                    newSLPriceMove = 0;
+                    lockLabel = '+5% P&L → breakeven';
+                }
+                if (newSLPriceMove !== null) {
+                    const currentSLasProfit = -marketState.aiStopLoss * leverage;
+                    const newSLasProfit = newSLPriceMove * leverage;
+                    if (newSLasProfit > currentSLasProfit) {
+                        log(`[${symbol}] PROFIT LOCK: ${lockLabel} (SL moved from ${marketState.aiStopLoss.toFixed(3)}% to -${newSLPriceMove.toFixed(3)}% price move)`);
+                        marketState.aiStopLoss = -newSLPriceMove;
+                    }
+                }
             }
 
             // 3. Time-Based Decay (30 min stagnation)
@@ -757,35 +794,80 @@ async function processMarket(symbol) {
                 return;
             }
 
-            const hasOpenPosition = ACTIVE_MARKETS.some(s => {
-                const ms = marketStates[s];
-                return ms && (CONFIG.SIMULATION_MODE ? ms.simulatedPosition : ms.currentPosition);
-            });
-            if (hasOpenPosition) {
-                return;
-            }
-
             marketState.lastAiCall = now;
 
-            const signal = indicators.generateSignal(marketState.indicators5m, marketState.indicators15m, price);
+            const otherPositions = [];
+            for (const otherSymbol of ACTIVE_MARKETS) {
+                if (otherSymbol === symbol) continue;
+                const otherMs = marketStates[otherSymbol];
+                const otherPos = CONFIG.SIMULATION_MODE ? otherMs.simulatedPosition : otherMs.currentPosition;
+                if (otherPos && otherMs.entryPrice > 0 && otherMs.lastPrice > 0) {
+                    const pm = otherPos === 'LONG'
+                        ? ((otherMs.lastPrice - otherMs.entryPrice) / otherMs.entryPrice * 100)
+                        : ((otherMs.entryPrice - otherMs.lastPrice) / otherMs.entryPrice * 100);
+                    otherPositions.push({
+                        symbol: otherSymbol,
+                        direction: otherPos,
+                        entryPrice: otherMs.entryPrice,
+                        pnl: (pm * CONFIG.LEVERAGE) - (0.1 * CONFIG.LEVERAGE)
+                    });
+                }
+            }
 
-            if (signal.action === 'WAIT') {
-                aiBrain.think(`[${symbol}] SIGNAL: WAIT - ${signal.reason}`, 'scan');
+            const safetyStatus = safety.getStatus();
+            const dailyContext = {
+                dailyPnl: safetyStatus.dailyPnl,
+                dailyTrades: safetyStatus.dailyTrades,
+                dailyWins: safetyStatus.dailyWins,
+                dailyLosses: safetyStatus.dailyLosses,
+                dailyWinRate: safetyStatus.dailyWinRate,
+                consecutiveLosses: safetyStatus.consecutiveLosses
+            };
+
+            const btcTrend = marketStates['BTC-PERP'] ? marketStates['BTC-PERP'].trend : null;
+
+            const recentPrices = marketState.prices.slice(-20);
+            const recentChange = recentPrices.length >= 2
+                ? ((recentPrices[recentPrices.length - 1] - recentPrices[0]) / recentPrices[0] * 100)
+                : 0;
+
+            const marketData = {
+                symbol,
+                price,
+                trend: marketState.trend,
+                imbalance,
+                volatility: marketState.volatility,
+                recentChange,
+                priceHistory: recentPrices,
+                indicators1m: marketState.indicators1m,
+                indicators5m: marketState.indicators5m,
+                indicators15m: marketState.indicators15m,
+                supportResistance: marketState.supportResistance,
+                candlePatterns: marketState.candlePatterns,
+                otherPositions,
+                dailyContext,
+                btcTrend
+            };
+
+            const decision = await aiBrain.askBrain(marketData, tradeMemory.trades);
+
+            if (decision.action === 'WAIT') {
+                aiBrain.think(`[${symbol}] AI: WAIT - ${decision.reason}`, 'scan');
                 return;
             }
 
-            if (signal.confidence < CONFIG.MIN_CONFIDENCE) {
-                aiBrain.think(`[${symbol}] Signal confidence too low (${(signal.confidence * 100).toFixed(0)}% < ${(CONFIG.MIN_CONFIDENCE * 100).toFixed(0)}%) - skipping`, 'skip');
+            if (decision.confidence < CONFIG.MIN_CONFIDENCE) {
+                aiBrain.think(`[${symbol}] AI confidence too low (${(decision.confidence * 100).toFixed(0)}% < ${(CONFIG.MIN_CONFIDENCE * 100).toFixed(0)}%) - skipping`, 'skip');
                 return;
             }
 
-            marketState.aiStopLoss = signal.stopLoss;
-            marketState.aiTakeProfit = signal.takeProfit;
-            marketState.aiMaxHoldMinutes = signal.maxHoldMinutes;
-            marketState.aiReason = signal.reason;
+            marketState.aiStopLoss = decision.stopLoss;
+            marketState.aiTakeProfit = decision.takeProfit;
+            marketState.aiMaxHoldMinutes = decision.maxHoldMinutes;
+            marketState.aiReason = decision.reason;
 
-            aiBrain.think(`[${symbol}] EXECUTING ${signal.action} | SL: ${signal.stopLoss.toFixed(2)}% | TP: ${signal.takeProfit.toFixed(2)}% | Conf: ${(signal.confidence * 100).toFixed(0)}% | Hold: ${signal.maxHoldMinutes}min | ${signal.reason}`, 'entry');
-            await openPosition(signal.action, marketState, marketConfig, symbol);
+            aiBrain.think(`[${symbol}] EXECUTING ${decision.action} | SL: ${decision.stopLoss.toFixed(2)}% | TP: ${decision.takeProfit.toFixed(2)}% | Conf: ${(decision.confidence * 100).toFixed(0)}% | Hold: ${decision.maxHoldMinutes}min | ${decision.reason}`, 'entry');
+            await openPosition(decision.action, marketState, marketConfig, symbol);
         }
     } catch (error) {
         log(`[${symbol}] Error: ${error.message}`);
@@ -849,7 +931,7 @@ function generateDashboardHTML() {
     return `<!DOCTYPE html>
 <html>
 <head>
-    <title>AI Trading Bot - GLM-4.7 Flash</title>
+    <title>AI Trading Bot v9 - GLM-4.7 Flash</title>
     <meta charset="UTF-8">
     <meta http-equiv="refresh" content="5">
     <style>
@@ -973,6 +1055,32 @@ function generateDashboardHTML() {
                                     '<td class="' + adxClass + '">' + adxText + '</td>' +
                                     '<td style="color:#484f58;">' + (ind.indicatorsAvailable || 0) + '/' + (ind.indicatorsTotal || 9) + '</td></tr>';
                             }).join('');
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="grid">
+            <div class="card full-width">
+                <h2>Support / Resistance & Candle Patterns</h2>
+                <table>
+                    <thead><tr><th>Market</th><th>Supports</th><th>Resistances</th><th>Candle Patterns (5m)</th></tr></thead>
+                    <tbody>
+                        ${ACTIVE_MARKETS.map(symbol => {
+                            const ms = marketStates[symbol] || {};
+                            const sr = ms.supportResistance;
+                            const cp = ms.candlePatterns;
+                            const supText = sr && sr.supports.length > 0
+                                ? sr.supports.map(s => '$' + s.price.toFixed(2) + ' [' + s.strength + ', ' + s.touches + 'x] ' + Math.abs(s.distancePercent).toFixed(2) + '% below').join('<br>')
+                                : '<span style="color:#484f58;">Building...</span>';
+                            const resText = sr && sr.resistances.length > 0
+                                ? sr.resistances.map(r => '$' + r.price.toFixed(2) + ' [' + r.strength + ', ' + r.touches + 'x] ' + r.distancePercent.toFixed(2) + '% above').join('<br>')
+                                : '<span style="color:#484f58;">Building...</span>';
+                            const cpText = cp && cp.patterns.length > 0
+                                ? cp.patterns.slice(-3).map(p => '<span class="' + (p.signal.includes('BULLISH') ? 'positive' : p.signal.includes('BEARISH') ? 'negative' : 'neutral') + '">' + p.type + '</span>').join(', ')
+                                : '<span style="color:#484f58;">' + (cp ? cp.summary : 'Building...') + '</span>';
+                            return '<tr><td><strong>' + symbol + '</strong></td><td>' + supText + '</td><td>' + resText + '</td><td>' + cpText + '</td></tr>';
                         }).join('')}
                     </tbody>
                 </table>

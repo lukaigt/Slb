@@ -1,14 +1,14 @@
-# Solana Futures Trading Bot v8 (Drift Protocol - Rule-Based Signals)
+# Solana Futures Trading Bot v9 (Drift Protocol - AI-Driven with S/R + Trap Detection)
 
 ## Overview
-Rule-based perpetual futures trading bot using Drift Protocol on Solana mainnet. Entry signals use **EMA 9/21 crossovers** on 5m timeframe with RSI filters, ADX>25 trend confirmation, 15m timeframe alignment, and ATR-based dynamic SL/TP. AI (GLM-4.7-Flash) still provides post-trade analysis. One position at a time across all markets. Fee-aware P&L (2% round-trip at 20x). Trades SOL-PERP, BTC-PERP, and ETH-PERP with 20x leverage. Safety layer with 10% daily loss limit.
+AI-driven perpetual futures trading bot using Drift Protocol on Solana mainnet. GLM-4.7-Flash makes all entry decisions using 9 technical indicators across 3 timeframes, support/resistance levels, candle pattern analysis, trap detection, and portfolio context. All 3 markets (SOL-PERP, BTC-PERP, ETH-PERP) can have simultaneous positions. Fee-aware P&L (2% round-trip at 20x). Multi-layered safety: 1.0% max SL cap, -25% circuit breaker, stepped profit locking, 10% daily loss limit.
 
 ## Project Structure
 ```
 slb-bot-futures/
   index.js              # Main bot logic + dashboard + Drift connection
   ai_brain.js           # AI decision engine (GLM-4.7-Flash via OpenRouter)
-  indicators.js          # Technical indicators (RSI, EMA, MACD, BB, ATR, StochRSI, ADX)
+  indicators.js          # Technical indicators, S/R calculator, candle pattern analyzer
   self_tuner.js          # Safety layer (daily loss limit, consecutive loss pause)
   bot_config.json        # Safety config (auto-generated, gitignored)
   trade_memory.json      # Trade history (gitignored)
@@ -23,42 +23,47 @@ old_spot_bot/            # OLD: Archived spot trading bot (not used)
 ## Architecture
 
 ### AI Brain (ai_brain.js)
-- Sends market data + technical indicators to GLM-4.7-Flash via OpenRouter API
-- AI receives: price, trend, orderbook imbalance, volatility, recent prices, past trade results, 9 technical indicators across 3 timeframes
+- AI makes ALL entry decisions (LONG/SHORT/WAIT) with full market context
+- AI receives: price, trend, orderbook imbalance, volatility, recent prices, 9 indicators across 3 timeframes, support/resistance levels with strength, candle patterns, open positions on other markets, daily P&L context, BTC trend correlation, past trade lessons
 - AI responds with: action (LONG/SHORT/WAIT), stopLoss, takeProfit, confidence, reason, maxHoldMinutes
-- System prompt teaches AI about 20x leverage, fees, risk management, and all 9 technical indicators with interpretation rules
-- Phase 2: Retrieves similar past trades (by trend/volatility/imbalance) and includes lessons in prompt
-- Each AI call costs fractions of a cent (~$0.50-1.00/day)
+- Comprehensive system prompt teaches: indicators, S/R usage, trap detection (bull/bear traps, stop hunts), wick analysis, momentum exhaustion, volatility regimes, correlation awareness, dynamic SL/TP anchoring to S/R and ATR
+- Past trade memory: retrieves similar trades (by trend/volatility/imbalance) and includes lessons
+- Each AI call costs fractions of a cent (~$1-2/day total)
 - All AI reasoning visible on dashboard
 
 ### Technical Indicators (indicators.js)
-- 9 indicators calculated from on-chain oracle prices: RSI(14), EMA(9/21/50), MACD(12/26/9), Bollinger Bands(20,2), ATR(14), Stochastic RSI(14,14,3,3), ADX(14)
+- 9 indicators: RSI(14), EMA(9/21/50), MACD(12/26/9), Bollinger Bands(20,2), ATR(14), Stochastic RSI(14,14,3,3), ADX(14)
 - 3 timeframes: 1-minute, 5-minute, 15-minute candles built from raw price data
+- **Support/Resistance Calculator**: Detects swing highs/lows, clusters nearby levels (0.3% threshold), counts touches for strength (WEAK/MODERATE/STRONG), returns top 3 support + top 3 resistance with distance from current price
+- **Candle Pattern Analyzer**: Detects doji, shooting star, hammer, bullish/bearish engulfing, upper/lower wick rejections from last 5 candles on 5m timeframe
 - OHLC candles constructed from 15-second price samples
-- Indicators progressively become available as enough data accumulates (ADX/MACD need ~35+ candles)
-- Price history saved to disk every 5 minutes and on shutdown; loaded on startup with 1-hour max age filter
+- Price history saved to disk every 5 minutes and on shutdown; loaded on startup with 16-hour max age filter
 
 ### Safety Layer (self_tuner.js)
-Simple hard safety rules the AI cannot override:
-- **20% daily loss limit** - bot pauses for the day if hit
-- **8 consecutive losses** - bot pauses until reset
+Hard safety rules the AI cannot override:
+- **10% daily loss limit** - bot pauses for the day if hit
+- **4 consecutive losses** - bot pauses until reset
 - Resets automatically at midnight UTC
 - Manual unpause available
 
 ### Data Flow
-1. Every 15s: Collect prices, orderbook data, calculate trend/volatility
-2. Every 3 min (configurable): Send data + past trade memories to AI, get trading decision
-3. Every 15s: Monitor open positions against AI's SL/TP/max hold time
+1. Every 15s: Collect prices, orderbook data, calculate trend/volatility, compute indicators, S/R levels, candle patterns
+2. Every 3 min (configurable): Send full data packet to AI (indicators + S/R + candles + portfolio context + BTC trend + past trades), get trading decision
+3. Every 15s: Monitor open positions against SL/TP/trailing/circuit breaker/max hold time
 4. Safety check before every trade attempt
 
 ### Trade Execution
 - Uses Drift SDK for on-chain perp orders
 - Supports simulation mode (paper trading) and live trading
 - Position sync from chain on startup
-- P&L-based stepped trailing TP (10%→0.25%, 15%→0.20%, 30%→0.15%, 50%→0.10%)
-- Profit protection floor: trailing activates at 10% P&L regardless of AI's TP target
-- Emergency SL/TP defaults (1.5%) auto-assigned when position has null values after restart
+- All 3 markets can have positions simultaneously (no position limit)
+- Dynamic SL/TP anchored to S/R levels and ATR per trade
+- Stepped profit protection: +5% P&L → breakeven, +8% → lock +3%, +12% → lock +6%, +20% → lock +12%
+- P&L-based trailing TP (10%→0.25%, 15%→0.20%, 30%→0.15%, 50%→0.10%)
+- Emergency SL/TP defaults (0.75%/1.5%) auto-assigned when position has null values after restart
+- Time-based decay: close stagnant positions after 30 min with <2% P&L
 - Max hold time enforced (AI sets per trade, max 240 min)
+- Emergency circuit breaker: force close at -25% P&L
 
 ## Environment Variables
 
@@ -71,7 +76,7 @@ Simple hard safety rules the AI cannot override:
 - `AI_MODEL`: AI model (default: z-ai/glm-4.7-flash)
 - `AI_BASE_URL`: API base URL (default: https://openrouter.ai/api/v1)
 - `AI_INTERVAL_MS`: How often to ask AI in ms (default: 180000 = 3 min)
-- `MIN_CONFIDENCE`: Minimum AI confidence to trade (default: 0.6)
+- `MIN_CONFIDENCE`: Minimum AI confidence to trade (default: 0.75)
 
 ### Trading Settings
 - `LEVERAGE`: Trading leverage (default: 20)
@@ -109,6 +114,8 @@ cd ~/Slb && git pull && cd slb-bot-futures && npm install && pkill -f "node inde
 Dark theme dashboard showing:
 - **System Health**: Uptime, connections, mode, AI model, safety status
 - **Markets Overview**: Price, trend, imbalance, volatility, position, P&L, AI's SL/TP, hold time
+- **Support/Resistance & Candle Patterns**: S/R levels with strength and touches, detected candle patterns per market
+- **Technical Indicators**: Full 9-indicator table across 3 timeframes with color-coded values
 - **Session Stats**: Win rate, P&L, total trades
 - **Daily Safety**: Daily P&L vs limit, consecutive losses, pause status
 - **Best/Worst Trade**: Quick reference
@@ -123,45 +130,30 @@ Dark theme dashboard showing:
 - dotenv: Environment variable management
 
 ## Recent Changes
+- 2026-02-20: v9 AI-DRIVEN REWRITE - Restored full AI entry decisions, removed rule-based EMA crossover system
+- 2026-02-20: Support/Resistance calculator - detects swing highs/lows, clusters levels, counts touches for strength
+- 2026-02-20: Candle pattern analyzer - doji, shooting star, hammer, engulfing, wick rejections
+- 2026-02-20: Comprehensive AI prompt rewrite - S/R awareness, trap detection (bull/bear traps, stop hunts), wick analysis, momentum exhaustion, volatility regimes, correlation awareness, dynamic SL/TP anchoring
+- 2026-02-20: Enhanced market data packet - S/R levels, candle patterns, other market positions, daily P&L context, BTC trend correlation
+- 2026-02-20: Removed position limit - all 3 markets can trade simultaneously
+- 2026-02-20: Stepped profit protection - +5% breakeven, +8% lock +3%, +12% lock +6%, +20% lock +12%
+- 2026-02-20: Dashboard shows S/R levels and candle patterns per market
 - 2026-02-15: v8 RULE-BASED REWRITE - Replaced AI-only entries with mathematical signal system (EMA crossover + RSI + ADX + ATR)
 - 2026-02-15: CRITICAL BUG FIX - checkStopLoss treated SL=0 (breakeven) as falsy, silently disabling stop loss protection
 - 2026-02-15: Fee-aware P&L - all P&L now subtracts 0.1% round-trip fees (2% at 20x leverage) for real profitability tracking
-- 2026-02-15: One position at a time across ALL markets - eliminates correlated exposure risk
-- 2026-02-15: Dynamic monitoring interval - 5s when position open, 15s when scanning for entries
 - 2026-02-15: ATR-based dynamic SL (1.5x ATR capped at 1.0%) and TP (3x ATR with 2:1 R:R minimum)
-- 2026-02-15: Signal generator in indicators.js with multi-timeframe confirmation rules
-- 2026-02-14: CRITICAL SAFETY OVERHAUL - Max stop loss capped to 1.0% price move (=20% P&L max per trade, was 2.5%/50%)
+- 2026-02-14: CRITICAL SAFETY OVERHAUL - Max stop loss capped to 1.0% price move (=20% P&L max per trade)
 - 2026-02-14: Emergency circuit breaker - force close any position at -25% P&L regardless of stop loss
-- 2026-02-14: Hard-coded indicator gates - blocks trades when 15m ADX<20 (choppy), timeframes conflict, or price vs EMA50 disagrees with direction
 - 2026-02-14: Enforced 2:1 minimum reward-to-risk ratio on all trades
 - 2026-02-14: Daily loss limit tightened from -20% to -10%, consecutive losses limit from 8 to 4
 - 2026-02-14: 15-minute cooldown after every losing trade per market
 - 2026-02-14: Minimum AI confidence raised from 0.6 to 0.75
-- 2026-02-14: AI check interval increased from 3min to 5min, cooldown from 3min to 10min
-- 2026-02-13: Technical Indicators - 9 indicators (RSI, EMA 9/21/50, MACD, Bollinger Bands, ATR, StochRSI, ADX) across 3 timeframes (1m, 5m, 15m)
-- 2026-02-13: AI system prompt rewritten to teach technical analysis, multi-timeframe confirmation rules, indicator-based entry/exit criteria
-- 2026-02-13: Dashboard now shows full indicator table with color-coded values matching what AI sees
-- 2026-02-13: Price history persistence for indicator continuity across restarts (saves every 5 min + on shutdown)
-- 2026-02-13: AI max_tokens increased to 1500 for longer indicator-rich responses
-- 2026-02-12: Phase 2 AI Memory - AI now retrieves similar past trades and their lessons before making decisions
-- 2026-02-12: P&L-based trailing TP system - uses leverage-aware P&L% instead of raw price%, profit floor at 10% P&L
-- 2026-02-12: Emergency SL/TP defaults (1.5% each) auto-assigned when position has null values after restart
-- 2026-02-12: Position monitoring sped up from 30s to 15s for faster response at leverage
-- 2026-02-12: All P&L calculations now leverage-aware (price move * leverage)
-- 2026-02-12: AI prompt updated for 20x leverage with realistic TP targets (0.5-2.0% price move)
-- 2026-02-12: Phase 1 Memory Recorder - stores market snapshots (trend, volatility, imbalance) with each trade for future AI learning
-- 2026-02-12: Fixed crazy P&L display (977888%) - added sanity checks on entry price sync and P&L calculations
-- 2026-02-12: Increased max hold time from 2h to 4h (AI can now hold trades longer)
-- 2026-02-11: Stepped trailing TP - tightens from 0.3% at TP target to 0.1% at 35%+ profit to lock in big wins
+- 2026-02-13: Technical Indicators - 9 indicators across 3 timeframes (1m, 5m, 15m)
+- 2026-02-13: Price history persistence for indicator continuity across restarts
+- 2026-02-12: Phase 2 AI Memory - retrieves similar past trades and lessons
+- 2026-02-12: P&L-based trailing TP system
+- 2026-02-12: Phase 1 Memory Recorder
 - 2026-02-11: v7 AI-powered rewrite with GLM-4.7-Flash
-- 2026-02-11: Removed old technical analysis, patterns, shadow trades
-- 2026-02-11: AI sets dynamic SL/TP per trade based on market conditions
-- 2026-02-11: Simplified safety layer (20% daily loss limit, 8 consecutive losses max)
-- 2026-02-11: New dashboard showing AI reasoning and decisions
-- 2026-02-11: Added axios for OpenRouter API calls
-- 2026-02-11: Cleared old trade memory, starting fresh
-- 2026-02-06: v6 Self-tuning engine (replaced by AI in v7)
-- 2026-02-02: v5 Multi-market support (SOL, BTC, ETH)
 
 ## User Preferences
 - Always ask before modifying code
