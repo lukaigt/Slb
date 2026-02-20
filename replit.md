@@ -1,7 +1,7 @@
-# Solana Futures Trading Bot v9 (Drift Protocol - AI-Driven with S/R + Trap Detection)
+# Solana Futures Trading Bot v10 (Drift Protocol - AI-Driven with Full Data Pipeline)
 
 ## Overview
-AI-driven perpetual futures trading bot using Drift Protocol on Solana mainnet. GLM-4.7-Flash makes all entry decisions using 9 technical indicators across 3 timeframes, support/resistance levels, candle pattern analysis, trap detection, and portfolio context. All 3 markets (SOL-PERP, BTC-PERP, ETH-PERP) can have simultaneous positions. Fee-aware P&L (2% round-trip at 20x). Multi-layered safety: 1.0% max SL cap, -25% circuit breaker, stepped profit locking, 10% daily loss limit.
+AI-driven perpetual futures trading bot using Drift Protocol on Solana mainnet. GLM-4.7-Flash makes all entry decisions using 9 technical indicators across 3 timeframes, support/resistance levels, candle pattern analysis, trap detection, multi-window price momentum (1m/5m/10m/15m/30m/1hr), and portfolio context. All 3 markets (SOL-PERP, BTC-PERP, ETH-PERP) can have simultaneous positions. Fee-aware P&L (2% round-trip at 20x). Multi-layered safety: 1.0% max SL cap, -25% circuit breaker, stepped profit locking, 10% daily loss limit, hard-coded S/R safety gates.
 
 ## Project Structure
 ```
@@ -84,7 +84,7 @@ Hard safety rules the AI cannot override:
 - `ACTIVE_MARKETS`: Comma-separated list (default: SOL-PERP,BTC-PERP,ETH-PERP)
 - `SIMULATION_MODE`: true for paper trading, false for real (default: true)
 - `CHECK_INTERVAL_MS`: Position monitoring interval (default: 15000 = 15s)
-- `COOLDOWN_SECONDS`: Seconds between trades per market (default: 600)
+- `COOLDOWN_SECONDS`: REMOVED in v10 - AI and safety layer handle trade frequency
 
 ### Safety Limits
 - `DAILY_LOSS_LIMIT`: Max daily loss % before pause (default: 10)
@@ -130,6 +130,13 @@ Dark theme dashboard showing:
 - dotenv: Environment variable management
 
 ## Recent Changes
+- 2026-02-20: v10 CRITICAL DATA PIPELINE OVERHAUL - Fixed AI only seeing 2.5min of data; now gets full chart history
+- 2026-02-20: 6-window price changes (1m/5m/10m/15m/30min/1hr) replace single 5-min number
+- 2026-02-20: Trend/volatility detection expanded from 10 points (2.5min) to 40 points (10min) with STRONG/SLIGHT labels
+- 2026-02-20: Hard-coded S/R safety gate - blocks LONG within 0.5% of resistance, SHORT within 0.5% of support (code-enforced)
+- 2026-02-20: ALL cooldowns removed (10-min trade cooldown, 15-min loss cooldown) - AI and safety layer handle frequency
+- 2026-02-20: AI prompt restructured - S/R rules priority #1, trap detection #2, early trend catching #3
+- 2026-02-20: Sampled price history (30+ points across ~30min) sent to AI instead of last 10 raw points
 - 2026-02-20: v9 AI-DRIVEN REWRITE - Restored full AI entry decisions, removed rule-based EMA crossover system
 - 2026-02-20: Support/Resistance calculator - detects swing highs/lows, clusters levels, counts touches for strength
 - 2026-02-20: Candle pattern analyzer - doji, shooting star, hammer, engulfing, wick rejections

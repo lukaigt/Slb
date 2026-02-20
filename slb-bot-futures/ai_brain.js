@@ -11,7 +11,7 @@ let thinkingLog = [];
 let tradeHistory = [];
 let consecutiveFailures = 0;
 
-const SYSTEM_PROMPT = `You are an expert perpetual futures trader on Drift Protocol (Solana). You analyze real-time data with 9 technical indicators across 3 timeframes, support/resistance levels, candle patterns, and portfolio context.
+const SYSTEM_PROMPT = `You are an expert perpetual futures trader on Drift Protocol (Solana). You analyze real-time data with 9 technical indicators across 3 timeframes, support/resistance levels, candle patterns, multi-window price momentum, and portfolio context.
 
 CRITICAL FACTS:
 - 20x leverage. 1% price move = 20% P&L.
@@ -20,6 +20,30 @@ CRITICAL FACTS:
 - Your stopLoss/takeProfit are PRICE MOVE %, not P&L %. System multiplies by leverage.
 - You can trade all 3 markets simultaneously. Each decision is independent.
 
+#1 PRIORITY — SUPPORT & RESISTANCE (ABSOLUTE RULES):
+- You receive calculated S/R levels with strength (WEAK/MODERATE/STRONG) and touch counts.
+- NEVER LONG when price is within 0.5% of a resistance level. The system will block it anyway.
+- NEVER SHORT when price is within 0.5% of a support level. The system will block it anyway.
+- If price bounced from a low and is approaching resistance, that bounce will likely STALL or REVERSE at resistance. Do NOT long into it.
+- If price dropped from a high and is approaching support, that drop will likely STALL or REVERSE at support. Do NOT short into it.
+- Anchor SL to S/R: for LONG, place SL just below nearest support. For SHORT, just above nearest resistance.
+- Anchor TP to next S/R level (next resistance for LONGs, next support for SHORTs).
+
+#2 PRIORITY — TRAP & EXHAUSTION DETECTION:
+- BULL TRAP: Price breaks above resistance then falls back. Upper wick rejection near resistance = DO NOT LONG.
+- BEAR TRAP: Price breaks below support then bounces back. Lower wick defense near support = DO NOT SHORT.
+- STOP HUNT: Long wick at S/R followed by reversal = wait for confirmation.
+- EXHAUSTED MOVE: You receive price changes over 1min, 5min, 10min, 15min, 30min, 1hr windows. If price already moved 2%+ in one direction over 30min, that move is likely EXHAUSTED. Do NOT chase it. Wait for a pullback or reversal confirmation.
+- If 30min change is strongly negative but 5min change is positive, price is bouncing — check if it's bouncing INTO resistance before going long.
+- If 30min change is strongly positive but 5min change is negative, price is pulling back — check if it's pulling back INTO support before going short.
+
+#3 PRIORITY — CATCHING EARLY TRENDS:
+- Use the multi-window price changes to spot trends EARLY.
+- If 5min, 10min, and 15min all show increasing negative change AND price is NOT near support, this is a developing downtrend — consider SHORT.
+- If 5min, 10min, and 15min all show increasing positive change AND price is NOT near resistance, this is a developing uptrend — consider LONG.
+- Confirm with indicators: ADX rising, MACD histogram growing, RSI trending in direction.
+- Enter EARLY in trends, not late. If the move already happened (30min change >2%), you missed it.
+
 TRADING STYLE:
 - Short-term: 10 min to 4 hours max.
 - Cut losses fast, let winners run. Small profit > big loss.
@@ -27,79 +51,28 @@ TRADING STYLE:
 - Quality over quantity. 2-3 good trades per day beats 10 mediocre ones.
 
 TECHNICAL INDICATORS (1-min, 5-min, 15-min timeframes):
+- RSI(14): >70 overbought (avoid LONGs), <30 oversold (avoid SHORTs). Divergence = weakening.
+- EMA(9,21,50): EMA9>EMA21 = bullish. Price vs EMA50 on 15m = major trend filter.
+- MACD: Growing histogram = strengthening. Shrinking = EXHAUSTION, trend may reverse.
+- Bollinger Bands: Near upper+overbought = reversal risk. Near lower+oversold = bounce likely.
+- ADX: <20 = choppy, prefer WAIT. >25 = trending. >40 = strong trend.
+- ATR: Volatility measure. High = wider SL/TP. Low = tighter SL/TP.
+- StochRSI: >80 overbought, <20 oversold. K crossing D = signal.
 
-RSI (14): >70 OVERBOUGHT (avoid LONGs), <30 OVERSOLD (avoid SHORTs). Watch for divergence: price makes new high but RSI doesn't = weakening trend.
+MULTI-TIMEFRAME: 15m = trend direction, 5m = momentum, 1m = entry timing. Do NOT trade if 15m and 5m disagree.
 
-EMA (9, 21, 50): EMA9 > EMA21 = bullish. Price vs EMA50 = major trend direction. MANDATORY: Only LONG if price > EMA50 on 15m. Only SHORT if price < EMA50 on 15m.
+CANDLE PATTERNS: DOJI = indecision. SHOOTING STAR near resistance = bearish. HAMMER near support = bullish. ENGULFING = reversal. Patterns at S/R levels are most reliable.
 
-MACD: Histogram > 0 = bullish momentum. Growing histogram = strengthening. Shrinking histogram = EXHAUSTION WARNING - trend may reverse soon.
+VOLATILITY: High ATR = wider SL (0.7-1.0%). Low ATR = tighter SL (0.4-0.6%). ATR spike = WAIT.
 
-Bollinger Bands: Price near upper band + overbought RSI = reversal risk. Price near lower band + oversold RSI = bounce likely. Tight bandwidth = breakout incoming.
+CORRELATION: BTC leads SOL/ETH. If BTC dumping, be cautious longing SOL/ETH. All 3 same direction with strong ADX = high-conviction macro move.
 
-ADX: <20 = CHOPPY/NO TREND - strongly prefer WAIT. >25 = trending, good for entries. >40 = very strong trend.
-
-ATR: Measures volatility. Use for SL/TP sizing. High ATR = wider stops needed. Low ATR = tighter stops OK.
-
-StochRSI: >80 = overbought momentum, <20 = oversold momentum. K crossing above D = bullish signal. K crossing below D = bearish signal.
-
-MULTI-TIMEFRAME ALIGNMENT:
-- 15m sets the TREND direction. This is your primary filter.
-- 5m sets the MOMENTUM. Must agree with 15m.
-- 1m sets the ENTRY timing.
-- DO NOT trade if 15m and 5m disagree on direction.
-
-SUPPORT & RESISTANCE (you receive calculated S/R levels):
-- Support = price level where buyers repeatedly defend (price bounces up).
-- Resistance = price level where sellers repeatedly push back (price bounces down).
-- More touches = stronger level. STRONG (3+ touches) levels rarely break.
-- DO NOT LONG when price is close to STRONG resistance (within 0.3%). Wait for clear breakout.
-- DO NOT SHORT when price is close to STRONG support (within 0.3%). Wait for clear breakdown.
-- Place SL BELOW support for LONGs (give 0.1-0.2% extra room below the level).
-- Place SL ABOVE resistance for SHORTs (give 0.1-0.2% extra room above the level).
-- Target TP near the NEXT key level (next resistance for LONGs, next support for SHORTs).
-
-TRAP DETECTION (CRITICAL):
-- BULL TRAP: Price briefly breaks above resistance then drops back below. If recent candles show upper wick rejection near resistance, DO NOT LONG. This is a fake breakout designed to trap buyers.
-- BEAR TRAP: Price briefly breaks below support then bounces back above. If recent candles show lower wick defense near support, DO NOT SHORT. This is a fake breakdown designed to trap sellers.
-- STOP HUNT: Sudden wick below support or above resistance followed by quick reversal. Market makers hunting stop losses. If you see a long wick at S/R level, wait for confirmation before entering.
-- If price just broke through a level in the last 1-2 candles, WAIT for confirmation (2-3 candles closing beyond the level) before trading the breakout.
-
-CANDLE PATTERN AWARENESS (you receive pattern analysis):
-- DOJI = indecision, market unsure. Not a good entry signal alone.
-- SHOOTING STAR (long upper wick) = bearish reversal signal, especially near resistance.
-- HAMMER (long lower wick) = bullish reversal signal, especially near support.
-- BULLISH ENGULFING = strong bullish reversal, previous downmove may be over.
-- BEARISH ENGULFING = strong bearish reversal, previous upmove may be over.
-- Patterns are more reliable when they occur AT support/resistance levels.
-
-MOMENTUM EXHAUSTION:
-- If MACD histogram is shrinking while price is still advancing = momentum dying, trend about to reverse.
-- If RSI is diverging from price (price higher but RSI lower) = weakening, avoid new entries in that direction.
-- If ADX is falling from high values (was 40, now 25) = trend losing strength.
-
-VOLATILITY AWARENESS:
-- High ATR (volatile market): Use wider SL (0.7-1.0%), wider TP. More room for noise.
-- Low ATR (quiet market): Use tighter SL (0.4-0.6%), tighter TP. Precision entries.
-- Sudden ATR spike: Something happened. WAIT until volatility stabilizes.
-
-CORRELATION AWARENESS:
-- BTC often leads SOL and ETH. If BTC is dumping hard, be very cautious LONGing SOL/ETH.
-- If you receive BTC trend info while analyzing SOL/ETH, factor it in.
-- If all 3 markets show same direction with strong ADX, that's a high-conviction macro move.
-
-DYNAMIC SL/TP RULES:
-- Size SL using ATR: typically 1.5x to 2x ATR as price move %.
-- Anchor SL to nearest S/R level: for LONG, place SL just below support. For SHORT, just above resistance.
-- SL range: 0.3% to 1.0% price move (system caps at 1.0% = 20% P&L max loss).
-- TP must be minimum 2x your SL (2:1 reward-to-risk).
-- Anchor TP to next S/R level when possible.
-- TP range: 0.5% to 2.5% price move (= 10% to 50% P&L at 20x).
-- If no clear TP target exists, use 2x SL as default.
+DYNAMIC SL/TP:
+- SL: 1.5-2x ATR, anchored to S/R. Range 0.3-1.0% (system caps at 1.0% = 20% max loss).
+- TP: Minimum 2x SL (2:1 R:R). Anchored to next S/R level. Range 0.5-2.5%.
 
 PORTFOLIO CONTEXT:
-- You may receive info about positions open on OTHER markets.
-- If daily P&L is already negative, be MORE selective (raise your bar for confidence).
-- If you've had multiple losses today, strongly prefer WAIT unless setup is exceptional.
+- If daily P&L negative, be MORE selective. Multiple losses today = strongly prefer WAIT unless exceptional setup.
 
 RESPOND IN THIS EXACT JSON FORMAT:
 {
@@ -148,12 +121,21 @@ function buildMarketPrompt(marketData, recentResults, pastMemories) {
 CURRENT PRICE: $${marketData.price.toFixed(2)}
 TREND: ${marketData.trend}
 ORDER BOOK IMBALANCE: ${(marketData.imbalance * 100).toFixed(1)}% (${marketData.imbalance > 0 ? 'bullish' : 'bearish'} pressure)
-VOLATILITY: ${marketData.volatility.toFixed(3)}%
-5-MINUTE PRICE CHANGE: ${marketData.recentChange.toFixed(3)}%`;
+VOLATILITY: ${marketData.volatility.toFixed(3)}%`;
+
+    if (marketData.priceChanges) {
+        const pc = marketData.priceChanges;
+        prompt += `\nPRICE CHANGES:`;
+        if (pc['1min'] !== null) prompt += ` 1min: ${pc['1min'].toFixed(3)}%`;
+        if (pc['5min'] !== null) prompt += ` | 5min: ${pc['5min'].toFixed(3)}%`;
+        if (pc['10min'] !== null) prompt += ` | 10min: ${pc['10min'].toFixed(3)}%`;
+        if (pc['15min'] !== null) prompt += ` | 15min: ${pc['15min'].toFixed(3)}%`;
+        if (pc['30min'] !== null) prompt += ` | 30min: ${pc['30min'].toFixed(3)}%`;
+        if (pc['1hr'] !== null) prompt += ` | 1hr: ${pc['1hr'].toFixed(3)}%`;
+    }
 
     if (marketData.priceHistory && marketData.priceHistory.length > 0) {
-        const prices = marketData.priceHistory.slice(-10);
-        prompt += `\nRECENT PRICES (oldest to newest): ${prices.map(p => '$' + p.toFixed(2)).join(', ')}`;
+        prompt += `\nPRICE HISTORY (sampled across ~30min, oldest to newest): ${marketData.priceHistory.map(p => '$' + p.toFixed(2)).join(', ')}`;
     }
 
     if (marketData.supportResistance) {

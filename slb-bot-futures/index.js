@@ -27,7 +27,7 @@ const CONFIG = {
     LEVERAGE: parseInt(process.env.LEVERAGE) || 20,
     TRADE_AMOUNT_USDC: parseFloat(process.env.TRADE_AMOUNT_USDC) || 10,
     SIMULATION_MODE: process.env.SIMULATION_MODE === 'true' || process.env.SIMULATION_MODE === '1',
-    COOLDOWN_MS: (parseInt(process.env.COOLDOWN_SECONDS) || 600) * 1000,
+    // COOLDOWN REMOVED - AI and safety layer handle trade frequency
     AI_INTERVAL_MS: parseInt(process.env.AI_INTERVAL_MS) || 180000,
     CHECK_INTERVAL_MS: parseInt(process.env.CHECK_INTERVAL_MS) || 15000,
     DLOB_URL: 'https://dlob.drift.trade',
@@ -259,18 +259,22 @@ function calculateImbalance(orderBook) {
 
 function detectTrend(prices) {
     if (prices.length < 5) return 'UNKNOWN';
-    const recent = prices.slice(-10);
+    const recent = prices.slice(-40);
     const oldPrice = recent[0];
     const currentPrice = recent[recent.length - 1];
     const changePercent = ((currentPrice - oldPrice) / oldPrice) * 100;
-    if (changePercent > 0.15) return 'UPTREND';
-    if (changePercent < -0.15) return 'DOWNTREND';
+    if (changePercent > 1.0) return 'STRONG_UPTREND';
+    if (changePercent > 0.3) return 'UPTREND';
+    if (changePercent > 0.1) return 'SLIGHT_UP';
+    if (changePercent < -1.0) return 'STRONG_DOWNTREND';
+    if (changePercent < -0.3) return 'DOWNTREND';
+    if (changePercent < -0.1) return 'SLIGHT_DOWN';
     return 'RANGING';
 }
 
 function calculateVolatility(prices) {
     if (prices.length < 5) return 0;
-    const recent = prices.slice(-10);
+    const recent = prices.slice(-40);
     let totalChange = 0;
     for (let i = 1; i < recent.length; i++) {
         totalChange += Math.abs((recent[i] - recent[i-1]) / recent[i-1] * 100);
@@ -307,7 +311,6 @@ async function openPosition(direction, marketState, marketConfig, symbol) {
         }
     }
 
-    marketState.lastOrderTime = Date.now();
     marketState.entryPrice = currentPrice;
     marketState.entryTime = Date.now();
     marketState.highestPriceSinceEntry = currentPrice;
@@ -435,14 +438,6 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
     aiBrain.recordTradeResult(symbol, pos, result, profitPercent, exitReason);
     safety.recordTradeResult(profitPercent, result === 'WIN');
 
-    if (result === 'LOSS') {
-        const lossCooldown = 15 * 60 * 1000; // 15 minute cooldown after a loss
-        marketState.lastOrderTime = Date.now() + lossCooldown;
-        log(`[${symbol}] Loss detected. Cooldown active for 15 minutes.`);
-    } else {
-        marketState.lastOrderTime = Date.now();
-    }
-    
     resetPositionState(marketState);
     return true;
 }
@@ -775,10 +770,6 @@ async function processMarket(symbol) {
         } else {
             const now = Date.now();
 
-            if (now - marketState.lastOrderTime < CONFIG.COOLDOWN_MS) {
-                return;
-            }
-
             if (now - marketState.lastAiCall < CONFIG.AI_INTERVAL_MS) {
                 return;
             }
@@ -826,10 +817,34 @@ async function processMarket(symbol) {
 
             const btcTrend = marketStates['BTC-PERP'] ? marketStates['BTC-PERP'].trend : null;
 
-            const recentPrices = marketState.prices.slice(-20);
-            const recentChange = recentPrices.length >= 2
-                ? ((recentPrices[recentPrices.length - 1] - recentPrices[0]) / recentPrices[0] * 100)
-                : 0;
+            const allPrices = marketState.prices;
+            const currentP = allPrices[allPrices.length - 1];
+            function getPriceChange(samplesBack) {
+                if (allPrices.length < samplesBack) return null;
+                const oldP = allPrices[allPrices.length - samplesBack];
+                return ((currentP - oldP) / oldP) * 100;
+            }
+            const priceChanges = {
+                '1min': getPriceChange(4),
+                '5min': getPriceChange(20),
+                '10min': getPriceChange(40),
+                '15min': getPriceChange(60),
+                '30min': getPriceChange(120),
+                '1hr': getPriceChange(240)
+            };
+
+            const sampledPrices = [];
+            const totalPoints = allPrices.length;
+            if (totalPoints > 0) {
+                const samplesToTake = Math.min(30, totalPoints);
+                const step = Math.max(1, Math.floor(totalPoints / samplesToTake));
+                for (let i = Math.max(0, totalPoints - (samplesToTake * step)); i < totalPoints; i += step) {
+                    sampledPrices.push(allPrices[i]);
+                }
+                if (sampledPrices[sampledPrices.length - 1] !== currentP) {
+                    sampledPrices.push(currentP);
+                }
+            }
 
             const marketData = {
                 symbol,
@@ -837,8 +852,8 @@ async function processMarket(symbol) {
                 trend: marketState.trend,
                 imbalance,
                 volatility: marketState.volatility,
-                recentChange,
-                priceHistory: recentPrices,
+                priceChanges,
+                priceHistory: sampledPrices,
                 indicators1m: marketState.indicators1m,
                 indicators5m: marketState.indicators5m,
                 indicators15m: marketState.indicators15m,
@@ -859,6 +874,22 @@ async function processMarket(symbol) {
             if (decision.confidence < CONFIG.MIN_CONFIDENCE) {
                 aiBrain.think(`[${symbol}] AI confidence too low (${(decision.confidence * 100).toFixed(0)}% < ${(CONFIG.MIN_CONFIDENCE * 100).toFixed(0)}%) - skipping`, 'skip');
                 return;
+            }
+
+            const sr = marketState.supportResistance;
+            if (sr && decision.action === 'LONG' && sr.resistances && sr.resistances.length > 0) {
+                const nearestRes = sr.resistances[0];
+                if (nearestRes && Math.abs(nearestRes.distancePercent) < 0.5) {
+                    aiBrain.think(`[${symbol}] S/R GATE BLOCKED LONG — price is ${Math.abs(nearestRes.distancePercent).toFixed(2)}% from resistance at $${nearestRes.price.toFixed(2)} [${nearestRes.strength}]`, 'safety');
+                    return;
+                }
+            }
+            if (sr && decision.action === 'SHORT' && sr.supports && sr.supports.length > 0) {
+                const nearestSup = sr.supports[0];
+                if (nearestSup && Math.abs(nearestSup.distancePercent) < 0.5) {
+                    aiBrain.think(`[${symbol}] S/R GATE BLOCKED SHORT — price is ${Math.abs(nearestSup.distancePercent).toFixed(2)}% from support at $${nearestSup.price.toFixed(2)} [${nearestSup.strength}]`, 'safety');
+                    return;
+                }
             }
 
             marketState.aiStopLoss = decision.stopLoss;
