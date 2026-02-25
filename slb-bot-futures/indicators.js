@@ -609,6 +609,156 @@ function formatCandlePatternsForAI(analysis) {
     return text;
 }
 
+function detectMomentumPhase(priceChanges) {
+    if (!priceChanges) return { phase: 'UNKNOWN', direction: 0, score: 0, description: 'No price data' };
+
+    const m1 = priceChanges['1min'];
+    const m5 = priceChanges['5min'];
+    const m10 = priceChanges['10min'];
+    const m15 = priceChanges['15min'];
+    const m30 = priceChanges['30min'];
+
+    if (m1 === null || m5 === null) return { phase: 'BUILDING', direction: 0, score: 0, description: 'Building price history' };
+
+    const has10 = m10 !== null;
+    const has15 = m15 !== null;
+    const has30 = m30 !== null;
+
+    if (m1 > 0.02 && m5 !== null && m5 < 0) {
+        const score = Math.min(10, Math.round(m1 * 100));
+        return { phase: 'EARLY_LONG', direction: 1, score, description: `Fresh reversal UP: 1min +${m1.toFixed(3)}% but 5min still ${m5.toFixed(3)}%` };
+    }
+    if (m1 < -0.02 && m5 !== null && m5 > 0) {
+        const score = Math.min(10, Math.round(Math.abs(m1) * 100));
+        return { phase: 'EARLY_SHORT', direction: -1, score, description: `Fresh reversal DOWN: 1min ${m1.toFixed(3)}% but 5min still +${m5.toFixed(3)}%` };
+    }
+
+    if (m1 > 0 && m5 > 0) {
+        if (has10 && m10 > 0 && has15 && m15 > 0) {
+            if (Math.abs(m1) < Math.abs(m5) * 0.3) {
+                return { phase: 'EXHAUSTED_UP', direction: 1, score: -6, description: `Move exhausting: 1min slowing to ${m1.toFixed(3)}% while 5min=${m5.toFixed(3)}%, 15min=${m15.toFixed(3)}%` };
+            }
+            if (has30 && m30 > 0 && Math.abs(m15) > 0.3) {
+                return { phase: 'EXHAUSTED_UP', direction: 1, score: -8, description: `Extended move UP: all windows positive, 15min=${m15.toFixed(3)}%, 30min=${m30.toFixed(3)}% — too late to enter` };
+            }
+            return { phase: 'ACTIVE_UP', direction: 1, score: 4, description: `Active uptrend across 1m/5m/10m/15m` };
+        }
+        const score = Math.min(7, Math.round((Math.abs(m1) + Math.abs(m5)) * 50));
+        return { phase: 'ACTIVE_UP', direction: 1, score, description: `Uptrend: 1min=${m1.toFixed(3)}%, 5min=${m5.toFixed(3)}%` };
+    }
+
+    if (m1 < 0 && m5 < 0) {
+        if (has10 && m10 < 0 && has15 && m15 < 0) {
+            if (Math.abs(m1) < Math.abs(m5) * 0.3) {
+                return { phase: 'EXHAUSTED_DOWN', direction: -1, score: -6, description: `Move exhausting: 1min slowing to ${m1.toFixed(3)}% while 5min=${m5.toFixed(3)}%, 15min=${m15.toFixed(3)}%` };
+            }
+            if (has30 && m30 < 0 && Math.abs(m15) > 0.3) {
+                return { phase: 'EXHAUSTED_DOWN', direction: -1, score: -8, description: `Extended move DOWN: all windows negative, 15min=${m15.toFixed(3)}%, 30min=${m30.toFixed(3)}% — too late to enter` };
+            }
+            return { phase: 'ACTIVE_DOWN', direction: -1, score: 4, description: `Active downtrend across 1m/5m/10m/15m` };
+        }
+        const score = Math.min(7, Math.round((Math.abs(m1) + Math.abs(m5)) * 50));
+        return { phase: 'ACTIVE_DOWN', direction: -1, score, description: `Downtrend: 1min=${m1.toFixed(3)}%, 5min=${m5.toFixed(3)}%` };
+    }
+
+    return { phase: 'CHOPPY', direction: 0, score: 0, description: `Mixed signals: 1min=${m1.toFixed(3)}%, 5min=${m5.toFixed(3)}%` };
+}
+
+function calculateDirectionalScore(ind1m, ind5m, ind15m, priceChanges, imbalance, prices) {
+    let trend = 0;
+    let momentum = 0;
+    let position = 0;
+    let indScore = 0;
+    let orderbook = 0;
+
+    if (ind15m) {
+        if (ind15m.ema9 && ind15m.ema21) trend += ind15m.ema9 > ind15m.ema21 ? 3 : -3;
+        if (ind15m.macd) trend += ind15m.macd.histogram > 0 ? 2 : -2;
+    }
+    if (ind5m) {
+        if (ind5m.ema9 && ind5m.ema21) trend += ind5m.ema9 > ind5m.ema21 ? 2 : -2;
+        if (ind5m.macd) trend += ind5m.macd.histogram > 0 ? 1 : -1;
+    }
+    if (ind1m) {
+        if (ind1m.ema9 && ind1m.ema21) trend += ind1m.ema9 > ind1m.ema21 ? 1 : -1;
+        if (ind1m.macd) trend += ind1m.macd.histogram > 0 ? 1 : -1;
+    }
+    trend = Math.max(-10, Math.min(10, trend));
+
+    const phase = detectMomentumPhase(priceChanges);
+    if (phase.phase === 'EARLY_LONG') momentum = phase.score;
+    else if (phase.phase === 'EARLY_SHORT') momentum = -phase.score;
+    else if (phase.phase === 'ACTIVE_UP') momentum = phase.score;
+    else if (phase.phase === 'ACTIVE_DOWN') momentum = -phase.score;
+    else if (phase.phase === 'EXHAUSTED_UP') momentum = -phase.score;
+    else if (phase.phase === 'EXHAUSTED_DOWN') momentum = phase.score;
+
+    if (prices && prices.length >= 100) {
+        const sessionHigh = Math.max(...prices);
+        const sessionLow = Math.min(...prices);
+        const range = sessionHigh - sessionLow;
+        if (range > 0) {
+            const current = prices[prices.length - 1];
+            const posInRange = (current - sessionLow) / range;
+            position = Math.round((0.5 - posInRange) * 10);
+        }
+    }
+
+    if (ind15m) {
+        if (ind15m.rsi !== null) {
+            if (ind15m.rsi > 65) indScore -= 2;
+            else if (ind15m.rsi < 35) indScore += 2;
+            else if (ind15m.rsi > 55) indScore -= 1;
+            else if (ind15m.rsi < 45) indScore += 1;
+        }
+        if (ind15m.adx) indScore += ind15m.adx.plusDI > ind15m.adx.minusDI ? 1 : -1;
+    }
+    if (ind5m) {
+        if (ind5m.rsi !== null) {
+            if (ind5m.rsi > 70) indScore -= 2;
+            else if (ind5m.rsi < 30) indScore += 2;
+        }
+        if (ind5m.stochRSI) {
+            if (ind5m.stochRSI.k > 80) indScore -= 1;
+            else if (ind5m.stochRSI.k < 20) indScore += 1;
+        }
+    }
+    if (ind1m) {
+        if (ind1m.adx && ind1m.adx.adx > 25) {
+            indScore += ind1m.adx.plusDI > ind1m.adx.minusDI ? 2 : -2;
+        }
+    }
+    indScore = Math.max(-10, Math.min(10, indScore));
+
+    if (imbalance > 0.3) orderbook = 3;
+    else if (imbalance > 0.15) orderbook = 2;
+    else if (imbalance > 0.05) orderbook = 1;
+    else if (imbalance < -0.3) orderbook = -3;
+    else if (imbalance < -0.15) orderbook = -2;
+    else if (imbalance < -0.05) orderbook = -1;
+
+    const totalScore = trend + momentum + position + indScore + orderbook;
+    const maxScore = 40;
+
+    let bias;
+    if (totalScore >= 15) bias = 'STRONG_LONG';
+    else if (totalScore >= 8) bias = 'LONG';
+    else if (totalScore <= -15) bias = 'STRONG_SHORT';
+    else if (totalScore <= -8) bias = 'SHORT';
+    else bias = 'NEUTRAL';
+
+    const breakdown = { trend, momentum, position, indicators: indScore, orderbook };
+
+    let summary = `Score: ${totalScore}/${maxScore} (${bias}). `;
+    summary += `Trend=${trend > 0 ? '+' : ''}${trend}, `;
+    summary += `Momentum=${momentum > 0 ? '+' : ''}${momentum} [${phase.phase}], `;
+    summary += `Position=${position > 0 ? '+' : ''}${position}, `;
+    summary += `Indicators=${indScore > 0 ? '+' : ''}${indScore}, `;
+    summary += `Orderbook=${orderbook > 0 ? '+' : ''}${orderbook}`;
+
+    return { score: totalScore, maxScore, bias, breakdown, summary, momentumPhase: phase };
+}
+
 module.exports = {
     buildCandles,
     calculateAllIndicators,
@@ -618,6 +768,8 @@ module.exports = {
     analyzeCandlePatterns,
     formatSRForAI,
     formatCandlePatternsForAI,
+    detectMomentumPhase,
+    calculateDirectionalScore,
     calcEMA,
     calcRSI,
     calcMACD,

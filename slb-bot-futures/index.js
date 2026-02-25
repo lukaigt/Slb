@@ -28,13 +28,13 @@ const CONFIG = {
     TRADE_AMOUNT_USDC: parseFloat(process.env.TRADE_AMOUNT_USDC) || 10,
     SIMULATION_MODE: process.env.SIMULATION_MODE === 'true' || process.env.SIMULATION_MODE === '1',
     // COOLDOWN REMOVED - AI and safety layer handle trade frequency
-    AI_INTERVAL_MS: parseInt(process.env.AI_INTERVAL_MS) || 180000,
+    AI_INTERVAL_MS: parseInt(process.env.AI_INTERVAL_MS) || 30000,
     CHECK_INTERVAL_MS: parseInt(process.env.CHECK_INTERVAL_MS) || 15000,
     DLOB_URL: 'https://dlob.drift.trade',
     DASHBOARD_PORT: parseInt(process.env.DASHBOARD_PORT) || 3000,
     MEMORY_FILE: path.join(__dirname, 'trade_memory.json'),
     PRICE_HISTORY_FILE: path.join(__dirname, 'price_history.json'),
-    MIN_CONFIDENCE: parseFloat(process.env.MIN_CONFIDENCE) || 0.75,
+    MIN_CONFIDENCE: parseFloat(process.env.MIN_CONFIDENCE) || 0.60,
 };
 
 const MARKETS = {
@@ -523,10 +523,10 @@ function checkStopLoss(currentPrice, marketState, symbol) {
 const PROFIT_PROTECTION_FLOOR = 0.5;
 
 function getSteppedTrailingDistance(pnlPercent) {
-    if (pnlPercent >= 50) return 0.10;
-    if (pnlPercent >= 30) return 0.15;
-    if (pnlPercent >= 15) return 0.20;
-    return 0.25;
+    if (pnlPercent >= 50) return 0.20;
+    if (pnlPercent >= 30) return 0.30;
+    if (pnlPercent >= 15) return 0.40;
+    return 0.50;
 }
 
 function checkTakeProfit(currentPrice, marketState, symbol) {
@@ -653,6 +653,21 @@ async function processMarket(symbol) {
         marketState.supportResistance = indicators.findSupportResistance(marketState.prices, marketState.priceTimestamps, price);
         marketState.candlePatterns = indicators.analyzeCandlePatterns(candles5m);
 
+        const allPricesForScore = marketState.prices;
+        const priceChangesForScore = {
+            '1min': allPricesForScore.length >= 4 ? ((price - allPricesForScore[allPricesForScore.length - 4]) / allPricesForScore[allPricesForScore.length - 4]) * 100 : null,
+            '5min': allPricesForScore.length >= 20 ? ((price - allPricesForScore[allPricesForScore.length - 20]) / allPricesForScore[allPricesForScore.length - 20]) * 100 : null,
+            '10min': allPricesForScore.length >= 40 ? ((price - allPricesForScore[allPricesForScore.length - 40]) / allPricesForScore[allPricesForScore.length - 40]) * 100 : null,
+            '15min': allPricesForScore.length >= 60 ? ((price - allPricesForScore[allPricesForScore.length - 60]) / allPricesForScore[allPricesForScore.length - 60]) * 100 : null,
+            '30min': allPricesForScore.length >= 120 ? ((price - allPricesForScore[allPricesForScore.length - 120]) / allPricesForScore[allPricesForScore.length - 120]) * 100 : null,
+            '1hr': allPricesForScore.length >= 240 ? ((price - allPricesForScore[allPricesForScore.length - 240]) / allPricesForScore[allPricesForScore.length - 240]) * 100 : null
+        };
+        marketState.directionalScore = indicators.calculateDirectionalScore(
+            marketState.indicators1m, marketState.indicators5m, marketState.indicators15m,
+            priceChangesForScore, imbalance, allPricesForScore
+        );
+        marketState.momentumPhase = marketState.directionalScore.momentumPhase;
+
         const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
         const modeStr = CONFIG.SIMULATION_MODE ? 'SIM' : 'LIVE';
         const posStr = pos || 'NONE';
@@ -660,13 +675,19 @@ async function processMarket(symbol) {
         const ind1m = marketState.indicators1m || {};
         const indStatus = ind1m.ready ? `${ind1m.indicatorsAvailable}/${ind1m.indicatorsTotal}` : 'building';
 
+        const dsInfo = marketState.directionalScore || {};
+        const mpInfo = marketState.momentumPhase || {};
         botStatus.markets[symbol] = {
             price, imbalance, trend: marketState.trend, volatility: marketState.volatility,
             position: pos, rpcConnected: true, dlobConnected: true,
-            dataPoints: marketState.prices.length, indicatorStatus: indStatus
+            dataPoints: marketState.prices.length, indicatorStatus: indStatus,
+            directionalScore: dsInfo.score || 0, directionalBias: dsInfo.bias || 'N/A',
+            momentumPhase: mpInfo.phase || 'N/A'
         };
 
-        log(`[${symbol}] ${modeStr} $${price.toFixed(2)} | ${marketState.trend} | Imb: ${(imbalance * 100).toFixed(0)}% | Vol: ${marketState.volatility.toFixed(2)}% | Pos: ${posStr}`);
+        const scoreStr = dsInfo.score !== undefined ? `Score: ${dsInfo.score} [${dsInfo.bias}]` : 'Score: N/A';
+        const phaseStr = mpInfo.phase || 'N/A';
+        log(`[${symbol}] ${modeStr} $${price.toFixed(2)} | ${marketState.trend} | ${scoreStr} | ${phaseStr} | Pos: ${posStr}`);
 
         if (pos) {
             if (!marketState.entryPrice || marketState.entryPrice <= 0) {
@@ -736,14 +757,7 @@ async function processMarket(symbol) {
                 }
             }
 
-            // 3. Time-Based Decay (30 min stagnation)
-            if (holdMin >= 30 && pnl > -2.0 && pnl < 2.0) {
-                log(`[${symbol}] Stagnant for 30m (${pnl.toFixed(2)}% P&L). Closing dead wood.`);
-                await closePosition('time_decay', marketState, marketConfig, symbol);
-                return;
-            }
-
-            // 4. Standard Stop Loss / Take Profit
+            // 3. Standard Stop Loss / Take Profit
             if (checkStopLoss(price, marketState, symbol)) {
                 await closePosition('stop_loss', marketState, marketConfig, symbol);
                 return;
@@ -843,6 +857,8 @@ async function processMarket(symbol) {
                 volatility: marketState.volatility,
                 priceChanges,
                 priceHistory: sampledPrices,
+                directionalScore: marketState.directionalScore,
+                momentumPhase: marketState.momentumPhase,
                 indicators1m: marketState.indicators1m,
                 indicators5m: marketState.indicators5m,
                 indicators15m: marketState.indicators15m,
@@ -865,30 +881,23 @@ async function processMarket(symbol) {
                 return;
             }
 
-            const sr = marketState.supportResistance;
-            const srSpread = (sr && sr.resistances.length > 0 && sr.supports.length > 0)
-                ? Math.abs(sr.resistances[0].distancePercent) + Math.abs(sr.supports[0].distancePercent)
-                : 999;
-
-            if (srSpread >= 1.0) {
-                if (sr && decision.action === 'LONG' && sr.resistances && sr.resistances.length > 0) {
-                    const nearestRes = sr.resistances[0];
-                    if (nearestRes && nearestRes.strength === 'STRONG' && Math.abs(nearestRes.distancePercent) < 0.3) {
-                        aiBrain.think(`[${symbol}] S/R GATE BLOCKED LONG — price is ${Math.abs(nearestRes.distancePercent).toFixed(2)}% from STRONG resistance at $${nearestRes.price.toFixed(2)} [${nearestRes.touches} touches, tested over ${nearestRes.timeSpanMinutes || 0}min]`, 'safety');
-                        return;
-                    }
+            const mp = marketState.momentumPhase;
+            if (mp) {
+                if (decision.action === 'LONG' && mp.phase === 'EXHAUSTED_UP') {
+                    aiBrain.think(`[${symbol}] EXHAUSTION GATE BLOCKED LONG — ${mp.description}`, 'safety');
+                    return;
                 }
-                if (sr && decision.action === 'SHORT' && sr.supports && sr.supports.length > 0) {
-                    const nearestSup = sr.supports[0];
-                    if (nearestSup && nearestSup.strength === 'STRONG' && Math.abs(nearestSup.distancePercent) < 0.3) {
-                        aiBrain.think(`[${symbol}] S/R GATE BLOCKED SHORT — price is ${Math.abs(nearestSup.distancePercent).toFixed(2)}% from STRONG support at $${nearestSup.price.toFixed(2)} [${nearestSup.touches} touches, tested over ${nearestSup.timeSpanMinutes || 0}min]`, 'safety');
-                        return;
-                    }
+                if (decision.action === 'SHORT' && mp.phase === 'EXHAUSTED_DOWN') {
+                    aiBrain.think(`[${symbol}] EXHAUSTION GATE BLOCKED SHORT — ${mp.description}`, 'safety');
+                    return;
                 }
             }
 
             marketState.aiStopLoss = decision.stopLoss;
-            marketState.aiTakeProfit = decision.takeProfit;
+            marketState.aiTakeProfit = Math.max(decision.takeProfit, 1.0);
+            if (decision.stopLoss > 0 && marketState.aiTakeProfit < decision.stopLoss * 3) {
+                marketState.aiTakeProfit = decision.stopLoss * 3;
+            }
             marketState.aiMaxHoldMinutes = decision.maxHoldMinutes;
             marketState.aiReason = decision.reason;
 
@@ -1013,13 +1022,12 @@ function generateDashboardHTML() {
             <div class="card" style="grid-column: span 2;">
                 <h2>Markets Overview</h2>
                 <table>
-                    <thead><tr><th>Market</th><th>Price</th><th>Trend</th><th>Imbalance</th><th>Vol</th><th>Position</th><th>Entry</th><th>P&L</th><th>AI SL/TP</th><th>Hold</th></tr></thead>
+                    <thead><tr><th>Market</th><th>Price</th><th>Score</th><th>Phase</th><th>Trend</th><th>Imbalance</th><th>Position</th><th>P&L</th><th>AI SL/TP</th><th>Hold</th></tr></thead>
                     <tbody>
                         ${ACTIVE_MARKETS.map(symbol => {
                             const m = botStatus.markets[symbol] || {};
                             const ms = marketStates[symbol] || {};
                             const pos = m.position;
-                            const volClass = (m.volatility || 0) < 0.2 ? 'positive' : (m.volatility || 0) < 0.4 ? 'neutral' : 'negative';
                             let pnlVal = 0;
                             if (pos && ms.entryPrice > 0 && m.price > 0) {
                                 const pm = pos === 'LONG' 
@@ -1029,14 +1037,18 @@ function generateDashboardHTML() {
                                 if (Math.abs(pnlVal) > 1000) pnlVal = 0;
                             }
                             const holdMin = pos && ms.entryTime ? ((Date.now() - ms.entryTime) / 60000).toFixed(0) + 'm' : '-';
+                            const scoreVal = m.directionalScore || 0;
+                            const scoreClass = scoreVal > 8 ? 'positive' : scoreVal < -8 ? 'negative' : 'neutral';
+                            const phaseVal = m.momentumPhase || 'N/A';
+                            const phaseClass = phaseVal.includes('EARLY') ? 'positive' : phaseVal.includes('EXHAUSTED') ? 'negative' : phaseVal.includes('ACTIVE') ? 'positive' : 'neutral';
                             return `<tr>
                                 <td><strong>${symbol}</strong></td>
                                 <td>$${(m.price || 0).toFixed(2)}</td>
+                                <td class="${scoreClass}"><strong>${scoreVal} [${m.directionalBias || 'N/A'}]</strong></td>
+                                <td class="${phaseClass}">${phaseVal}</td>
                                 <td class="${m.trend === 'UPTREND' ? 'positive' : m.trend === 'DOWNTREND' ? 'negative' : 'neutral'}">${m.trend || 'BUILDING'}</td>
                                 <td class="${(m.imbalance || 0) > 0 ? 'positive' : 'negative'}">${((m.imbalance || 0) * 100).toFixed(1)}%</td>
-                                <td class="${volClass}">${(m.volatility || 0).toFixed(2)}%</td>
                                 <td class="${pos === 'LONG' ? 'positive' : pos === 'SHORT' ? 'negative' : ''}">${pos || 'NONE'}</td>
-                                <td>${pos ? '$' + ms.entryPrice.toFixed(2) : '-'}</td>
                                 <td class="${pnlVal >= 0 ? 'positive' : 'negative'}">${pos ? pnlVal.toFixed(2) + '%' : '-'}</td>
                                 <td>${pos && ms.aiStopLoss != null ? ms.aiStopLoss.toFixed(1) + '/' + (ms.aiTakeProfit != null ? ms.aiTakeProfit.toFixed(1) : '?') : (pos ? 'synced' : '-')}</td>
                                 <td>${holdMin}</td>

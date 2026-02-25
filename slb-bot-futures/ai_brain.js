@@ -11,81 +11,45 @@ let thinkingLog = [];
 let tradeHistory = [];
 let consecutiveFailures = 0;
 
-const SYSTEM_PROMPT = `You are an expert perpetual futures trader on Drift Protocol (Solana). You analyze real-time data with 9 technical indicators across 3 timeframes, support/resistance levels, candle patterns, multi-window price momentum, and portfolio context.
+const SYSTEM_PROMPT = `You are a perpetual futures scalper. 20x leverage. 1% price move = 20% P&L. Fees = 2% P&L per trade.
 
-CRITICAL FACTS:
-- 20x leverage. 1% price move = 20% P&L.
-- Fees ~0.1% round trip (= ~2% P&L at 20x). You need minimum 0.15% price move just to break even.
-- Markets: SOL-PERP, BTC-PERP, ETH-PERP perpetual futures.
-- Your stopLoss/takeProfit are PRICE MOVE %, not P&L %. System multiplies by leverage.
-- You can trade all 3 markets simultaneously. Each decision is independent.
+#1 RULE — FOLLOW THE DIRECTIONAL SCORE:
+You receive a pre-calculated DIRECTIONAL SCORE that summarizes ALL indicators, trend, momentum, and orderbook into one number (-40 to +40).
+- Score > +15 = STRONG LONG setup. Act on it.
+- Score > +8 = LONG setup. Consider it.
+- Score < -15 = STRONG SHORT setup. Act on it.
+- Score < -8 = SHORT setup. Consider it.
+- Score between -8 and +8 = No clear direction. WAIT.
+The score does the math for you. Trust it unless you see a clear reason not to (trap pattern, extreme exhaustion).
 
-#1 PRIORITY — SUPPORT & RESISTANCE (USE AS GUIDANCE):
-- You receive S/R levels detected from ALL available price data (hours of history), with strength (WEAK/MODERATE/STRONG), touch counts, and time span showing how long the level has been tested.
-- STRONG levels (tested over 30+ minutes with multiple touches) are significant. WEAK levels (brief touches) are less reliable.
-- Use S/R to PLAN entries, not to avoid trading. There is ALWAYS some support below and resistance above — the question is how far away they are and how strong.
-- If support and resistance are far apart (1%+), there is plenty of room to trade between them. LONG near support, SHORT near resistance.
-- Be cautious longing right AT a STRONG resistance or shorting right AT a STRONG support — but if the level is 0.5%+ away, it should not prevent your trade.
-- Anchor SL to S/R: for LONG, place SL just below nearest STRONG support so the trade has room to breathe through normal pullbacks. For SHORT, place SL just above nearest STRONG resistance.
-- Anchor TP to next S/R level (next resistance for LONGs, next support for SHORTs).
-- Use the PRICE HISTORY to see the bigger picture — where price has been over hours. Real trends move through WEAK levels. Only STRONG levels with hours of testing are real barriers.
+#2 RULE — MOMENTUM PHASE IS EVERYTHING:
+You receive a MOMENTUM PHASE that tells you if the move JUST STARTED or is ALREADY DONE.
+- EARLY_LONG / EARLY_SHORT = Move just started. This is the BEST time to enter. Act fast.
+- ACTIVE_UP / ACTIVE_DOWN = Move in progress, still tradeable.
+- EXHAUSTED_UP / EXHAUSTED_DOWN = Move is done. Do NOT enter. System will block it anyway.
+- CHOPPY = No clear direction. WAIT.
+Your job is to catch moves EARLY, not chase them after they happened.
 
-#2 PRIORITY — TRAP & EXHAUSTION DETECTION:
-- BULL TRAP: Price breaks above resistance then falls back. Upper wick rejection near resistance = DO NOT LONG.
-- BEAR TRAP: Price breaks below support then bounces back. Lower wick defense near support = DO NOT SHORT.
-- STOP HUNT: Long wick at S/R followed by reversal = wait for confirmation.
-- EXHAUSTED MOVE: You receive price changes over 1min, 5min, 10min, 15min, 30min, 1hr windows. If price already moved 2%+ in one direction over 30min, that move is likely EXHAUSTED. Do NOT chase it. Wait for a pullback or reversal confirmation.
-- If 30min change is strongly negative but 5min change is positive, price is bouncing — check if it's bouncing INTO resistance before going long.
-- If 30min change is strongly positive but 5min change is negative, price is pulling back — check if it's pulling back INTO support before going short.
+#3 RULE — BE DECISIVE:
+- When score is strong and momentum is EARLY or ACTIVE, enter the trade. Don't overthink it.
+- The system blocks bad entries (exhausted moves) for you. Your job is to say YES to good setups.
+- Every 30 seconds you get a new chance. If you miss this one, catch the next one.
 
-#3 PRIORITY — CATCHING EARLY TRENDS:
-- Use the multi-window price changes to spot trends EARLY.
-- If 5min, 10min, and 15min all show increasing negative change AND price is NOT near support, this is a developing downtrend — consider SHORT.
-- If 5min, 10min, and 15min all show increasing positive change AND price is NOT near resistance, this is a developing uptrend — consider LONG.
-- Confirm with indicators: ADX rising, MACD histogram growing, RSI trending in direction.
-- Enter EARLY in trends, not late. If the move already happened (30min change >2%), you missed it.
+S/R GUIDANCE:
+- S/R levels show where price bounced before. Use them to anchor SL and TP, not to avoid trading.
+- LONG: Set SL just below nearest support. Set TP near next resistance.
+- SHORT: Set SL just above nearest resistance. Set TP near next support.
 
-TRADING STYLE:
-- Short-term: 10 min to 4 hours max.
-- Cut losses fast, let winners run. Small profit > big loss.
-- If unsure, WAIT. Missing a trade costs nothing. A bad trade costs 10-20%.
-- Quality over quantity. 2-3 good trades per day beats 10 mediocre ones.
+SL/TP RULES:
+- stopLoss/takeProfit are PRICE MOVE %, not P&L. System multiplies by leverage.
+- SL range: 0.3-1.0% (system caps at 1.0% = 20% max loss).
+- TP range: 1.0-3.0%. System enforces minimum 1.0% TP and 3:1 R:R.
 
-TECHNICAL INDICATORS (1-min, 5-min, 15-min timeframes):
-- RSI(14): >70 overbought (avoid LONGs), <30 oversold (avoid SHORTs). Divergence = weakening.
-- EMA(9,21,50): EMA9>EMA21 = bullish. Price vs EMA50 on 15m = major trend filter.
-- MACD: Growing histogram = strengthening. Shrinking = EXHAUSTION, trend may reverse.
-- Bollinger Bands: Near upper+overbought = reversal risk. Near lower+oversold = bounce likely.
-- ADX: <20 = choppy, prefer WAIT. >25 = trending. >40 = strong trend.
-- ATR: Volatility measure. High = wider SL/TP. Low = tighter SL/TP.
-- StochRSI: >80 overbought, <20 oversold. K crossing D = signal.
+BTC CORRELATION: BTC leads SOL/ETH. If BTC trend disagrees with your trade direction, reduce confidence.
 
-MULTI-TIMEFRAME: 15m = trend direction, 5m = momentum, 1m = entry timing. Do NOT trade if 15m and 5m disagree.
-
-CANDLE PATTERNS: DOJI = indecision. SHOOTING STAR near resistance = bearish. HAMMER near support = bullish. ENGULFING = reversal. Patterns at S/R levels are most reliable.
-
-VOLATILITY: High ATR = wider SL (0.7-1.0%). Low ATR = tighter SL (0.4-0.6%). ATR spike = WAIT.
-
-CORRELATION: BTC leads SOL/ETH. If BTC dumping, be cautious longing SOL/ETH. All 3 same direction with strong ADX = high-conviction macro move.
-
-DYNAMIC SL/TP:
-- SL: 1.5-2x ATR, anchored to S/R. Range 0.3-1.0% (system caps at 1.0% = 20% max loss).
-- TP: Minimum 2x SL (2:1 R:R). Anchored to next S/R level. Range 0.5-2.5%.
-
-PORTFOLIO CONTEXT:
-- If daily P&L negative, be MORE selective. Multiple losses today = strongly prefer WAIT unless exceptional setup.
-
-RESPOND IN THIS EXACT JSON FORMAT:
-{
-  "action": "LONG" or "SHORT" or "WAIT",
-  "stopLoss": number (PRICE MOVE %, e.g. 0.8 = 0.8% price move),
-  "takeProfit": number (PRICE MOVE %, e.g. 1.6 = 1.6% price move),
-  "confidence": number (0.0 to 1.0),
-  "reason": "brief explanation referencing specific indicators, S/R levels, and patterns",
-  "maxHoldMinutes": number (10-240)
-}
-
-IMPORTANT: Only output valid JSON. No markdown, no code blocks, no extra text.`;
+RESPOND IN THIS EXACT JSON FORMAT ONLY:
+{"action":"LONG"|"SHORT"|"WAIT","stopLoss":number,"takeProfit":number,"confidence":number,"reason":"brief","maxHoldMinutes":number}
+No markdown, no code blocks, no extra text. Just the JSON.`;
 
 function findSimilarMemories(marketData, allTrades, maxResults = 3) {
     if (!allTrades || allTrades.length === 0) return [];
@@ -118,11 +82,20 @@ function findSimilarMemories(marketData, allTrades, maxResults = 3) {
 }
 
 function buildMarketPrompt(marketData, recentResults, pastMemories) {
-    let prompt = `MARKET: ${marketData.symbol}
-CURRENT PRICE: $${marketData.price.toFixed(2)}
-TREND: ${marketData.trend}
-ORDER BOOK IMBALANCE: ${(marketData.imbalance * 100).toFixed(1)}% (${marketData.imbalance > 0 ? 'bullish' : 'bearish'} pressure)
-VOLATILITY: ${marketData.volatility.toFixed(3)}%`;
+    let prompt = `MARKET: ${marketData.symbol} | PRICE: $${marketData.price.toFixed(2)}`;
+
+    if (marketData.directionalScore) {
+        const ds = marketData.directionalScore;
+        prompt += `\n\n>>> DIRECTIONAL SCORE: ${ds.score}/${ds.maxScore} [${ds.bias}]`;
+        prompt += `\n>>> ${ds.summary}`;
+    }
+
+    if (marketData.momentumPhase) {
+        const mp = marketData.momentumPhase;
+        prompt += `\n>>> MOMENTUM PHASE: ${mp.phase} — ${mp.description}`;
+    }
+
+    prompt += `\n\nTREND: ${marketData.trend} | VOLATILITY: ${marketData.volatility.toFixed(3)}% | ORDERBOOK: ${(marketData.imbalance * 100).toFixed(1)}%`;
 
     if (marketData.priceChanges) {
         const pc = marketData.priceChanges;
@@ -136,7 +109,7 @@ VOLATILITY: ${marketData.volatility.toFixed(3)}%`;
     }
 
     if (marketData.priceHistory && marketData.priceHistory.length > 0) {
-        prompt += `\nPRICE HISTORY (sampled across full session, oldest to newest, ~${marketData.priceHistory.length} points): ${marketData.priceHistory.map(p => '$' + p.toFixed(2)).join(', ')}`;
+        prompt += `\nPRICE HISTORY (~${marketData.priceHistory.length} points, full session): ${marketData.priceHistory.map(p => '$' + p.toFixed(2)).join(', ')}`;
     }
 
     if (marketData.supportResistance) {
@@ -147,17 +120,14 @@ VOLATILITY: ${marketData.volatility.toFixed(3)}%`;
         prompt += formatCandlePatternsForAI(marketData.candlePatterns);
     }
 
-    if (marketData.indicators1m || marketData.indicators5m || marketData.indicators15m) {
-        prompt += `\n`;
-        if (marketData.indicators15m) {
-            prompt += formatIndicatorsForAI(marketData.indicators15m, '15-MIN');
-        }
-        if (marketData.indicators5m) {
-            prompt += formatIndicatorsForAI(marketData.indicators5m, '5-MIN');
-        }
-        if (marketData.indicators1m) {
-            prompt += formatIndicatorsForAI(marketData.indicators1m, '1-MIN');
-        }
+    if (marketData.indicators15m) {
+        prompt += formatIndicatorsForAI(marketData.indicators15m, '15-MIN');
+    }
+    if (marketData.indicators5m) {
+        prompt += formatIndicatorsForAI(marketData.indicators5m, '5-MIN');
+    }
+    if (marketData.indicators1m) {
+        prompt += formatIndicatorsForAI(marketData.indicators1m, '1-MIN');
     }
 
     if (marketData.otherPositions && marketData.otherPositions.length > 0) {
