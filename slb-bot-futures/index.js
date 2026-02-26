@@ -74,7 +74,10 @@ function createEmptyMarketState() {
         indicators5m: null,
         indicators15m: null,
         supportResistance: null,
-        candlePatterns: null
+        candlePatterns: null,
+        priceChangeHistory: [],
+        directionalScore: null,
+        momentumPhase: null
     };
 }
 
@@ -507,13 +510,14 @@ function checkStopLoss(currentPrice, marketState, symbol) {
 
     const priceMovePercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
 
-    if (pos === 'LONG' && priceMovePercent <= -marketState.aiStopLoss) {
-        log(`[${symbol}] STOP LOSS (LONG): ${priceMovePercent.toFixed(2)}% | SL: ${marketState.aiStopLoss}%`);
+    const slBuffer = Math.abs(marketState.aiStopLoss) * 0.90;
+    if (pos === 'LONG' && priceMovePercent <= -slBuffer) {
+        log(`[${symbol}] STOP LOSS (LONG): ${priceMovePercent.toFixed(2)}% | SL: ${marketState.aiStopLoss}% (triggered at 90% buffer: ${slBuffer.toFixed(3)}%)`);
         aiBrain.think(`[${symbol}] STOP LOSS hit on LONG at ${priceMovePercent.toFixed(2)}% | SL was ${marketState.aiStopLoss}%`, 'exit');
         return true;
     }
-    if (pos === 'SHORT' && priceMovePercent >= marketState.aiStopLoss) {
-        log(`[${symbol}] STOP LOSS (SHORT): ${priceMovePercent.toFixed(2)}% | SL: ${marketState.aiStopLoss}%`);
+    if (pos === 'SHORT' && priceMovePercent >= slBuffer) {
+        log(`[${symbol}] STOP LOSS (SHORT): ${priceMovePercent.toFixed(2)}% | SL: ${marketState.aiStopLoss}% (triggered at 90% buffer: ${slBuffer.toFixed(3)}%)`);
         aiBrain.think(`[${symbol}] STOP LOSS hit on SHORT at ${priceMovePercent.toFixed(2)}% | SL was ${marketState.aiStopLoss}%`, 'exit');
         return true;
     }
@@ -654,7 +658,7 @@ async function processMarket(symbol) {
         marketState.candlePatterns = indicators.analyzeCandlePatterns(candles5m);
 
         const allPricesForScore = marketState.prices;
-        const priceChangesForScore = {
+        const rawPriceChanges = {
             '1min': allPricesForScore.length >= 4 ? ((price - allPricesForScore[allPricesForScore.length - 4]) / allPricesForScore[allPricesForScore.length - 4]) * 100 : null,
             '5min': allPricesForScore.length >= 20 ? ((price - allPricesForScore[allPricesForScore.length - 20]) / allPricesForScore[allPricesForScore.length - 20]) * 100 : null,
             '10min': allPricesForScore.length >= 40 ? ((price - allPricesForScore[allPricesForScore.length - 40]) / allPricesForScore[allPricesForScore.length - 40]) * 100 : null,
@@ -662,9 +666,19 @@ async function processMarket(symbol) {
             '30min': allPricesForScore.length >= 120 ? ((price - allPricesForScore[allPricesForScore.length - 120]) / allPricesForScore[allPricesForScore.length - 120]) * 100 : null,
             '1hr': allPricesForScore.length >= 240 ? ((price - allPricesForScore[allPricesForScore.length - 240]) / allPricesForScore[allPricesForScore.length - 240]) * 100 : null
         };
+        marketState.priceChangeHistory.push(rawPriceChanges);
+        if (marketState.priceChangeHistory.length > 4) {
+            marketState.priceChangeHistory = marketState.priceChangeHistory.slice(-4);
+        }
+        const smoothedPriceChanges = {};
+        const windows = ['1min', '5min', '10min', '15min', '30min', '1hr'];
+        for (const w of windows) {
+            const vals = marketState.priceChangeHistory.map(h => h[w]).filter(v => v !== null);
+            smoothedPriceChanges[w] = vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+        }
         marketState.directionalScore = indicators.calculateDirectionalScore(
             marketState.indicators1m, marketState.indicators5m, marketState.indicators15m,
-            priceChangesForScore, imbalance, allPricesForScore
+            smoothedPriceChanges, imbalance, allPricesForScore
         );
         marketState.momentumPhase = marketState.directionalScore.momentumPhase;
 
@@ -698,8 +712,8 @@ async function processMarket(symbol) {
                 if (!marketState.entryTime) marketState.entryTime = Date.now();
             }
             if (marketState.aiStopLoss == null) {
-                marketState.aiStopLoss = 0.75;
-                aiBrain.think(`[${symbol}] Emergency SL assigned: 0.75% (position had no stop loss)`, 'safety');
+                marketState.aiStopLoss = 1.0;
+                aiBrain.think(`[${symbol}] Emergency SL assigned: 1.0% (position had no stop loss)`, 'safety');
             }
             if (marketState.aiTakeProfit == null) {
                 marketState.aiTakeProfit = 1.5;
@@ -712,19 +726,17 @@ async function processMarket(symbol) {
                 ? ((price - marketState.entryPrice) / marketState.entryPrice * 100)
                 : ((marketState.entryPrice - price) / marketState.entryPrice * 100);
             let pnl = (priceMovePct * CONFIG.LEVERAGE) - (0.1 * CONFIG.LEVERAGE);
-            if (Math.abs(pnl) > 1000) {
-                aiBrain.think(`[${symbol}] P&L looks wrong (${pnl.toFixed(0)}%) - entry price may be stale, resetting`, 'error');
-                marketState.entryPrice = price;
-                marketState.highestPriceSinceEntry = price;
-                marketState.lowestPriceSinceEntry = price;
-                pnl = 0;
+            if (Math.abs(pnl) > 500) {
+                aiBrain.think(`[${symbol}] BROKEN POSITION: P&L shows ${pnl.toFixed(0)}% — entry price corrupted. Force closing to prevent further loss.`, 'safety');
+                await closePosition('broken_entry_price', marketState, marketConfig, symbol);
+                return;
             }
             const holdMin = marketState.entryTime ? ((Date.now() - marketState.entryTime) / 60000) : 0;
             aiBrain.think(`[${symbol}] Monitoring ${pos} | P&L: ${pnl.toFixed(1)}% | Hold: ${holdMin.toFixed(0)}min | SL: ${marketState.aiStopLoss}% | TP: ${marketState.aiTakeProfit}%`, 'monitor');
 
-            // 1. Emergency Circuit Breaker (-25% P&L)
-            if (pnl <= -25) {
-                aiBrain.think(`[${symbol}] EMERGENCY CIRCUIT BREAKER: P&L at ${pnl.toFixed(1)}% exceeded -25% limit. Force closing.`, 'safety');
+            // 1. Emergency Circuit Breaker (-20% P&L)
+            if (pnl <= -20) {
+                aiBrain.think(`[${symbol}] EMERGENCY CIRCUIT BREAKER: P&L at ${pnl.toFixed(1)}% exceeded -20% limit. Force closing.`, 'safety');
                 await closePosition('circuit_breaker', marketState, marketConfig, symbol);
                 return;
             }
@@ -734,18 +746,18 @@ async function processMarket(symbol) {
                 const leverage = CONFIG.LEVERAGE;
                 let newSLPriceMove = null;
                 let lockLabel = '';
-                if (pnl >= 20) {
+                if (pnl >= 40) {
+                    newSLPriceMove = 25 / leverage;
+                    lockLabel = '+40% P&L → locking +25%';
+                } else if (pnl >= 25) {
                     newSLPriceMove = 12 / leverage;
-                    lockLabel = '+20% P&L → locking +12%';
-                } else if (pnl >= 12) {
-                    newSLPriceMove = 6 / leverage;
-                    lockLabel = '+12% P&L → locking +6%';
+                    lockLabel = '+25% P&L → locking +12%';
+                } else if (pnl >= 15) {
+                    newSLPriceMove = 5 / leverage;
+                    lockLabel = '+15% P&L → locking +5%';
                 } else if (pnl >= 8) {
-                    newSLPriceMove = 3 / leverage;
-                    lockLabel = '+8% P&L → locking +3%';
-                } else if (pnl >= 5) {
                     newSLPriceMove = 0;
-                    lockLabel = '+5% P&L → breakeven';
+                    lockLabel = '+8% P&L → breakeven';
                 }
                 if (newSLPriceMove !== null) {
                     const currentSLasProfit = -marketState.aiStopLoss * leverage;
@@ -1002,8 +1014,8 @@ function generateDashboardHTML() {
 </head>
 <body>
     <div class="container">
-        <h1>AI Trading Bot - GLM-4.7 Flash</h1>
-        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven Entries & Exits</div>
+        <h1>AI Trading Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v11.1</span></h1>
+        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven Entries & Exits | v11.1</div>
         
         <div class="grid">
             <div class="card">
@@ -1218,7 +1230,7 @@ function startDashboard() {
 
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   AI TRADING BOT - GLM-4.7 Flash');
+    log('   AI TRADING BOT - GLM-4.7 Flash | v11.1');
     log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);
@@ -1323,7 +1335,7 @@ async function main() {
                 const ms = marketStates[s];
                 return ms && (CONFIG.SIMULATION_MODE ? ms.simulatedPosition : ms.currentPosition);
             });
-            const interval = hasPos ? 5000 : CONFIG.CHECK_INTERVAL_MS;
+            const interval = hasPos ? 2000 : CONFIG.CHECK_INTERVAL_MS;
             setTimeout(dynamicLoop, interval);
         }
         dynamicLoop();

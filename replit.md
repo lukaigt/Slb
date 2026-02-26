@@ -1,7 +1,7 @@
-# Solana Futures Trading Bot v11 (Drift Protocol - Directional Scoring + Early Entry Detection)
+# Solana Futures Trading Bot v11.1 (Drift Protocol - Aggressive Early Entry + Bug Fixes)
 
 ## Overview
-AI-driven perpetual futures trading bot using Drift Protocol on Solana mainnet. GLM-4.7-Flash receives pre-calculated directional scoring (-40 to +40) and momentum phase detection (EARLY/ACTIVE/EXHAUSTED) to make fast, accurate LONG/SHORT/WAIT decisions. Checks every 30 seconds to catch moves early. Code-level exhaustion gate blocks chasing done moves. 9 indicators across 3 timeframes feed into the scoring engine. All 3 markets (SOL-PERP, BTC-PERP, ETH-PERP) simultaneous. Fee-aware P&L (2% round-trip at 20x). Safety: 1.0% max SL cap, -25% circuit breaker, stepped profit locking, 10% daily loss limit, 3:1 R:R minimum, 1.0% minimum TP.
+AI-driven perpetual futures trading bot using Drift Protocol on Solana mainnet. GLM-4.7-Flash receives pre-calculated directional scoring (-40 to +40) and smoothed momentum phase detection (EARLY/ACTIVE/EXHAUSTED) to make fast, aggressive LONG/SHORT/WAIT decisions. AI is tuned to enter EARLY (score ±3 enough) not wait for confirmation. Checks every 30 seconds, monitors positions every 2 seconds. Code-level exhaustion gate blocks chasing done moves. 9 indicators across 3 timeframes feed into the scoring engine. All 3 markets (SOL-PERP, BTC-PERP, ETH-PERP) simultaneous. Fee-aware P&L (2% round-trip at 20x). Safety: 1.0% max SL cap, -20% circuit breaker, SL buffer (90% early trigger), stepped profit locking, 10% daily loss limit, 3:1 R:R minimum, 1.0% minimum TP.
 
 ## Project Structure
 ```
@@ -130,6 +130,17 @@ Dark theme dashboard showing:
 - dotenv: Environment variable management
 
 ## Recent Changes
+- 2026-02-26: v11.1 CRITICAL BUG FIXES + AI AGGRESSION OVERHAUL
+- 2026-02-26: AI prompt rewritten — AGGRESSIVE entry on EARLY phase (score ±3 enough), ACTIVE (±5), CHOPPY only at ±12. Stops waiting for ±15 that never comes.
+- 2026-02-26: Entry price reset bug FIXED — broken positions (P&L > 500%) now force-closed instead of silently resetting entry price and hiding losses
+- 2026-02-26: Circuit breaker tightened from -25% to -20% P&L — max loss per trade ~$2 instead of ~$5
+- 2026-02-26: SL buffer added — triggers at 90% of threshold to account for execution delay and slippage
+- 2026-02-26: Position check interval 5s → 2s when in trade — tighter SL monitoring
+- 2026-02-26: Emergency SL raised from 0.75% to 1.0% — normal pullbacks don't trigger SL before trade works
+- 2026-02-26: Momentum phase smoothing — averages last 4 readings instead of raw ticks, phase stable for 30+ seconds
+- 2026-02-26: Profit protection thresholds raised — breakeven at +8% P&L (was +5%), locks meaningful profit not cents
+- 2026-02-26: Stepped profit: +8%→breakeven, +15%→lock +5%, +25%→lock +12%, +40%→lock +25%
+- 2026-02-26: Version number (v11.1) shown on dashboard header for deployment verification
 - 2026-02-25: v11 DIRECTIONAL SCORING + EARLY ENTRY OVERHAUL
 - 2026-02-25: Momentum phase detector: EARLY_LONG/EARLY_SHORT (just started), ACTIVE (in progress), EXHAUSTED (too late), CHOPPY (no direction)
 - 2026-02-25: Directional scoring engine: pre-digests all indicators into -40 to +40 score with breakdown (trend, momentum, position, indicators, orderbook)
