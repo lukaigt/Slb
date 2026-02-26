@@ -510,14 +510,20 @@ function checkStopLoss(currentPrice, marketState, symbol) {
 
     const priceMovePercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
 
-    const slBuffer = Math.abs(marketState.aiStopLoss) * 0.90;
-    if (pos === 'LONG' && priceMovePercent <= -slBuffer) {
-        log(`[${symbol}] STOP LOSS (LONG): ${priceMovePercent.toFixed(2)}% | SL: ${marketState.aiStopLoss}% (triggered at 90% buffer: ${slBuffer.toFixed(3)}%)`);
+    let slThreshold;
+    if (marketState.aiStopLoss > 0) {
+        slThreshold = marketState.aiStopLoss * 0.90;
+    } else {
+        slThreshold = marketState.aiStopLoss;
+    }
+
+    if (pos === 'LONG' && priceMovePercent <= -slThreshold) {
+        log(`[${symbol}] STOP LOSS (LONG): price moved ${priceMovePercent.toFixed(2)}% | SL: ${marketState.aiStopLoss}% | Threshold: ${slThreshold.toFixed(3)}%`);
         aiBrain.think(`[${symbol}] STOP LOSS hit on LONG at ${priceMovePercent.toFixed(2)}% | SL was ${marketState.aiStopLoss}%`, 'exit');
         return true;
     }
-    if (pos === 'SHORT' && priceMovePercent >= slBuffer) {
-        log(`[${symbol}] STOP LOSS (SHORT): ${priceMovePercent.toFixed(2)}% | SL: ${marketState.aiStopLoss}% (triggered at 90% buffer: ${slBuffer.toFixed(3)}%)`);
+    if (pos === 'SHORT' && priceMovePercent >= slThreshold) {
+        log(`[${symbol}] STOP LOSS (SHORT): price moved ${priceMovePercent.toFixed(2)}% | SL: ${marketState.aiStopLoss}% | Threshold: ${slThreshold.toFixed(3)}%`);
         aiBrain.think(`[${symbol}] STOP LOSS hit on SHORT at ${priceMovePercent.toFixed(2)}% | SL was ${marketState.aiStopLoss}%`, 'exit');
         return true;
     }
@@ -905,10 +911,10 @@ async function processMarket(symbol) {
                 }
             }
 
-            marketState.aiStopLoss = decision.stopLoss;
+            marketState.aiStopLoss = Math.min(Math.max(decision.stopLoss, 0.4), 1.0);
             marketState.aiTakeProfit = Math.max(decision.takeProfit, 1.0);
-            if (decision.stopLoss > 0 && marketState.aiTakeProfit < decision.stopLoss * 3) {
-                marketState.aiTakeProfit = decision.stopLoss * 3;
+            if (marketState.aiTakeProfit < marketState.aiStopLoss * 3) {
+                marketState.aiTakeProfit = marketState.aiStopLoss * 3;
             }
             marketState.aiMaxHoldMinutes = decision.maxHoldMinutes;
             marketState.aiReason = decision.reason;
@@ -1014,8 +1020,8 @@ function generateDashboardHTML() {
 </head>
 <body>
     <div class="container">
-        <h1>AI Trading Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v11.1</span></h1>
-        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven Entries & Exits | v11.1</div>
+        <h1>AI Trading Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v11.2</span></h1>
+        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven Entries & Exits | v11.2</div>
         
         <div class="grid">
             <div class="card">
@@ -1230,7 +1236,7 @@ function startDashboard() {
 
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   AI TRADING BOT - GLM-4.7 Flash | v11.1');
+    log('   AI TRADING BOT - GLM-4.7 Flash | v11.2');
     log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);
