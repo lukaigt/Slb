@@ -1016,12 +1016,20 @@ function generateDashboardHTML() {
         .thinking-time { color: #484f58; font-size: 0.8em; margin-right: 8px; }
         .best-worst { display: flex; gap: 15px; }
         .best-worst > div { flex: 1; padding: 10px; border-radius: 6px; background: #0d1117; }
+        .btn { padding: 10px 18px; border: none; border-radius: 6px; font-size: 0.9em; font-weight: 600; cursor: pointer; width: 100%; margin-bottom: 8px; transition: opacity 0.2s; }
+        .btn:hover { opacity: 0.85; }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-green { background: #238636; color: white; }
+        .btn-orange { background: #d29922; color: #0d1117; }
+        .btn-red { background: #da3633; color: white; }
+        .btn-gray { background: #30363d; color: #e6edf3; }
+        .btn-status { font-size: 0.8em; color: #8b949e; text-align: center; min-height: 20px; margin-top: 4px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>AI Trading Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v11.2</span></h1>
-        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven Entries & Exits | v11.2</div>
+        <h1>AI Trading Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v11.3</span></h1>
+        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven Entries & Exits | v11.3</div>
         
         <div class="grid">
             <div class="card">
@@ -1035,6 +1043,17 @@ function generateDashboardHTML() {
                 <div class="stat-row"><span class="stat-label">AI Model</span><span class="stat-value" style="color: #ff00ff;">GLM-4.7-Flash</span></div>
                 <div class="stat-row"><span class="stat-label">AI Interval</span><span class="stat-value">${CONFIG.AI_INTERVAL_MS / 1000}s</span></div>
                 <div class="stat-row"><span class="stat-label">Min Confidence</span><span class="stat-value">${(CONFIG.MIN_CONFIDENCE * 100).toFixed(0)}%</span></div>
+            </div>
+
+            <div class="card">
+                <h2>Bot Controls</h2>
+                ${safetyStatus.paused 
+                    ? '<button class="btn btn-green" onclick="botAction(\'unpause\')">Resume Trading</button>'
+                    : '<button class="btn btn-orange" onclick="botAction(\'pause\')">Pause Trading</button>'
+                }
+                <button class="btn btn-red" onclick="if(confirm(\'Close ALL open positions immediately?\')) botAction(\'close-all\')">Close All Positions</button>
+                <button class="btn btn-gray" onclick="if(confirm(\'Reset all session stats to zero?\')) botAction(\'reset-stats\')">Reset Session Stats</button>
+                <div class="btn-status" id="btnStatus"></div>
             </div>
             
             <div class="card" style="grid-column: span 2;">
@@ -1214,15 +1233,69 @@ function generateDashboardHTML() {
             </div>
         </div>
     </div>
+    <script>
+        function botAction(action) {
+            var s = document.getElementById('btnStatus');
+            s.textContent = 'Processing...';
+            s.style.color = '#d29922';
+            fetch('/api/' + action, { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    s.textContent = d.message || 'Done';
+                    s.style.color = '#3fb950';
+                    setTimeout(function() { location.reload(); }, 1000);
+                })
+                .catch(function(e) {
+                    s.textContent = 'Error: ' + e.message;
+                    s.style.color = '#f85149';
+                });
+        }
+    </script>
 </body>
 </html>`;
 }
 
 function startDashboard() {
-    const server = http.createServer((req, res) => {
+    const server = http.createServer(async (req, res) => {
+        const sendJson = (data, code = 200) => {
+            res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+            res.end(JSON.stringify(data));
+        };
+
         if (req.url === '/api/status') {
-            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
-            res.end(JSON.stringify({ status: botStatus, safety: safety.getStatus(), stats: tradeMemory.sessionStats }));
+            sendJson({ status: botStatus, safety: safety.getStatus(), stats: tradeMemory.sessionStats });
+        } else if (req.url === '/api/unpause' && req.method === 'POST') {
+            safety.unpause();
+            log('[DASHBOARD] Bot UNPAUSED by user');
+            sendJson({ ok: true, message: 'Bot unpaused' });
+        } else if (req.url === '/api/pause' && req.method === 'POST') {
+            safety.pause('manual');
+            log('[DASHBOARD] Bot PAUSED by user');
+            sendJson({ ok: true, message: 'Bot paused' });
+        } else if (req.url === '/api/close-all' && req.method === 'POST') {
+            log('[DASHBOARD] CLOSE ALL POSITIONS requested by user');
+            let closed = 0;
+            for (const symbol of ACTIVE_MARKETS) {
+                const ms = marketStates[symbol];
+                const pos = CONFIG.SIMULATION_MODE ? ms.simulatedPosition : ms.currentPosition;
+                if (pos) {
+                    const mc = MARKETS[symbol];
+                    await closePosition('manual_close', ms, mc, symbol);
+                    closed++;
+                }
+            }
+            sendJson({ ok: true, message: `Closed ${closed} position(s)` });
+        } else if (req.url === '/api/reset-stats' && req.method === 'POST') {
+            tradeMemory.sessionStats = {
+                startTime: new Date().toISOString(),
+                totalTrades: 0,
+                wins: 0,
+                losses: 0,
+                totalProfitPercent: 0
+            };
+            saveMemory();
+            log('[DASHBOARD] Session stats RESET by user');
+            sendJson({ ok: true, message: 'Stats reset' });
         } else {
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
             res.end(generateDashboardHTML());
@@ -1236,7 +1309,7 @@ function startDashboard() {
 
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   AI TRADING BOT - GLM-4.7 Flash | v11.2');
+    log('   AI TRADING BOT - GLM-4.7 Flash | v11.3');
     log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);

@@ -59,7 +59,7 @@ function resetDayIfNeeded() {
             losses: 0,
             consecutiveLosses: 0
         };
-        if (config.paused && config.pauseReason === 'daily_loss_limit') {
+        if (config.paused && (config.pauseReason === 'daily_loss_limit' || config.pauseReason === 'consecutive_losses')) {
             config.paused = false;
             config.pauseReason = null;
         }
@@ -77,7 +77,9 @@ function recordTradeResult(profitPercent, isWin) {
         config.dailyStats.consecutiveLosses = 0;
     } else {
         config.dailyStats.losses++;
-        config.dailyStats.consecutiveLosses++;
+        if (profitPercent < -5) {
+            config.dailyStats.consecutiveLosses++;
+        }
     }
 
     if (config.dailyStats.totalPnl <= -config.dailyLossLimit) {
