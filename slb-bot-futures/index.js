@@ -61,6 +61,7 @@ function createEmptyMarketState() {
         aiReason: null,
         entryTime: null,
         lastAiCall: 0,
+        lastStopLossTime: 0,
         prices: [],
         priceTimestamps: [],
         imbalances: [],
@@ -777,6 +778,7 @@ async function processMarket(symbol) {
 
             // 3. Standard Stop Loss / Take Profit
             if (checkStopLoss(price, marketState, symbol)) {
+                marketState.lastStopLossTime = Date.now();
                 await closePosition('stop_loss', marketState, marketConfig, symbol);
                 return;
             }
@@ -803,6 +805,56 @@ async function processMarket(symbol) {
             const safetyCheck = safety.canTrade();
             if (!safetyCheck.allowed) {
                 aiBrain.think(`[${symbol}] SAFETY BLOCK: ${safetyCheck.reason} - no new trades`, 'safety');
+                return;
+            }
+
+            if (marketState.volatility < 0.005 && marketState.prices.length > 40) {
+                aiBrain.think(`[${symbol}] PRE-FILTER: Dead market (volatility ${marketState.volatility.toFixed(4)}% < 0.005%) — skipping`, 'skip');
+                marketState.lastAiCall = now;
+                return;
+            }
+            if (marketState.volatility > 0.5) {
+                aiBrain.think(`[${symbol}] PRE-FILTER: Too volatile (${marketState.volatility.toFixed(3)}% > 0.5%) — SL will get sniped, skipping`, 'skip');
+                marketState.lastAiCall = now;
+                return;
+            }
+
+            if (!marketState.indicators5m || !marketState.indicators5m.ready) {
+                aiBrain.think(`[${symbol}] PRE-FILTER: 5m indicators not ready yet — skipping`, 'skip');
+                marketState.lastAiCall = now;
+                return;
+            }
+
+            if (marketState.indicators15m && marketState.indicators15m.adx && marketState.indicators15m.adx.adx < 15) {
+                aiBrain.think(`[${symbol}] PRE-FILTER: Weak trend (15m ADX=${marketState.indicators15m.adx.adx.toFixed(1)} < 15) — no trend to trade, skipping`, 'skip');
+                marketState.lastAiCall = now;
+                return;
+            }
+
+            const mp = marketState.momentumPhase;
+            const ds = marketState.directionalScore;
+            if (mp && ds) {
+                if (mp.phase === 'EARLY_LONG' && ds.score < 0) {
+                    aiBrain.think(`[${symbol}] PRE-FILTER: EARLY_LONG but score negative (${ds.score}) — conflicting signals, skipping`, 'skip');
+                    marketState.lastAiCall = now;
+                    return;
+                }
+                if (mp.phase === 'EARLY_SHORT' && ds.score > 0) {
+                    aiBrain.think(`[${symbol}] PRE-FILTER: EARLY_SHORT but score positive (${ds.score}) — conflicting signals, skipping`, 'skip');
+                    marketState.lastAiCall = now;
+                    return;
+                }
+                if (mp.phase === 'CHOPPY' && Math.abs(ds.score) < 12) {
+                    aiBrain.think(`[${symbol}] PRE-FILTER: CHOPPY market with weak score (${ds.score}) — need ±12, skipping`, 'skip');
+                    marketState.lastAiCall = now;
+                    return;
+                }
+            }
+
+            if (marketState.lastStopLossTime && (now - marketState.lastStopLossTime < 120000)) {
+                const waitSec = Math.round((120000 - (now - marketState.lastStopLossTime)) / 1000);
+                aiBrain.think(`[${symbol}] PRE-FILTER: Cooldown after stop loss — ${waitSec}s remaining`, 'skip');
+                marketState.lastAiCall = now;
                 return;
             }
 
@@ -854,19 +906,6 @@ async function processMarket(symbol) {
                 '1hr': getPriceChange(240)
             };
 
-            const sampledPrices = [];
-            const totalPoints = allPrices.length;
-            if (totalPoints > 0) {
-                const samplesToTake = Math.min(120, totalPoints);
-                const step = Math.max(1, Math.floor(totalPoints / samplesToTake));
-                for (let i = 0; i < totalPoints; i += step) {
-                    sampledPrices.push(allPrices[i]);
-                }
-                if (sampledPrices[sampledPrices.length - 1] !== currentP) {
-                    sampledPrices.push(currentP);
-                }
-            }
-
             const marketData = {
                 symbol,
                 price,
@@ -874,7 +913,6 @@ async function processMarket(symbol) {
                 imbalance,
                 volatility: marketState.volatility,
                 priceChanges,
-                priceHistory: sampledPrices,
                 directionalScore: marketState.directionalScore,
                 momentumPhase: marketState.momentumPhase,
                 indicators1m: marketState.indicators1m,
@@ -899,22 +937,22 @@ async function processMarket(symbol) {
                 return;
             }
 
-            const mp = marketState.momentumPhase;
-            if (mp) {
-                if (decision.action === 'LONG' && mp.phase === 'EXHAUSTED_UP') {
-                    aiBrain.think(`[${symbol}] EXHAUSTION GATE BLOCKED LONG — ${mp.description}`, 'safety');
+            const mpPost = marketState.momentumPhase;
+            if (mpPost) {
+                if (decision.action === 'LONG' && mpPost.phase === 'EXHAUSTED_UP') {
+                    aiBrain.think(`[${symbol}] EXHAUSTION GATE BLOCKED LONG — ${mpPost.description}`, 'safety');
                     return;
                 }
-                if (decision.action === 'SHORT' && mp.phase === 'EXHAUSTED_DOWN') {
-                    aiBrain.think(`[${symbol}] EXHAUSTION GATE BLOCKED SHORT — ${mp.description}`, 'safety');
+                if (decision.action === 'SHORT' && mpPost.phase === 'EXHAUSTED_DOWN') {
+                    aiBrain.think(`[${symbol}] EXHAUSTION GATE BLOCKED SHORT — ${mpPost.description}`, 'safety');
                     return;
                 }
             }
 
             marketState.aiStopLoss = Math.min(Math.max(decision.stopLoss, 0.4), 1.0);
-            marketState.aiTakeProfit = Math.max(decision.takeProfit, 1.0);
-            if (marketState.aiTakeProfit < marketState.aiStopLoss * 3) {
-                marketState.aiTakeProfit = marketState.aiStopLoss * 3;
+            marketState.aiTakeProfit = Math.max(decision.takeProfit, 0.8);
+            if (marketState.aiTakeProfit < marketState.aiStopLoss * 2) {
+                marketState.aiTakeProfit = marketState.aiStopLoss * 2;
             }
             marketState.aiMaxHoldMinutes = decision.maxHoldMinutes;
             marketState.aiReason = decision.reason;
@@ -1028,8 +1066,8 @@ function generateDashboardHTML() {
 </head>
 <body>
     <div class="container">
-        <h1>AI Trading Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v11.3</span></h1>
-        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven Entries & Exits | v11.3</div>
+        <h1>AI Trading Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v12</span></h1>
+        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Selective AI Trading | v12</div>
         
         <div class="grid">
             <div class="card">
@@ -1309,7 +1347,7 @@ function startDashboard() {
 
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   AI TRADING BOT - GLM-4.7 Flash | v11.3');
+    log('   AI TRADING BOT - GLM-4.7 Flash | v12');
     log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);

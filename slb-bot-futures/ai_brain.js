@@ -11,41 +11,60 @@ let thinkingLog = [];
 let tradeHistory = [];
 let consecutiveFailures = 0;
 
-const SYSTEM_PROMPT = `You are an aggressive perpetual futures scalper. 20x leverage. 1% price move = 20% P&L. Fees = 2% P&L round-trip.
+const SYSTEM_PROMPT = `You are a selective perpetual futures trader. 20x leverage. 1% price move = 20% P&L. Fees cost ~2% P&L round-trip.
 
-YOUR JOB: Catch moves EARLY. Enter when the move is STARTING, not when it's already done.
+YOUR JOB: Filter setups. Only take HIGH-QUALITY trades. Say WAIT 60-70% of the time. Bad entries lose money — patience makes money.
 
-#1 — MOMENTUM PHASE DECIDES WHEN TO TRADE:
-- EARLY_LONG / EARLY_SHORT = Move JUST STARTED. This is your best opportunity. ENTER with score as low as ±3.
-- ACTIVE_UP / ACTIVE_DOWN = Move in progress. ENTER if score agrees (±5 or more).
-- EXHAUSTED = Move already done. NEVER enter. System blocks it anyway.
-- CHOPPY = No clear move. Only enter if score is ±12 or higher.
+FOLLOW THIS CHECKLIST IN ORDER. If any step fails, answer WAIT immediately.
 
-#2 — DIRECTIONAL SCORE DECIDES DIRECTION:
-Score range: -40 to +40. It summarizes ALL indicators, trend, momentum, orderbook.
-- With EARLY phase: Score ±3 is enough to act. The move is fresh — don't wait for confirmation.
-- With ACTIVE phase: Score ±5 is enough. Trend is confirmed.
-- With CHOPPY phase: Need score ±12. No momentum to help you.
-FOLLOW the score direction. If score is +8, go LONG. If score is -8, go SHORT.
+=== STEP 1: IS THE MARKET TRADEABLE? ===
+Check these conditions. If ANY fail, answer WAIT:
+- Phase must NOT be EXHAUSTED or BUILDING or UNKNOWN. Exhausted = move is done, you will chase into a loss.
+- Phase CHOPPY is only tradeable if directional score is ±12 or higher. Otherwise WAIT.
+- Volatility must be reasonable. If volatility < 0.005% the market is dead (noise only). If volatility > 0.5% it is too wild (SL will get sniped).
+- If ADX on 15-min is below 15, there is no trend. WAIT.
 
-#3 — BE AGGRESSIVE, NOT RECKLESS:
-- You check every 30 seconds. If you see EARLY phase + any directional score, TAKE THE TRADE.
-- Don't wait for score > 15. By then the move is over and you'll chase it into a loss.
-- The system protects you: exhaustion gate blocks bad entries, SL caps losses, profit lock protects wins.
-- Your job is to say YES to setups, not find reasons to say WAIT.
+=== STEP 2: WHAT DIRECTION? ===
+The directional score summarizes ALL indicators, trend, momentum, and orderbook into one number (-40 to +40).
+- Positive score = LONG only. Negative score = SHORT only.
+- NEVER trade against the score direction.
+- Minimum score thresholds by phase:
+  * EARLY_LONG/EARLY_SHORT: Score ±5 minimum
+  * ACTIVE_UP/ACTIVE_DOWN: Score ±8 minimum
+  * CHOPPY: Score ±12 minimum
 
-SL/TP (price move %, NOT P&L):
-- SL: 0.4-1.0%. Use nearest S/R level. System caps at 1.0%.
-- TP: 1.0-3.0%. Use next S/R level. System enforces min 1.0% and 3:1 R:R.
-- LONG: SL below support, TP at resistance. SHORT: SL above resistance, TP at support.
+=== STEP 3: IS THE TIMING RIGHT? ===
+- EARLY phase = best entry. The move just started reversing. This is where you want to enter.
+- ACTIVE phase = acceptable if score is strong and indicators confirm.
+- Check HIGHER TIMEFRAME AGREEMENT: The 15-min EMA trend must agree with your direction. If 15-min says BEAR but you want to go LONG, that is a TRAP. WAIT.
+- Check MACD agreement: MACD histogram should be positive on at least 2 timeframes for LONG, negative for SHORT.
+- If indicators CONFLICT (some bullish, some bearish across timeframes), that IS the signal — the signal is WAIT.
 
-BTC CORRELATION: BTC leads SOL/ETH. If BTC disagrees with your direction, lower confidence but still trade if score is strong.
+=== STEP 4: CONFIRM WITH KEY INDICATORS ===
+For LONG: RSI should NOT be above 70 on any timeframe (overbought = reversal risk). StochRSI K should not be above 85.
+For SHORT: RSI should NOT be below 30 on any timeframe (oversold = bounce risk). StochRSI K should not be below 15.
+If these conditions fail, the trade is against momentum. WAIT.
 
-CONFIDENCE: 0.0-1.0. Set confidence based on how many factors align. 0.60+ = tradeable.
+=== STEP 5: SET SL/TP USING S/R LEVELS ===
+SL and TP are PRICE MOVE percentages, NOT P&L.
+- SL range: 0.4% to 1.0%. Place SL behind nearest support (for LONG) or resistance (for SHORT).
+- TP range: 0.8% to 3.0%. Place TP at next S/R level in your direction.
+- If no clear S/R levels, use defaults: SL=0.5%, TP=1.2%.
+- System enforces minimum 2:1 reward-to-risk ratio.
+
+=== STEP 6: FINAL CHECKS ===
+- If you already lost 2+ consecutive trades today, raise your bar — only take trades with score ±10+.
+- BTC CORRELATION: For SOL/ETH, if BTC trend DISAGREES with your direction, lower confidence by 0.15.
+- Set confidence 0.0-1.0 based on how many checklist items strongly support the trade. Need 0.60+ to trade.
+
+=== CRITICAL RULES ===
+- Never chase: if price already moved significantly (5min and 15min both moved 0.3%+ in your direction), the move is DONE.
+- Conflicting indicators = WAIT. Do not force a trade when signals disagree.
+- You are checked every 30 seconds. Missing one setup is fine — entering a bad one costs 8-20% P&L.
 
 RESPOND IN THIS EXACT JSON FORMAT ONLY:
 {"action":"LONG"|"SHORT"|"WAIT","stopLoss":number,"takeProfit":number,"confidence":number,"reason":"brief","maxHoldMinutes":number}
-No markdown, no code blocks. JSON only.`;
+No markdown, no code blocks, no explanation. JSON only.`;
 
 function findSimilarMemories(marketData, allTrades, maxResults = 3) {
     if (!allTrades || allTrades.length === 0) return [];
@@ -104,10 +123,6 @@ function buildMarketPrompt(marketData, recentResults, pastMemories) {
         if (pc['1hr'] !== null) prompt += ` | 1hr: ${pc['1hr'].toFixed(3)}%`;
     }
 
-    if (marketData.priceHistory && marketData.priceHistory.length > 0) {
-        prompt += `\nPRICE HISTORY (~${marketData.priceHistory.length} points, full session): ${marketData.priceHistory.map(p => '$' + p.toFixed(2)).join(', ')}`;
-    }
-
     if (marketData.supportResistance) {
         prompt += formatSRForAI(marketData.supportResistance, marketData.price);
     }
@@ -140,7 +155,7 @@ function buildMarketPrompt(marketData, recentResults, pastMemories) {
         prompt += `\n- Trades: ${dc.dailyTrades} (${dc.dailyWins}W / ${dc.dailyLosses}L)`;
         prompt += `\n- Win Rate: ${dc.dailyWinRate}%`;
         if (dc.consecutiveLosses > 0) {
-            prompt += `\n- Consecutive Losses: ${dc.consecutiveLosses} (CAUTION)`;
+            prompt += `\n- Consecutive Losses: ${dc.consecutiveLosses} (CAUTION — raise entry bar)`;
         }
     }
 
@@ -163,7 +178,7 @@ function buildMarketPrompt(marketData, recentResults, pastMemories) {
         prompt += `\nUse these lessons to avoid repeating mistakes and replicate winning patterns.`;
     }
 
-    prompt += `\n\nWhat is your trading decision? Respond in JSON only.`;
+    prompt += `\n\nRun through the 6-step checklist and give your trading decision. Respond in JSON only.`;
     return prompt;
 }
 
@@ -174,7 +189,7 @@ async function callAI(model, apiKey, userPrompt) {
             { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: userPrompt }
         ],
-        temperature: 0.3,
+        temperature: 0.2,
         max_tokens: 1500,
         reasoning: { enabled: false }
     }, {
@@ -223,13 +238,13 @@ function parseAIResponse(raw) {
         throw new Error('Invalid action');
     }
 
-    decision.stopLoss = (typeof decision.stopLoss === 'number' && isFinite(decision.stopLoss)) ? decision.stopLoss : 1.5;
-    decision.takeProfit = (typeof decision.takeProfit === 'number' && isFinite(decision.takeProfit)) ? decision.takeProfit : 2.5;
+    decision.stopLoss = (typeof decision.stopLoss === 'number' && isFinite(decision.stopLoss)) ? decision.stopLoss : 0.5;
+    decision.takeProfit = (typeof decision.takeProfit === 'number' && isFinite(decision.takeProfit)) ? decision.takeProfit : 1.2;
     decision.confidence = (typeof decision.confidence === 'number' && isFinite(decision.confidence)) ? decision.confidence : 0.5;
     decision.maxHoldMinutes = (typeof decision.maxHoldMinutes === 'number' && isFinite(decision.maxHoldMinutes)) ? decision.maxHoldMinutes : 60;
 
-    decision.stopLoss = Math.max(0.3, Math.min(1.0, decision.stopLoss));
-    decision.takeProfit = Math.max(0.5, Math.min(2.5, decision.takeProfit));
+    decision.stopLoss = Math.max(0.4, Math.min(1.0, decision.stopLoss));
+    decision.takeProfit = Math.max(0.8, Math.min(3.0, decision.takeProfit));
     decision.confidence = Math.max(0, Math.min(1, decision.confidence));
     decision.maxHoldMinutes = Math.max(10, Math.min(240, decision.maxHoldMinutes));
 
@@ -244,7 +259,7 @@ async function askBrain(marketData, allTradeMemories) {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
         think('No OpenRouter API key configured - AI brain disabled', 'error');
-        return { action: 'WAIT', reason: 'No API key', confidence: 0, stopLoss: 1.5, takeProfit: 2.5, maxHoldMinutes: 60 };
+        return { action: 'WAIT', reason: 'No API key', confidence: 0, stopLoss: 0.5, takeProfit: 1.2, maxHoldMinutes: 60 };
     }
 
     const recentResults = tradeHistory
@@ -285,7 +300,7 @@ async function askBrain(marketData, allTradeMemories) {
         }
     }
 
-    return { action: 'WAIT', reason: 'All AI models failed', confidence: 0, stopLoss: 1.5, takeProfit: 2.5, maxHoldMinutes: 60 };
+    return { action: 'WAIT', reason: 'All AI models failed', confidence: 0, stopLoss: 0.5, takeProfit: 1.2, maxHoldMinutes: 60 };
 }
 
 function recordTradeResult(symbol, direction, result, profitPercent, exitReason) {

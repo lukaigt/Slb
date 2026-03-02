@@ -609,7 +609,7 @@ function formatCandlePatternsForAI(analysis) {
     return text;
 }
 
-function detectMomentumPhase(priceChanges) {
+function detectMomentumPhase(priceChanges, imbalance) {
     if (!priceChanges) return { phase: 'UNKNOWN', direction: 0, score: 0, description: 'No price data' };
 
     const m1 = priceChanges['1min'];
@@ -617,6 +617,7 @@ function detectMomentumPhase(priceChanges) {
     const m10 = priceChanges['10min'];
     const m15 = priceChanges['15min'];
     const m30 = priceChanges['30min'];
+    const imb = imbalance || 0;
 
     if (m1 === null || m5 === null) return { phase: 'BUILDING', direction: 0, score: 0, description: 'Building price history' };
 
@@ -624,12 +625,12 @@ function detectMomentumPhase(priceChanges) {
     const has15 = m15 !== null;
     const has30 = m30 !== null;
 
-    if (m1 > 0.05 && m5 !== null && m5 < -0.03) {
-        const score = Math.min(10, Math.round(m1 * 100));
+    if (m1 > 0.10 && m5 !== null && m5 < -0.05 && imb > -0.10) {
+        const score = Math.min(10, Math.round(m1 * 80));
         return { phase: 'EARLY_LONG', direction: 1, score, description: `Fresh reversal UP: 1min +${m1.toFixed(3)}% but 5min still ${m5.toFixed(3)}%` };
     }
-    if (m1 < -0.05 && m5 !== null && m5 > 0.03) {
-        const score = Math.min(10, Math.round(Math.abs(m1) * 100));
+    if (m1 < -0.10 && m5 !== null && m5 > 0.05 && imb < 0.10) {
+        const score = Math.min(10, Math.round(Math.abs(m1) * 80));
         return { phase: 'EARLY_SHORT', direction: -1, score, description: `Fresh reversal DOWN: 1min ${m1.toFixed(3)}% but 5min still +${m5.toFixed(3)}%` };
     }
 
@@ -685,7 +686,7 @@ function calculateDirectionalScore(ind1m, ind5m, ind15m, priceChanges, imbalance
     }
     trend = Math.max(-10, Math.min(10, trend));
 
-    const phase = detectMomentumPhase(priceChanges);
+    const phase = detectMomentumPhase(priceChanges, imbalance);
     if (phase.phase === 'EARLY_LONG') momentum = phase.score;
     else if (phase.phase === 'EARLY_SHORT') momentum = -phase.score;
     else if (phase.phase === 'ACTIVE_UP') momentum = phase.score;
