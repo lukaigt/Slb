@@ -825,8 +825,8 @@ async function processMarket(symbol) {
                 return;
             }
 
-            if (marketState.indicators15m && marketState.indicators15m.adx && marketState.indicators15m.adx.adx < 15) {
-                aiBrain.think(`[${symbol}] PRE-FILTER: Weak trend (15m ADX=${marketState.indicators15m.adx.adx.toFixed(1)} < 15) — no trend to trade, skipping`, 'skip');
+            if (marketState.indicators15m && marketState.indicators15m.adx && marketState.indicators15m.adx.adx < 10) {
+                aiBrain.think(`[${symbol}] PRE-FILTER: Weak trend (15m ADX=${marketState.indicators15m.adx.adx.toFixed(1)} < 10) — no trend to trade, skipping`, 'skip');
                 marketState.lastAiCall = now;
                 return;
             }
@@ -844,8 +844,8 @@ async function processMarket(symbol) {
                     marketState.lastAiCall = now;
                     return;
                 }
-                if (mp.phase === 'CHOPPY' && Math.abs(ds.score) < 12) {
-                    aiBrain.think(`[${symbol}] PRE-FILTER: CHOPPY market with weak score (${ds.score}) — need ±12, skipping`, 'skip');
+                if (mp.phase === 'CHOPPY' && Math.abs(ds.score) < 8) {
+                    aiBrain.think(`[${symbol}] PRE-FILTER: CHOPPY market with weak score (${ds.score}) — need ±8, skipping`, 'skip');
                     marketState.lastAiCall = now;
                     return;
                 }
@@ -1066,8 +1066,8 @@ function generateDashboardHTML() {
 </head>
 <body>
     <div class="container">
-        <h1>AI Trading Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v12</span></h1>
-        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Selective AI Trading | v12</div>
+        <h1>AI Trading Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v12.1</span></h1>
+        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Selective AI Trading | v12.1</div>
         
         <div class="grid">
             <div class="card">
@@ -1347,7 +1347,7 @@ function startDashboard() {
 
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   AI TRADING BOT - GLM-4.7 Flash | v12');
+    log('   AI TRADING BOT - GLM-4.7 Flash | v12.1');
     log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);

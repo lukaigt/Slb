@@ -625,11 +625,11 @@ function detectMomentumPhase(priceChanges, imbalance) {
     const has15 = m15 !== null;
     const has30 = m30 !== null;
 
-    if (m1 > 0.10 && m5 !== null && m5 < -0.05 && imb > -0.10) {
+    if (m1 > 0.07 && m5 !== null && m5 < -0.03 && imb > -0.10) {
         const score = Math.min(10, Math.round(m1 * 80));
         return { phase: 'EARLY_LONG', direction: 1, score, description: `Fresh reversal UP: 1min +${m1.toFixed(3)}% but 5min still ${m5.toFixed(3)}%` };
     }
-    if (m1 < -0.10 && m5 !== null && m5 > 0.05 && imb < 0.10) {
+    if (m1 < -0.07 && m5 !== null && m5 > 0.03 && imb < 0.10) {
         const score = Math.min(10, Math.round(Math.abs(m1) * 80));
         return { phase: 'EARLY_SHORT', direction: -1, score, description: `Fresh reversal DOWN: 1min ${m1.toFixed(3)}% but 5min still +${m5.toFixed(3)}%` };
     }
