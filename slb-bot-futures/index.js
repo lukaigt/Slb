@@ -34,7 +34,7 @@ const CONFIG = {
     DASHBOARD_PORT: parseInt(process.env.DASHBOARD_PORT) || 3000,
     MEMORY_FILE: path.join(__dirname, 'trade_memory.json'),
     PRICE_HISTORY_FILE: path.join(__dirname, 'price_history.json'),
-    MIN_CONFIDENCE: parseFloat(process.env.MIN_CONFIDENCE) || 0.60,
+    MIN_CONFIDENCE: parseFloat(process.env.MIN_CONFIDENCE) || 0.75,
 };
 
 const MARKETS = {
@@ -776,7 +776,14 @@ async function processMarket(symbol) {
                 }
             }
 
-            // 3. Standard Stop Loss / Take Profit
+            // 3. Stagnation Close (30 min going nowhere)
+            if (holdMin >= 30 && pnl > -2.0 && pnl < 2.0) {
+                aiBrain.think(`[${symbol}] STAGNATION CLOSE: Trade going nowhere for 30min (P&L: ${pnl.toFixed(1)}%) — cutting dead wood`, 'exit');
+                await closePosition('stagnation', marketState, marketConfig, symbol);
+                return;
+            }
+
+            // 4. Standard Stop Loss / Take Profit
             if (checkStopLoss(price, marketState, symbol)) {
                 marketState.lastStopLossTime = Date.now();
                 await closePosition('stop_loss', marketState, marketConfig, symbol);
@@ -806,49 +813,6 @@ async function processMarket(symbol) {
             if (!safetyCheck.allowed) {
                 aiBrain.think(`[${symbol}] SAFETY BLOCK: ${safetyCheck.reason} - no new trades`, 'safety');
                 return;
-            }
-
-            if (marketState.volatility < 0.005 && marketState.prices.length > 40) {
-                aiBrain.think(`[${symbol}] PRE-FILTER: Dead market (volatility ${marketState.volatility.toFixed(4)}% < 0.005%) — skipping`, 'skip');
-                marketState.lastAiCall = now;
-                return;
-            }
-            if (marketState.volatility > 0.5) {
-                aiBrain.think(`[${symbol}] PRE-FILTER: Too volatile (${marketState.volatility.toFixed(3)}% > 0.5%) — SL will get sniped, skipping`, 'skip');
-                marketState.lastAiCall = now;
-                return;
-            }
-
-            if (!marketState.indicators5m || !marketState.indicators5m.ready) {
-                aiBrain.think(`[${symbol}] PRE-FILTER: 5m indicators not ready yet — skipping`, 'skip');
-                marketState.lastAiCall = now;
-                return;
-            }
-
-            if (marketState.indicators15m && marketState.indicators15m.adx && marketState.indicators15m.adx.adx < 10) {
-                aiBrain.think(`[${symbol}] PRE-FILTER: Weak trend (15m ADX=${marketState.indicators15m.adx.adx.toFixed(1)} < 10) — no trend to trade, skipping`, 'skip');
-                marketState.lastAiCall = now;
-                return;
-            }
-
-            const mp = marketState.momentumPhase;
-            const ds = marketState.directionalScore;
-            if (mp && ds) {
-                if (mp.phase === 'EARLY_LONG' && ds.score < 0) {
-                    aiBrain.think(`[${symbol}] PRE-FILTER: EARLY_LONG but score negative (${ds.score}) — conflicting signals, skipping`, 'skip');
-                    marketState.lastAiCall = now;
-                    return;
-                }
-                if (mp.phase === 'EARLY_SHORT' && ds.score > 0) {
-                    aiBrain.think(`[${symbol}] PRE-FILTER: EARLY_SHORT but score positive (${ds.score}) — conflicting signals, skipping`, 'skip');
-                    marketState.lastAiCall = now;
-                    return;
-                }
-                if (mp.phase === 'CHOPPY' && Math.abs(ds.score) < 8) {
-                    aiBrain.think(`[${symbol}] PRE-FILTER: CHOPPY market with weak score (${ds.score}) — need ±8, skipping`, 'skip');
-                    marketState.lastAiCall = now;
-                    return;
-                }
             }
 
             if (marketState.lastStopLossTime && (now - marketState.lastStopLossTime < 120000)) {
@@ -937,18 +901,6 @@ async function processMarket(symbol) {
                 return;
             }
 
-            const mpPost = marketState.momentumPhase;
-            if (mpPost) {
-                if (decision.action === 'LONG' && mpPost.phase === 'EXHAUSTED_UP') {
-                    aiBrain.think(`[${symbol}] EXHAUSTION GATE BLOCKED LONG — ${mpPost.description}`, 'safety');
-                    return;
-                }
-                if (decision.action === 'SHORT' && mpPost.phase === 'EXHAUSTED_DOWN') {
-                    aiBrain.think(`[${symbol}] EXHAUSTION GATE BLOCKED SHORT — ${mpPost.description}`, 'safety');
-                    return;
-                }
-            }
-
             marketState.aiStopLoss = Math.min(Math.max(decision.stopLoss, 0.4), 1.0);
             marketState.aiTakeProfit = Math.max(decision.takeProfit, 0.8);
             if (marketState.aiTakeProfit < marketState.aiStopLoss * 2) {
@@ -1022,7 +974,7 @@ function generateDashboardHTML() {
     return `<!DOCTYPE html>
 <html>
 <head>
-    <title>AI Trading Bot v9 - GLM-4.7 Flash</title>
+    <title>AI Trading Bot v13 - GLM-4.7 Flash</title>
     <meta charset="UTF-8">
     <meta http-equiv="refresh" content="5">
     <style>
@@ -1066,8 +1018,8 @@ function generateDashboardHTML() {
 </head>
 <body>
     <div class="container">
-        <h1>AI Trading Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v12.1</span></h1>
-        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Selective AI Trading | v12.1</div>
+        <h1>AI Trading Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v13</span></h1>
+        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven Trading | v13</div>
         
         <div class="grid">
             <div class="card">
@@ -1347,7 +1299,7 @@ function startDashboard() {
 
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   AI TRADING BOT - GLM-4.7 Flash | v12.1');
+    log('   AI TRADING BOT - GLM-4.7 Flash | v13');
     log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);
