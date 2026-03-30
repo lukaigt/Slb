@@ -30,13 +30,13 @@ The bot includes a dark-theme web dashboard providing real-time monitoring and i
 
 ### Technical Implementations
 The core of the bot involves:
-- **AI Brain (`ai_brain.js`)**: Utilizes GLM-4.7-Flash via OpenRouter with a scalping-focused prompt. 1m chart is primary for entry timing, 5m confirms direction, 15m is background trend filter. AI targets 0.15% TP / 0.10% SL price moves. Temperature 0.2. Confidence threshold 0.75. SL clamped 0.08-0.15%, TP clamped 0.12-0.25%, max hold 2-30min.
+- **AI Brain (`ai_brain.js`)**: Utilizes GLM-4.7-Flash via OpenRouter with a scalping-focused prompt. 1m chart is primary for entry timing, 5m confirms direction, 15m is background trend filter. Fixed TP 0.15% / SL 0.10% price moves (AI decides direction only, not SL/TP). Temperature 0.2. Confidence threshold 0.75. Max hold 2-30min.
 - **Entry Flow (`index.js`)**: 1-minute cooldown after stop-loss exits (reduced from 2min). All other decisions made by AI. AI checked every 15 seconds per market. No R:R enforcement — scalping uses tight, asymmetric targets.
 - **Position Management**: 10-minute stagnation close (fee-adjusted P&L between -2.5% and +1.5% — accounts for 1.4% fee offset on flat trades). Hard TP close (no trailing — scalping takes profit immediately). Emergency circuit breaker at -20%. Max hold 30min default.
 - **Technical Indicators (`indicators.js`)**: 9 indicators (RSI, EMA, MACD, Bollinger Bands, ATR, Stochastic RSI, ADX) across 1-minute, 5-minute, and 15-minute timeframes. Support/Resistance Calculator with strength scoring. Candle Pattern Analyzer on 5-minute timeframe. Directional score and momentum phase detection (informational, not blocking).
 - **Safety Layer (`self_tuner.js`)**: Enforces critical safety rules that the AI cannot override: 10% daily loss limit, 4-consecutive-loss pause (only counts losses > 5% P&L as real losses), both resetting at midnight UTC.
 - **Data Flow**: Prices and orderbook data collected every 15 seconds. Indicators, S/R, and candle patterns computed frequently. AI called every 15 seconds per market when no position is open. Open positions monitored every 2 seconds.
-- **Trade Execution**: Uses Drift SDK for on-chain perpetual orders, supporting both simulation and live trading. Manages positions across all 3 markets simultaneously. Fees: 0.07% round trip (Drift Tier 1 taker). TP range 0.12-0.25%, SL range 0.08-0.15%.
+- **Trade Execution**: Uses Drift SDK for on-chain perpetual orders, supporting both simulation and live trading. Manages positions across all 3 markets simultaneously. Fees: 0.07% round trip (Drift Tier 1 taker). Fixed TP 0.15%, SL 0.10%.
 
 ### System Design Choices
 - **Scalping mode**: High frequency, small targets. ~$0.16 net profit per win on $10 bet at 20x with 0.07% fees. Needs ~68% win rate to be profitable.
@@ -47,7 +47,7 @@ The core of the bot involves:
 - **Robust Risk Management**: Circuit breaker, daily loss limits, consecutive loss pauses, post-stop-loss cooldown, stagnation close, stepped profit protection.
 
 ### Version History
-- **v14**: Scalping mode. TP 0.15%, SL 0.10%, AI every 15s, 10min stagnation close (±1%), 30min max hold, 1min SL cooldown, no cooldown after wins. Fee corrected to 0.07% (actual Drift Tier 1). Removed R:R enforcement. Scalping-focused AI prompt (1m primary, 5m confirms).
+- **v14**: Scalping mode. Fixed TP 0.15%, SL 0.10%. AI every 15s. 10min stagnation close (fee-adjusted P&L range -2.5% to +1.5%). 30min max hold. 1min SL cooldown, no cooldown after wins. Fee corrected to 0.07% (actual Drift Tier 1). Hard TP close (no trailing). Immediate re-evaluation after wins. Scalping-focused AI prompt (1m primary, 5m confirms).
 - **v13**: Rolled back to working entry logic. Removed all pre-filters except SL cooldown. Natural AI prompt instead of rigid checklist. Confidence 0.75. Added 30-min stagnation close. Kept all safety improvements.
 - **v12.1**: Loosened v12 pre-filters (ADX 15→10, CHOPPY ±12→±8, EARLY 0.10%→0.07%). Still too restrictive.
 - **v12**: Added structured 6-step AI checklist and hard pre-filters. Too strict — 8 hours zero trades.

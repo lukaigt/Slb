@@ -856,8 +856,8 @@ async function processMarket(symbol) {
                 return;
             }
 
-            marketState.aiStopLoss = Math.min(Math.max(decision.stopLoss, 0.08), 0.15);
-            marketState.aiTakeProfit = Math.min(Math.max(decision.takeProfit, 0.12), 0.25);
+            marketState.aiStopLoss = 0.10;
+            marketState.aiTakeProfit = 0.15;
             marketState.aiMaxHoldMinutes = decision.maxHoldMinutes;
             marketState.aiReason = decision.reason;
 

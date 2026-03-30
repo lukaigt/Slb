@@ -248,8 +248,8 @@ function parseAIResponse(raw) {
     decision.confidence = (typeof decision.confidence === 'number' && isFinite(decision.confidence)) ? decision.confidence : 0.5;
     decision.maxHoldMinutes = (typeof decision.maxHoldMinutes === 'number' && isFinite(decision.maxHoldMinutes)) ? decision.maxHoldMinutes : 10;
 
-    decision.stopLoss = Math.max(0.08, Math.min(0.15, decision.stopLoss));
-    decision.takeProfit = Math.max(0.12, Math.min(0.25, decision.takeProfit));
+    decision.stopLoss = 0.10;
+    decision.takeProfit = 0.15;
     decision.confidence = Math.max(0, Math.min(1, decision.confidence));
     decision.maxHoldMinutes = Math.max(2, Math.min(30, decision.maxHoldMinutes));
 
