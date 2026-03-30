@@ -698,8 +698,9 @@ async function processMarket(symbol) {
             }
 
             // 2. Stagnation Close (10 min going nowhere — scalping mode)
-            if (holdMin >= 10 && pnl > -1.0 && pnl < 1.0) {
-                aiBrain.think(`[${symbol}] STAGNATION CLOSE: Trade going nowhere for 10min (P&L: ${pnl.toFixed(1)}%) — cutting dead wood`, 'exit');
+            const rawPnl = priceMovePct * CONFIG.LEVERAGE;
+            if (holdMin >= 10 && rawPnl > -1.0 && rawPnl < 1.0) {
+                aiBrain.think(`[${symbol}] STAGNATION CLOSE: Trade going nowhere for 10min (raw P&L: ${rawPnl.toFixed(1)}%) — cutting dead wood`, 'exit');
                 await closePosition('stagnation', marketState, marketConfig, symbol);
                 return;
             }

@@ -18,7 +18,7 @@ CRITICAL FACTS:
 - Fees: 0.07% round trip (= 1.4% P&L at 20x). You need >0.07% price move to profit.
 - Markets: SOL-PERP, BTC-PERP, ETH-PERP perpetual futures.
 - Your stopLoss/takeProfit are PRICE MOVE %, not P&L %. System multiplies by leverage.
-- Target: 0.15% TP (= ~1.6% net P&L after fees), 0.10% SL (= ~0.6% net loss after fees).
+- Target: 0.15% TP (= ~1.6% net P&L after fees), 0.10% SL (= ~3.4% net loss after fees).
 - You can trade all 3 markets simultaneously. Each decision is independent.
 
 SCALPING RULES:
