@@ -28,7 +28,7 @@ const CONFIG = {
     TRADE_AMOUNT_USDC: parseFloat(process.env.TRADE_AMOUNT_USDC) || 10,
     SIMULATION_MODE: process.env.SIMULATION_MODE === 'true' || process.env.SIMULATION_MODE === '1',
     // COOLDOWN REMOVED - AI and safety layer handle trade frequency
-    AI_INTERVAL_MS: parseInt(process.env.AI_INTERVAL_MS) || 30000,
+    AI_INTERVAL_MS: parseInt(process.env.AI_INTERVAL_MS) || 15000,
     CHECK_INTERVAL_MS: parseInt(process.env.CHECK_INTERVAL_MS) || 15000,
     DLOB_URL: 'https://dlob.drift.trade',
     DASHBOARD_PORT: parseInt(process.env.DASHBOARD_PORT) || 3000,
@@ -350,7 +350,7 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
     }
     let profitPercent = priceMove * CONFIG.LEVERAGE;
 
-    const ROUND_TRIP_FEE_PCT = 0.1;
+    const ROUND_TRIP_FEE_PCT = 0.07;
     profitPercent -= (ROUND_TRIP_FEE_PCT * CONFIG.LEVERAGE);
 
     if (Math.abs(profitPercent) > 500) {
@@ -612,10 +612,10 @@ function checkMaxHoldTime(marketState, symbol) {
     const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
     if (!pos || !marketState.entryTime) return false;
 
-    const maxHold = (marketState.aiMaxHoldMinutes || 120) * 60 * 1000;
+    const maxHold = (marketState.aiMaxHoldMinutes || 30) * 60 * 1000;
     if (Date.now() - marketState.entryTime > maxHold) {
-        log(`[${symbol}] MAX HOLD TIME reached (${marketState.aiMaxHoldMinutes || 120} min)`);
-        aiBrain.think(`[${symbol}] Max hold time expired (${marketState.aiMaxHoldMinutes || 120} min) - closing position`, 'exit');
+        log(`[${symbol}] MAX HOLD TIME reached (${marketState.aiMaxHoldMinutes || 30} min)`);
+        aiBrain.think(`[${symbol}] Max hold time expired (${marketState.aiMaxHoldMinutes || 30} min) - closing position`, 'exit');
         return true;
     }
     return false;
@@ -719,20 +719,20 @@ async function processMarket(symbol) {
                 if (!marketState.entryTime) marketState.entryTime = Date.now();
             }
             if (marketState.aiStopLoss == null) {
-                marketState.aiStopLoss = 1.0;
-                aiBrain.think(`[${symbol}] Emergency SL assigned: 1.0% (position had no stop loss)`, 'safety');
+                marketState.aiStopLoss = 0.10;
+                aiBrain.think(`[${symbol}] Emergency SL assigned: 0.10% (position had no stop loss)`, 'safety');
             }
             if (marketState.aiTakeProfit == null) {
-                marketState.aiTakeProfit = 1.5;
-                aiBrain.think(`[${symbol}] Emergency TP assigned: 1.5% (position had no take profit)`, 'safety');
+                marketState.aiTakeProfit = 0.15;
+                aiBrain.think(`[${symbol}] Emergency TP assigned: 0.15% (position had no take profit)`, 'safety');
             }
             if (marketState.aiMaxHoldMinutes == null) {
-                marketState.aiMaxHoldMinutes = 120;
+                marketState.aiMaxHoldMinutes = 30;
             }
             const priceMovePct = pos === 'LONG'
                 ? ((price - marketState.entryPrice) / marketState.entryPrice * 100)
                 : ((marketState.entryPrice - price) / marketState.entryPrice * 100);
-            let pnl = (priceMovePct * CONFIG.LEVERAGE) - (0.1 * CONFIG.LEVERAGE);
+            let pnl = (priceMovePct * CONFIG.LEVERAGE) - (0.07 * CONFIG.LEVERAGE);
             if (Math.abs(pnl) > 500) {
                 aiBrain.think(`[${symbol}] BROKEN POSITION: P&L shows ${pnl.toFixed(0)}% — entry price corrupted. Force closing to prevent further loss.`, 'safety');
                 await closePosition('broken_entry_price', marketState, marketConfig, symbol);
@@ -776,9 +776,10 @@ async function processMarket(symbol) {
                 }
             }
 
-            // 3. Stagnation Close (30 min going nowhere)
-            if (holdMin >= 30 && pnl > -2.0 && pnl < 2.0) {
-                aiBrain.think(`[${symbol}] STAGNATION CLOSE: Trade going nowhere for 30min (P&L: ${pnl.toFixed(1)}%) — cutting dead wood`, 'exit');
+            // 3. Stagnation Close (10 min going nowhere — scalping mode)
+            // Fee-adjusted: flat trade = -1.4% P&L (just fees), so range must be wider
+            if (holdMin >= 10 && pnl > -2.5 && pnl < 1.5) {
+                aiBrain.think(`[${symbol}] STAGNATION CLOSE: Trade going nowhere for 10min (P&L: ${pnl.toFixed(1)}%) — cutting dead wood`, 'exit');
                 await closePosition('stagnation', marketState, marketConfig, symbol);
                 return;
             }
@@ -815,8 +816,8 @@ async function processMarket(symbol) {
                 return;
             }
 
-            if (marketState.lastStopLossTime && (now - marketState.lastStopLossTime < 120000)) {
-                const waitSec = Math.round((120000 - (now - marketState.lastStopLossTime)) / 1000);
+            if (marketState.lastStopLossTime && (now - marketState.lastStopLossTime < 60000)) {
+                const waitSec = Math.round((60000 - (now - marketState.lastStopLossTime)) / 1000);
                 aiBrain.think(`[${symbol}] PRE-FILTER: Cooldown after stop loss — ${waitSec}s remaining`, 'skip');
                 marketState.lastAiCall = now;
                 return;
@@ -837,7 +838,7 @@ async function processMarket(symbol) {
                         symbol: otherSymbol,
                         direction: otherPos,
                         entryPrice: otherMs.entryPrice,
-                        pnl: (pm * CONFIG.LEVERAGE) - (0.1 * CONFIG.LEVERAGE)
+                        pnl: (pm * CONFIG.LEVERAGE) - (0.07 * CONFIG.LEVERAGE)
                     });
                 }
             }
@@ -901,11 +902,8 @@ async function processMarket(symbol) {
                 return;
             }
 
-            marketState.aiStopLoss = Math.min(Math.max(decision.stopLoss, 0.4), 1.0);
-            marketState.aiTakeProfit = Math.max(decision.takeProfit, 0.8);
-            if (marketState.aiTakeProfit < marketState.aiStopLoss * 2) {
-                marketState.aiTakeProfit = marketState.aiStopLoss * 2;
-            }
+            marketState.aiStopLoss = Math.min(Math.max(decision.stopLoss, 0.08), 0.15);
+            marketState.aiTakeProfit = Math.min(Math.max(decision.takeProfit, 0.12), 0.25);
             marketState.aiMaxHoldMinutes = decision.maxHoldMinutes;
             marketState.aiReason = decision.reason;
 
@@ -974,7 +972,7 @@ function generateDashboardHTML() {
     return `<!DOCTYPE html>
 <html>
 <head>
-    <title>AI Trading Bot v13 - GLM-4.7 Flash</title>
+    <title>AI Scalping Bot v14 - GLM-4.7 Flash</title>
     <meta charset="UTF-8">
     <meta http-equiv="refresh" content="5">
     <style>
@@ -1018,8 +1016,8 @@ function generateDashboardHTML() {
 </head>
 <body>
     <div class="container">
-        <h1>AI Trading Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v13</span></h1>
-        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven Trading | v13</div>
+        <h1>AI Scalping Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v14</span></h1>
+        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Scalping Mode | v14 | TP: 0.15% SL: 0.10% | Fee: 0.07%</div>
         
         <div class="grid">
             <div class="card">
@@ -1299,8 +1297,8 @@ function startDashboard() {
 
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   AI TRADING BOT - GLM-4.7 Flash | v13');
-    log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | AI-Driven`);
+    log('   AI SCALPING BOT - GLM-4.7 Flash | v14');
+    log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Scalping Mode`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);
     log(`Leverage: ${CONFIG.LEVERAGE}x`);
