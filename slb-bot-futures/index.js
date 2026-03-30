@@ -443,6 +443,11 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
     safety.recordTradeResult(profitPercent, result === 'WIN');
 
     resetPositionState(marketState);
+
+    if (result === 'WIN') {
+        marketState.lastAiCall = 0;
+    }
+
     return true;
 }
 
@@ -549,60 +554,18 @@ function checkTakeProfit(currentPrice, marketState, symbol) {
     if (pos === 'LONG') {
         const priceMove = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
         const pnlPercent = priceMove * leverage;
-        if (currentPrice > marketState.highestPriceSinceEntry) marketState.highestPriceSinceEntry = currentPrice;
-
         if (marketState.aiTakeProfit && priceMove >= marketState.aiTakeProfit) {
-            if (!marketState.trailingStopActive) {
-                aiBrain.think(`[${symbol}] TRAILING ACTIVATED (AI TP hit) | P&L: ${pnlPercent.toFixed(1)}%`, 'exit');
-            }
-            marketState.trailingStopActive = true;
-        }
-        if (pnlPercent >= 10 && priceMove >= PROFIT_PROTECTION_FLOOR) {
-            if (!marketState.trailingStopActive) {
-                aiBrain.think(`[${symbol}] TRAILING ACTIVATED (Profit Floor) | P&L: ${pnlPercent.toFixed(1)}%`, 'exit');
-            }
-            marketState.trailingStopActive = true;
-        }
-
-        if (marketState.trailingStopActive) {
-            const peakPriceMove = ((marketState.highestPriceSinceEntry - marketState.entryPrice) / marketState.entryPrice) * 100;
-            const peakPnl = peakPriceMove * leverage;
-            const trailingDistance = getSteppedTrailingDistance(peakPnl);
-            const dropFromHigh = ((marketState.highestPriceSinceEntry - currentPrice) / marketState.highestPriceSinceEntry) * 100;
-            if (dropFromHigh >= trailingDistance) {
-                log(`[${symbol}] TRAILING TP (LONG): P&L=${pnlPercent.toFixed(1)}% | PeakP&L=${peakPnl.toFixed(1)}% | Trail=${trailingDistance}%`);
-                aiBrain.think(`[${symbol}] TRAILING TP on LONG | P&L: ${pnlPercent.toFixed(1)}% | Peak P&L: ${peakPnl.toFixed(1)}% | Trail: ${trailingDistance}%`, 'exit');
-                return true;
-            }
+            log(`[${symbol}] TAKE PROFIT (LONG): price moved +${priceMove.toFixed(3)}% | TP: ${marketState.aiTakeProfit}% | P&L: ${pnlPercent.toFixed(1)}%`);
+            aiBrain.think(`[${symbol}] TP HIT on LONG | Price move: +${priceMove.toFixed(3)}% | P&L: ${pnlPercent.toFixed(1)}%`, 'exit');
+            return true;
         }
     } else if (pos === 'SHORT') {
         const priceMove = ((marketState.entryPrice - currentPrice) / marketState.entryPrice) * 100;
         const pnlPercent = priceMove * leverage;
-        if (currentPrice < marketState.lowestPriceSinceEntry) marketState.lowestPriceSinceEntry = currentPrice;
-
         if (marketState.aiTakeProfit && priceMove >= marketState.aiTakeProfit) {
-            if (!marketState.trailingStopActive) {
-                aiBrain.think(`[${symbol}] TRAILING ACTIVATED (AI TP hit) | P&L: ${pnlPercent.toFixed(1)}%`, 'exit');
-            }
-            marketState.trailingStopActive = true;
-        }
-        if (pnlPercent >= 10 && priceMove >= PROFIT_PROTECTION_FLOOR) {
-            if (!marketState.trailingStopActive) {
-                aiBrain.think(`[${symbol}] TRAILING ACTIVATED (Profit Floor) | P&L: ${pnlPercent.toFixed(1)}%`, 'exit');
-            }
-            marketState.trailingStopActive = true;
-        }
-
-        if (marketState.trailingStopActive) {
-            const peakPriceMove = ((marketState.entryPrice - marketState.lowestPriceSinceEntry) / marketState.entryPrice) * 100;
-            const peakPnl = peakPriceMove * leverage;
-            const trailingDistance = getSteppedTrailingDistance(peakPnl);
-            const riseFromLow = ((currentPrice - marketState.lowestPriceSinceEntry) / marketState.lowestPriceSinceEntry) * 100;
-            if (riseFromLow >= trailingDistance) {
-                log(`[${symbol}] TRAILING TP (SHORT): P&L=${pnlPercent.toFixed(1)}% | PeakP&L=${peakPnl.toFixed(1)}% | Trail=${trailingDistance}%`);
-                aiBrain.think(`[${symbol}] TRAILING TP on SHORT | P&L: ${pnlPercent.toFixed(1)}% | Peak P&L: ${peakPnl.toFixed(1)}% | Trail: ${trailingDistance}%`, 'exit');
-                return true;
-            }
+            log(`[${symbol}] TAKE PROFIT (SHORT): price moved +${priceMove.toFixed(3)}% | TP: ${marketState.aiTakeProfit}% | P&L: ${pnlPercent.toFixed(1)}%`);
+            aiBrain.think(`[${symbol}] TP HIT on SHORT | Price move: +${priceMove.toFixed(3)}% | P&L: ${pnlPercent.toFixed(1)}%`, 'exit');
+            return true;
         }
     }
     return false;
@@ -791,7 +754,7 @@ async function processMarket(symbol) {
                 return;
             }
             if (checkTakeProfit(price, marketState, symbol)) {
-                await closePosition('trailing_tp', marketState, marketConfig, symbol);
+                await closePosition('take_profit', marketState, marketConfig, symbol);
                 return;
             }
             if (checkMaxHoldTime(marketState, symbol)) {
@@ -1031,6 +994,11 @@ function generateDashboardHTML() {
                 <div class="stat-row"><span class="stat-label">AI Model</span><span class="stat-value" style="color: #ff00ff;">GLM-4.7-Flash</span></div>
                 <div class="stat-row"><span class="stat-label">AI Interval</span><span class="stat-value">${CONFIG.AI_INTERVAL_MS / 1000}s</span></div>
                 <div class="stat-row"><span class="stat-label">Min Confidence</span><span class="stat-value">${(CONFIG.MIN_CONFIDENCE * 100).toFixed(0)}%</span></div>
+                <div class="stat-row"><span class="stat-label">Target TP / SL</span><span class="stat-value" style="color: #3fb950;">0.15% / 0.10%</span></div>
+                <div class="stat-row"><span class="stat-label">Round-Trip Fee</span><span class="stat-value">0.07%</span></div>
+                <div class="stat-row"><span class="stat-label">SL Cooldown</span><span class="stat-value">60s</span></div>
+                <div class="stat-row"><span class="stat-label">Stagnation Close</span><span class="stat-value">10min</span></div>
+                <div class="stat-row"><span class="stat-label">Max Hold</span><span class="stat-value">30min</span></div>
             </div>
 
             <div class="card">
