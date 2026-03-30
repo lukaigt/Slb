@@ -516,12 +516,7 @@ function checkStopLoss(currentPrice, marketState, symbol) {
 
     const priceMovePercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
 
-    let slThreshold;
-    if (marketState.aiStopLoss > 0) {
-        slThreshold = marketState.aiStopLoss * 0.90;
-    } else {
-        slThreshold = marketState.aiStopLoss;
-    }
+    const slThreshold = marketState.aiStopLoss;
 
     if (pos === 'LONG' && priceMovePercent <= -slThreshold) {
         log(`[${symbol}] STOP LOSS (LONG): price moved ${priceMovePercent.toFixed(2)}% | SL: ${marketState.aiStopLoss}% | Threshold: ${slThreshold.toFixed(3)}%`);
@@ -731,8 +726,7 @@ async function processMarket(symbol) {
             }
 
             // 3. Stagnation Close (10 min going nowhere — scalping mode)
-            // Fee-adjusted: flat trade = -1.4% P&L (just fees), so range must be wider
-            if (holdMin >= 10 && pnl > -2.5 && pnl < 1.5) {
+            if (holdMin >= 10 && pnl > -1.0 && pnl < 1.0) {
                 aiBrain.think(`[${symbol}] STAGNATION CLOSE: Trade going nowhere for 10min (P&L: ${pnl.toFixed(1)}%) — cutting dead wood`, 'exit');
                 await closePosition('stagnation', marketState, marketConfig, symbol);
                 return;
