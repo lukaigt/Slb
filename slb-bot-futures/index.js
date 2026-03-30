@@ -536,15 +536,6 @@ function checkStopLoss(currentPrice, marketState, symbol) {
     return false;
 }
 
-const PROFIT_PROTECTION_FLOOR = 0.5;
-
-function getSteppedTrailingDistance(pnlPercent) {
-    if (pnlPercent >= 50) return 0.20;
-    if (pnlPercent >= 30) return 0.30;
-    if (pnlPercent >= 15) return 0.40;
-    return 0.50;
-}
-
 function checkTakeProfit(currentPrice, marketState, symbol) {
     const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
     if (!pos || !marketState.entryPrice || marketState.entryPrice <= 0) return false;
