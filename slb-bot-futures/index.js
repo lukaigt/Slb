@@ -1321,7 +1321,7 @@ async function main() {
             tradeMemory.sessionStats.startTime = new Date().toISOString();
         }
 
-        log('Starting trading loop (rule-based signals)...');
+        log('Starting trading loop (AI scalping mode)...');
         async function dynamicLoop() {
             await tradingLoop();
             const hasPos = ACTIVE_MARKETS.some(s => {
