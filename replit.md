@@ -44,7 +44,7 @@ The core of the bot involves:
 - **Fast cycles**: 15s AI interval, 1min SL cooldown, 10min stagnation close, 30min max hold. Immediate re-entry after wins.
 - **Multi-market capability**: Trades SOL-PERP, BTC-PERP, and ETH-PERP concurrently.
 - **Real-time Monitoring**: Dashboard provides full transparency with interactive control buttons.
-- **Robust Risk Management**: Circuit breaker, daily loss limits, consecutive loss pauses, post-stop-loss cooldown, stagnation close, stepped profit protection.
+- **Robust Risk Management**: Circuit breaker, daily loss limits, consecutive loss pauses, post-stop-loss cooldown, stagnation close.
 
 ### Version History
 - **v14**: Scalping mode. Fixed TP 0.15%, SL 0.10%. AI every 15s. 10min stagnation close (P&L ±1%). 30min max hold. 1min SL cooldown, no cooldown after wins. Fee corrected to 0.07% (actual Drift Tier 1). Hard TP close (no trailing). Immediate re-evaluation after wins. SL triggers at exact value (no 0.90 multiplier). Scalping-focused AI prompt (1m primary, 5m confirms).

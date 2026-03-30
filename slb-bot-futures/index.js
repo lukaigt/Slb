@@ -697,35 +697,7 @@ async function processMarket(symbol) {
                 return;
             }
 
-            // 2. Stepped Profit Protection
-            if (marketState.aiStopLoss !== null) {
-                const leverage = CONFIG.LEVERAGE;
-                let newSLPriceMove = null;
-                let lockLabel = '';
-                if (pnl >= 40) {
-                    newSLPriceMove = 25 / leverage;
-                    lockLabel = '+40% P&L → locking +25%';
-                } else if (pnl >= 25) {
-                    newSLPriceMove = 12 / leverage;
-                    lockLabel = '+25% P&L → locking +12%';
-                } else if (pnl >= 15) {
-                    newSLPriceMove = 5 / leverage;
-                    lockLabel = '+15% P&L → locking +5%';
-                } else if (pnl >= 8) {
-                    newSLPriceMove = 0;
-                    lockLabel = '+8% P&L → breakeven';
-                }
-                if (newSLPriceMove !== null) {
-                    const currentSLasProfit = -marketState.aiStopLoss * leverage;
-                    const newSLasProfit = newSLPriceMove * leverage;
-                    if (newSLasProfit > currentSLasProfit) {
-                        log(`[${symbol}] PROFIT LOCK: ${lockLabel} (SL moved from ${marketState.aiStopLoss.toFixed(3)}% to -${newSLPriceMove.toFixed(3)}% price move)`);
-                        marketState.aiStopLoss = -newSLPriceMove;
-                    }
-                }
-            }
-
-            // 3. Stagnation Close (10 min going nowhere — scalping mode)
+            // 2. Stagnation Close (10 min going nowhere — scalping mode)
             if (holdMin >= 10 && pnl > -1.0 && pnl < 1.0) {
                 aiBrain.think(`[${symbol}] STAGNATION CLOSE: Trade going nowhere for 10min (P&L: ${pnl.toFixed(1)}%) — cutting dead wood`, 'exit');
                 await closePosition('stagnation', marketState, marketConfig, symbol);
@@ -1028,7 +1000,7 @@ function generateDashboardHTML() {
                                 <td class="${(m.imbalance || 0) > 0 ? 'positive' : 'negative'}">${((m.imbalance || 0) * 100).toFixed(1)}%</td>
                                 <td class="${pos === 'LONG' ? 'positive' : pos === 'SHORT' ? 'negative' : ''}">${pos || 'NONE'}</td>
                                 <td class="${pnlVal >= 0 ? 'positive' : 'negative'}">${pos ? pnlVal.toFixed(2) + '%' : '-'}</td>
-                                <td>${pos && ms.aiStopLoss != null ? ms.aiStopLoss.toFixed(1) + '/' + (ms.aiTakeProfit != null ? ms.aiTakeProfit.toFixed(1) : '?') : (pos ? 'synced' : '-')}</td>
+                                <td>${pos && ms.aiStopLoss != null ? ms.aiStopLoss.toFixed(2) + '/' + (ms.aiTakeProfit != null ? ms.aiTakeProfit.toFixed(2) : '?') : (pos ? 'synced' : '-')}</td>
                                 <td>${holdMin}</td>
                             </tr>`;
                         }).join('')}
