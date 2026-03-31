@@ -18,6 +18,7 @@ const http = require('http');
 const aiBrain = require('./ai_brain');
 const safety = require('./self_tuner');
 const indicators = require('./indicators');
+const signalEngine = require('./signal_engine');
 
 dotenv.config();
 
@@ -96,7 +97,8 @@ let tradeMemory = {
         wins: 0,
         losses: 0,
         totalProfitPercent: 0
-    }
+    },
+    signalStats: {}
 };
 let botStatus = {
     running: false,
@@ -132,9 +134,10 @@ function loadMemory() {
                 trades: loaded.trades || [],
                 sessionStats: loaded.sessionStats || {
                     startTime: null, totalTrades: 0, wins: 0, losses: 0, totalProfitPercent: 0
-                }
+                },
+                signalStats: loaded.signalStats || {}
             };
-            log(`Memory loaded: ${tradeMemory.trades.length} trades`);
+            log(`Memory loaded: ${tradeMemory.trades.length} trades, ${Object.keys(tradeMemory.signalStats).length} signal stats`);
         } else {
             log('No memory file found, starting fresh');
             tradeMemory.sessionStats.startTime = new Date().toISOString();
@@ -427,11 +430,21 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
         aiStopLoss: marketState.aiStopLoss,
         aiTakeProfit: marketState.aiTakeProfit,
         aiReason: marketState.aiReason,
+        triggerSignals: marketState.triggerSignals || [],
         simulated: CONFIG.SIMULATION_MODE,
         entrySnapshot: marketState.entrySnapshot || null,
         exitSnapshot,
         lesson
     };
+
+    if (trade.triggerSignals.length > 0) {
+        if (!tradeMemory.signalStats) tradeMemory.signalStats = {};
+        for (const sig of trade.triggerSignals) {
+            if (!tradeMemory.signalStats[sig]) tradeMemory.signalStats[sig] = { wins: 0, losses: 0 };
+            if (result === 'WIN') tradeMemory.signalStats[sig].wins++;
+            else tradeMemory.signalStats[sig].losses++;
+        }
+    }
     tradeMemory.trades.push(trade);
     tradeMemory.sessionStats.totalTrades++;
     if (result === 'WIN') tradeMemory.sessionStats.wins++;
@@ -468,6 +481,7 @@ function resetPositionState(marketState) {
     marketState.aiMaxHoldMinutes = null;
     marketState.aiReason = null;
     marketState.entrySnapshot = null;
+    marketState.triggerSignals = [];
 }
 
 async function syncPositionFromChain(marketState, marketConfig, symbol) {
@@ -737,8 +751,8 @@ async function processMarket(symbol) {
                 return;
             }
 
-            if (marketState.prices.length < 5) {
-                log(`[${symbol}] Building price history... ${marketState.prices.length}/5`);
+            if (marketState.prices.length < 20) {
+                log(`[${symbol}] Building price history... ${marketState.prices.length}/20`);
                 return;
             }
 
@@ -750,97 +764,30 @@ async function processMarket(symbol) {
 
             if (marketState.lastStopLossTime && (now - marketState.lastStopLossTime < 60000)) {
                 const waitSec = Math.round((60000 - (now - marketState.lastStopLossTime)) / 1000);
-                aiBrain.think(`[${symbol}] PRE-FILTER: Cooldown after stop loss — ${waitSec}s remaining`, 'skip');
+                aiBrain.think(`[${symbol}] COOLDOWN: ${waitSec}s remaining after stop loss`, 'skip');
                 marketState.lastAiCall = now;
                 return;
             }
 
             marketState.lastAiCall = now;
 
-            const otherPositions = [];
-            for (const otherSymbol of ACTIVE_MARKETS) {
-                if (otherSymbol === symbol) continue;
-                const otherMs = marketStates[otherSymbol];
-                const otherPos = CONFIG.SIMULATION_MODE ? otherMs.simulatedPosition : otherMs.currentPosition;
-                if (otherPos && otherMs.entryPrice > 0 && otherMs.lastPrice > 0) {
-                    const pm = otherPos === 'LONG'
-                        ? ((otherMs.lastPrice - otherMs.entryPrice) / otherMs.entryPrice * 100)
-                        : ((otherMs.entryPrice - otherMs.lastPrice) / otherMs.entryPrice * 100);
-                    otherPositions.push({
-                        symbol: otherSymbol,
-                        direction: otherPos,
-                        entryPrice: otherMs.entryPrice,
-                        pnl: (pm * CONFIG.LEVERAGE) - (0.07 * CONFIG.LEVERAGE)
-                    });
-                }
-            }
+            const signal = signalEngine.evaluateSignals(marketState);
 
-            const safetyStatus = safety.getStatus();
-            const dailyContext = {
-                dailyPnl: safetyStatus.dailyPnl,
-                dailyTrades: safetyStatus.dailyTrades,
-                dailyWins: safetyStatus.dailyWins,
-                dailyLosses: safetyStatus.dailyLosses,
-                dailyWinRate: safetyStatus.dailyWinRate,
-                consecutiveLosses: safetyStatus.consecutiveLosses
-            };
-
-            const btcTrend = marketStates['BTC-PERP'] ? marketStates['BTC-PERP'].trend : null;
-
-            const allPrices = marketState.prices;
-            const currentP = allPrices[allPrices.length - 1];
-            function getPriceChange(samplesBack) {
-                if (allPrices.length < samplesBack) return null;
-                const oldP = allPrices[allPrices.length - samplesBack];
-                return ((currentP - oldP) / oldP) * 100;
-            }
-            const priceChanges = {
-                '1min': getPriceChange(4),
-                '5min': getPriceChange(20),
-                '10min': getPriceChange(40),
-                '15min': getPriceChange(60),
-                '30min': getPriceChange(120),
-                '1hr': getPriceChange(240)
-            };
-
-            const marketData = {
-                symbol,
-                price,
-                trend: marketState.trend,
-                imbalance,
-                volatility: marketState.volatility,
-                priceChanges,
-                directionalScore: marketState.directionalScore,
-                momentumPhase: marketState.momentumPhase,
-                indicators1m: marketState.indicators1m,
-                indicators5m: marketState.indicators5m,
-                indicators15m: marketState.indicators15m,
-                supportResistance: marketState.supportResistance,
-                candlePatterns: marketState.candlePatterns,
-                otherPositions,
-                dailyContext,
-                btcTrend
-            };
-
-            const decision = await aiBrain.askBrain(marketData, tradeMemory.trades);
-
-            if (decision.action === 'WAIT') {
-                aiBrain.think(`[${symbol}] AI: WAIT - ${decision.reason}`, 'scan');
-                return;
-            }
-
-            if (decision.confidence < CONFIG.MIN_CONFIDENCE) {
-                aiBrain.think(`[${symbol}] AI confidence too low (${(decision.confidence * 100).toFixed(0)}% < ${(CONFIG.MIN_CONFIDENCE * 100).toFixed(0)}%) - skipping`, 'skip');
+            if (signal.action === 'WAIT') {
+                aiBrain.think(`[${symbol}] SIGNAL: WAIT — ${signal.failReason} | L:${signal.longScore} S:${signal.shortScore}`, 'scan');
                 return;
             }
 
             marketState.aiStopLoss = 0.25;
             marketState.aiTakeProfit = 0.30;
-            marketState.aiMaxHoldMinutes = decision.maxHoldMinutes;
-            marketState.aiReason = decision.reason;
+            marketState.aiMaxHoldMinutes = 30;
+            marketState.aiReason = signal.reason;
+            marketState.triggerSignals = Object.entries(signal.signals)
+                .filter(([, dir]) => dir === signal.direction)
+                .map(([sig]) => sig);
 
-            aiBrain.think(`[${symbol}] EXECUTING ${decision.action} | SL: ${decision.stopLoss.toFixed(2)}% | TP: ${decision.takeProfit.toFixed(2)}% | Conf: ${(decision.confidence * 100).toFixed(0)}% | Hold: ${decision.maxHoldMinutes}min | ${decision.reason}`, 'entry');
-            await openPosition(decision.action, marketState, marketConfig, symbol);
+            aiBrain.think(`[${symbol}] ENTRY ${signal.action} | Score: ${Math.max(signal.longScore, signal.shortScore)}/${signal.totalSignals} | SL: 0.25% | TP: 0.30% | ${signal.reason}`, 'entry');
+            await openPosition(signal.action, marketState, marketConfig, symbol);
         }
     } catch (error) {
         log(`[${symbol}] Error: ${error.message}`);
@@ -904,7 +851,7 @@ function generateDashboardHTML() {
     return `<!DOCTYPE html>
 <html>
 <head>
-    <title>AI Scalping Bot v14 - GLM-4.7 Flash</title>
+    <title>Scalping Bot v15 - Signal Engine</title>
     <meta charset="UTF-8">
     <meta http-equiv="refresh" content="5">
     <style>
@@ -948,8 +895,8 @@ function generateDashboardHTML() {
 </head>
 <body>
     <div class="container">
-        <h1>AI Scalping Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v14.1</span></h1>
-        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Scalping Mode | v14.1 | TP: 0.30% SL: 0.25% | Fee: 0.07%</div>
+        <h1>Scalping Bot - Signal Engine <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v15</span></h1>
+        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Rule-Based Scalping | v15 | TP: 0.30% SL: 0.25% | Fee: 0.07% | No AI — Pure Signals</div>
         
         <div class="grid">
             <div class="card">
@@ -960,9 +907,9 @@ function generateDashboardHTML() {
                 <div class="stat-row"><span class="stat-label"><span class="health-dot ${botStatus.driftConnected ? 'health-green' : 'health-red'}"></span>Drift</span><span class="stat-value">${botStatus.driftConnected ? 'OK' : 'DOWN'}</span></div>
                 <div class="stat-row"><span class="stat-label"><span class="health-dot ${anyDlobConnected ? 'health-green' : 'health-red'}"></span>DLOB</span><span class="stat-value">${anyDlobConnected ? 'OK' : 'DOWN'}</span></div>
                 <div class="stat-row"><span class="stat-label">Mode</span><span>${CONFIG.SIMULATION_MODE ? '<span class="sim-mode">SIMULATION</span>' : '<span class="live-mode">LIVE</span>'} ${safetyStatus.paused ? '<span class="paused-badge">PAUSED</span>' : ''}</span></div>
-                <div class="stat-row"><span class="stat-label">AI Model</span><span class="stat-value" style="color: #ff00ff;">GLM-4.7-Flash</span></div>
-                <div class="stat-row"><span class="stat-label">AI Interval</span><span class="stat-value">${CONFIG.AI_INTERVAL_MS / 1000}s</span></div>
-                <div class="stat-row"><span class="stat-label">Min Confidence</span><span class="stat-value">${(CONFIG.MIN_CONFIDENCE * 100).toFixed(0)}%</span></div>
+                <div class="stat-row"><span class="stat-label">Engine</span><span class="stat-value" style="color: #ff00ff;">Signal Scoring</span></div>
+                <div class="stat-row"><span class="stat-label">Check Interval</span><span class="stat-value">${CONFIG.AI_INTERVAL_MS / 1000}s</span></div>
+                <div class="stat-row"><span class="stat-label">Min Signals</span><span class="stat-value">4 of 9</span></div>
                 <div class="stat-row"><span class="stat-label">Target TP / SL</span><span class="stat-value" style="color: #3fb950;">0.30% / 0.25%</span></div>
                 <div class="stat-row"><span class="stat-label">Round-Trip Fee</span><span class="stat-value">0.07%</span></div>
                 <div class="stat-row"><span class="stat-label">SL Cooldown</span><span class="stat-value">60s</span></div>
@@ -1023,7 +970,7 @@ function generateDashboardHTML() {
 
         <div class="grid">
             <div class="card full-width">
-                <h2>Technical Indicators (What AI Sees)</h2>
+                <h2>Technical Indicators</h2>
                 <table>
                     <thead><tr><th>Market</th><th>TF</th><th>RSI</th><th>EMA 9/21</th><th>MACD</th><th>BB Position</th><th>ATR</th><th>StochRSI</th><th>ADX</th><th>Data</th></tr></thead>
                     <tbody>
@@ -1123,7 +1070,7 @@ function generateDashboardHTML() {
 
         <div class="grid">
             <div class="card full-width">
-                <h2>AI Brain - Live Decisions</h2>
+                <h2>Signal Engine - Live Decisions</h2>
                 <div style="max-height: 400px; overflow-y: auto;">
                     ${brainLog.slice(0, 50).map(t => {
                         const color = categoryColors[t.category] || '#888';
@@ -1132,29 +1079,80 @@ function generateDashboardHTML() {
                             <span style="color: ${color}; font-weight: 600; text-transform: uppercase; font-size: 0.75em;">[${t.category}]</span>
                             ${t.message}
                         </div>`;
-                    }).join('') || '<div style="color: #484f58; padding: 20px; text-align: center;">Waiting for AI decisions...</div>'}
+                    }).join('') || '<div style="color: #484f58; padding: 20px; text-align: center;">Waiting for signal decisions...</div>'}
                 </div>
             </div>
         </div>
 
         <div class="grid">
             <div class="card full-width">
-                <h2>Recent Trades</h2>
+                <h2>Signal Performance Tracker</h2>
+                <p style="color: #8b949e; font-size: 0.85em; margin-bottom: 12px;">Which signals are winning and losing? Tracks every signal that triggered an entry.</p>
                 <table>
-                    <tr><th>Time</th><th>Market</th><th>Direction</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Exit Reason</th><th>Hold</th><th>AI SL/TP</th><th>AI Reasoning</th></tr>
-                    ${recentTrades.map(t => `<tr>
-                        <td style="font-size:0.8em;">${new Date(t.timestamp).toLocaleTimeString()}</td>
-                        <td>${t.symbol}</td>
-                        <td class="${t.direction === 'LONG' ? 'positive' : 'negative'}">${t.direction}</td>
-                        <td>$${(t.entryPrice || 0).toFixed(2)}</td>
-                        <td>$${(t.exitPrice || 0).toFixed(2)}</td>
-                        <td class="${t.profitPercent >= 0 ? 'positive' : 'negative'}">${t.profitPercent >= 0 ? '+' : ''}${t.profitPercent.toFixed(2)}%</td>
-                        <td>${t.exitReason}</td>
-                        <td>${t.holdTimeMin || '?'}m</td>
-                        <td>${t.aiStopLoss ? t.aiStopLoss.toFixed(1) + '/' + t.aiTakeProfit.toFixed(1) : '-'}</td>
-                        <td style="font-size:0.75em; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(t.aiReason || '').replace(/"/g, '&quot;')}">${t.aiReason || '-'}</td>
-                    </tr>`).join('') || '<tr><td colspan="10" style="color: #484f58; text-align: center; padding: 20px;">No trades yet - AI is analyzing markets...</td></tr>'}
+                    <thead><tr>
+                        <th style="min-width:140px;">Signal</th>
+                        <th style="min-width:60px;">Wins</th>
+                        <th style="min-width:60px;">Losses</th>
+                        <th style="min-width:60px;">Total</th>
+                        <th style="min-width:80px;">Win Rate</th>
+                        <th style="min-width:200px;">Performance</th>
+                    </tr></thead>
+                    <tbody>
+                        ${(() => {
+                            const sigStats = tradeMemory.signalStats || {};
+                            const defs = signalEngine.getSignalDefinitions();
+                            return defs.map(def => {
+                                const s = sigStats[def.id] || { wins: 0, losses: 0 };
+                                const total = s.wins + s.losses;
+                                const wr = total > 0 ? (s.wins / total * 100).toFixed(0) : '-';
+                                const wrClass = total > 0 ? (s.wins / total >= 0.5 ? 'positive' : 'negative') : '';
+                                const barWidth = total > 0 ? Math.min(100, total * 10) : 0;
+                                const winPct = total > 0 ? (s.wins / total * 100) : 0;
+                                return '<tr>' +
+                                    '<td style="font-weight:600;">' + def.name + '</td>' +
+                                    '<td class="positive">' + s.wins + '</td>' +
+                                    '<td class="negative">' + s.losses + '</td>' +
+                                    '<td>' + total + '</td>' +
+                                    '<td class="' + wrClass + '" style="font-weight:bold;">' + (total > 0 ? wr + '%' : 'No data') + '</td>' +
+                                    '<td><div style="display:flex;height:18px;border-radius:4px;overflow:hidden;background:#21262d;min-width:180px;">' +
+                                        (total > 0 ? '<div style="width:' + winPct + '%;background:#238636;"></div><div style="width:' + (100 - winPct) + '%;background:#da3633;"></div>' : '') +
+                                    '</div></td>' +
+                                '</tr>';
+                            }).join('');
+                        })()}
+                    </tbody>
                 </table>
+            </div>
+        </div>
+
+        <div class="grid">
+            <div class="card full-width">
+                <h2>Recent Trades</h2>
+                <div style="overflow-x: auto;">
+                <table>
+                    <tr><th>Time</th><th>Market</th><th>Dir</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Exit</th><th>Hold</th><th style="min-width:250px;">Trigger Signals</th></tr>
+                    ${recentTrades.map(t => {
+                        const sigNames = (t.triggerSignals || []).map(sig => {
+                            const def = signalEngine.SIGNAL_DEFINITIONS.find(d => d.id === sig);
+                            return def ? def.name : sig;
+                        });
+                        const sigDisplay = sigNames.length > 0
+                            ? sigNames.map(n => '<span style="background:#21262d;padding:2px 6px;border-radius:3px;margin:1px;display:inline-block;font-size:0.8em;">' + n + '</span>').join(' ')
+                            : '<span style="color:#484f58;font-size:0.8em;">' + (t.aiReason || 'no data') + '</span>';
+                        return '<tr>' +
+                            '<td style="font-size:0.8em;">' + new Date(t.timestamp).toLocaleTimeString() + '</td>' +
+                            '<td>' + t.symbol + '</td>' +
+                            '<td class="' + (t.direction === 'LONG' ? 'positive' : 'negative') + '">' + t.direction + '</td>' +
+                            '<td>$' + (t.entryPrice || 0).toFixed(2) + '</td>' +
+                            '<td>$' + (t.exitPrice || 0).toFixed(2) + '</td>' +
+                            '<td class="' + (t.profitPercent >= 0 ? 'positive' : 'negative') + '">' + (t.profitPercent >= 0 ? '+' : '') + t.profitPercent.toFixed(2) + '%</td>' +
+                            '<td>' + t.exitReason + '</td>' +
+                            '<td>' + (t.holdTimeMin || '?') + 'm</td>' +
+                            '<td>' + sigDisplay + '</td>' +
+                        '</tr>';
+                    }).join('') || '<tr><td colspan="9" style="color: #484f58; text-align: center; padding: 20px;">No trades yet — signal engine scanning markets...</td></tr>'}
+                </table>
+                </div>
             </div>
         </div>
     </div>
@@ -1218,6 +1216,7 @@ function startDashboard() {
                 losses: 0,
                 totalProfitPercent: 0
             };
+            tradeMemory.signalStats = {};
             saveMemory();
             log('[DASHBOARD] Session stats RESET by user');
             sendJson({ ok: true, message: 'Stats reset' });
@@ -1234,16 +1233,16 @@ function startDashboard() {
 
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   AI SCALPING BOT - GLM-4.7 Flash | v14.1');
-    log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Scalping Mode`);
+    log('   SCALPING BOT - Signal Engine | v15');
+    log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Rule-Based Scalping`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);
     log(`Leverage: ${CONFIG.LEVERAGE}x`);
     log(`Active Markets: ${ACTIVE_MARKETS.join(', ')}`);
     log(`Trade Size: ${CONFIG.TRADE_AMOUNT_USDC} USDC per market`);
-    log(`AI Check Interval: ${CONFIG.AI_INTERVAL_MS / 1000}s`);
+    log(`Signal Check Interval: ${CONFIG.AI_INTERVAL_MS / 1000}s`);
     log(`Position Check Interval: ${CONFIG.CHECK_INTERVAL_MS / 1000}s`);
-    log(`Min Confidence: ${(CONFIG.MIN_CONFIDENCE * 100).toFixed(0)}%`);
+    log(`Min Signals Required: 4 of 9`);
     log(`Daily Loss Limit: ${safety.getStatus().dailyLossLimit}%`);
     log(`Dashboard: http://0.0.0.0:${CONFIG.DASHBOARD_PORT}`);
     log('═══════════════════════════════════════════════════════════');
@@ -1332,7 +1331,7 @@ async function main() {
             tradeMemory.sessionStats.startTime = new Date().toISOString();
         }
 
-        log('Starting trading loop (AI scalping mode)...');
+        log('Starting trading loop (signal engine mode)...');
         async function dynamicLoop() {
             await tradingLoop();
             const hasPos = ACTIVE_MARKETS.some(s => {
