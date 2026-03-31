@@ -18,47 +18,62 @@ CRITICAL FACTS:
 - Fees: 0.07% round trip (= 1.4% P&L at 20x). You need >0.07% price move to profit.
 - Markets: SOL-PERP, BTC-PERP, ETH-PERP perpetual futures.
 - Your stopLoss/takeProfit are PRICE MOVE %, not P&L %. System multiplies by leverage.
-- Target: 0.15% TP (= ~1.6% net P&L after fees), 0.10% SL (= ~3.4% net loss after fees).
+- Target: 0.30% TP (= ~4.6% net P&L after fees), 0.25% SL (= ~6.4% net loss after fees).
 - You can trade all 3 markets simultaneously. Each decision is independent.
 
-SCALPING RULES:
-1. MOMENTUM IS KING. Read 1m and 5m price action. Enter when momentum is clearly in one direction.
-2. FAST IN, FAST OUT. Target hold time 2-10 minutes. If the move doesn't happen quickly, it won't happen.
-3. FOLLOW THE FLOW. Orderbook imbalance tells you where big money is pushing. Trade WITH the imbalance.
-4. 1-MINUTE CHART IS PRIMARY. Look at 1m RSI, 1m EMA crossovers, 1m MACD histogram direction for entry timing.
-5. 5-MINUTE CONFIRMS. Use 5m trend to confirm direction. Don't scalp against 5m momentum.
-6. 15-MINUTE IS BACKGROUND. Only use 15m to avoid trading against a major trend. Don't wait for 15m confirmation.
+ORDERBOOK IMBALANCE (CRITICAL — read this correctly):
+- Imbalance is (bids - asks) / (bids + asks). Range: -1.0 to +1.0.
+- POSITIVE imbalance (e.g. +0.30) = more BIDS than asks = buyers dominate = bullish pressure = favor LONG.
+- NEGATIVE imbalance (e.g. -0.30) = more ASKS than bids = sellers dominate = bearish pressure = favor SHORT.
+- Imbalance magnitude matters: |imbalance| > 0.30 is a meaningful signal, < 0.15 is noise.
+- NEVER interpret negative imbalance as buying pressure. Negative = sellers. Positive = buyers.
 
-ENTRY SIGNALS (pick trades with 2+ confirming signals):
-- 1m EMA9 crossing above EMA21 + RSI 40-65 + positive imbalance = LONG
-- 1m EMA9 crossing below EMA21 + RSI 35-60 + negative imbalance = SHORT
-- 1m MACD histogram flipping positive + price above 1m EMA9 = LONG
-- 1m MACD histogram flipping negative + price below 1m EMA9 = SHORT
-- StochRSI bouncing from <20 with rising K = LONG
-- StochRSI dropping from >80 with falling K = SHORT
-- Strong 1min price change (>0.05%) continuing in same direction as 5min change = momentum entry
+SCALPING RULES:
+1. QUALITY OVER QUANTITY. Only enter when you have a clear, high-conviction setup. Waiting is profitable — bad entries are expensive.
+2. MOMENTUM IS KING. Read 1m and 5m price action. Enter when momentum is clearly in one direction.
+3. FAST IN, FAST OUT. Target hold time 2-15 minutes. If the move doesn't happen quickly, it won't happen.
+4. FOLLOW THE FLOW. Orderbook imbalance tells you where big money is pushing. Trade WITH the imbalance direction.
+5. 1-MINUTE CHART IS PRIMARY. Look at 1m RSI, 1m EMA crossovers, 1m MACD histogram direction for entry timing.
+6. 5-MINUTE CONFIRMS. Use 5m trend to confirm direction. Don't scalp against 5m momentum.
+7. 15-MINUTE IS BACKGROUND. Only use 15m to avoid trading against a major trend. Don't wait for 15m confirmation.
+
+ENTRY REQUIREMENTS (you MUST have ALL of these to enter):
+1. 1m and 5m AGREE on direction (both bullish or both bearish). If they disagree, WAIT.
+2. ADX > 15 on at least one timeframe (1m or 5m). If ADX < 15 on both, the market is dead — WAIT.
+3. Trend is NOT "RANGING". If trend is RANGING, WAIT. Scalping needs directional movement.
+4. At least 3 confirming signals from the list below (not just 2).
+
+CONFIRMING SIGNALS (need 3+ to enter):
+- 1m EMA9 above EMA21 (LONG) or below (SHORT)
+- 1m MACD histogram positive and rising (LONG) or negative and falling (SHORT)
+- 1m RSI 40-65 for LONG, 35-60 for SHORT (not overbought/oversold)
+- 5m trend agrees with entry direction
+- Orderbook imbalance agrees with direction (positive for LONG, negative for SHORT) with |imbalance| > 0.15
+- StochRSI bouncing from <20 (LONG) or dropping from >80 (SHORT)
+- Strong recent price momentum (>0.05% 1m change) in entry direction
 
 SUPPORT & RESISTANCE:
-- S/R levels are important but don't overthink them for scalps.
-- Avoid entering LONG within 0.15% of strong resistance.
-- Avoid entering SHORT within 0.15% of strong support.
+- Avoid entering LONG within 0.20% of strong resistance.
+- Avoid entering SHORT within 0.20% of strong support.
 - Best scalps: bounces off support (LONG) or rejections at resistance (SHORT).
 
-WHEN TO WAIT:
-- ADX < 15 on 5m (dead market, no movement to scalp)
+WHEN TO WAIT (these are HARD RULES — if any is true, you MUST wait):
 - 1m and 5m disagree on direction
-- Price stuck in tight range with no momentum (Bollinger bandwidth very narrow)
-- Just had a loss — wait for a clear new setup, don't revenge trade
+- ADX < 15 on both 1m and 5m (dead market)
+- Trend is RANGING with no clear direction
+- Price stuck in tight range (Bollinger bandwidth very narrow)
+- Just had a stop loss — wait for a completely new setup
+- Fewer than 3 confirming signals
 
 SL/TP GUIDELINES:
-- TP: 0.12-0.20% price move (sweet spot 0.15%)
-- SL: 0.08-0.15% price move (sweet spot 0.10%)
-- Tighter SL in low volatility, slightly wider in high volatility
-- Never SL wider than 0.15% — that's too much risk for a scalp
+- TP: 0.25-0.35% price move (sweet spot 0.30%)
+- SL: 0.20-0.30% price move (sweet spot 0.25%)
+- These give the trade room to breathe past normal noise
+- Never SL wider than 0.30% — that's too much risk for a scalp
 
 PORTFOLIO CONTEXT:
-- If daily P&L negative, be slightly more selective but don't stop trading — scalping recovers through volume.
-- Multiple consecutive losses = wait 1-2 cycles for a clearer setup.
+- If daily P&L negative, be MORE selective — require 4+ confirming signals.
+- Multiple consecutive losses = wait 2-3 cycles for a very clear new setup. Do not revenge trade.
 
 RESPOND IN THIS EXACT JSON FORMAT:
 {
@@ -243,13 +258,13 @@ function parseAIResponse(raw) {
         throw new Error('Invalid action');
     }
 
-    decision.stopLoss = (typeof decision.stopLoss === 'number' && isFinite(decision.stopLoss)) ? decision.stopLoss : 0.10;
-    decision.takeProfit = (typeof decision.takeProfit === 'number' && isFinite(decision.takeProfit)) ? decision.takeProfit : 0.15;
+    decision.stopLoss = (typeof decision.stopLoss === 'number' && isFinite(decision.stopLoss)) ? decision.stopLoss : 0.25;
+    decision.takeProfit = (typeof decision.takeProfit === 'number' && isFinite(decision.takeProfit)) ? decision.takeProfit : 0.30;
     decision.confidence = (typeof decision.confidence === 'number' && isFinite(decision.confidence)) ? decision.confidence : 0.5;
     decision.maxHoldMinutes = (typeof decision.maxHoldMinutes === 'number' && isFinite(decision.maxHoldMinutes)) ? decision.maxHoldMinutes : 10;
 
-    decision.stopLoss = 0.10;
-    decision.takeProfit = 0.15;
+    decision.stopLoss = 0.25;
+    decision.takeProfit = 0.30;
     decision.confidence = Math.max(0, Math.min(1, decision.confidence));
     decision.maxHoldMinutes = Math.max(2, Math.min(30, decision.maxHoldMinutes));
 
@@ -260,7 +275,7 @@ async function askBrain(marketData, allTradeMemories) {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
         think('No OpenRouter API key configured - AI brain disabled', 'error');
-        return { action: 'WAIT', reason: 'No API key', confidence: 0, stopLoss: 0.10, takeProfit: 0.15, maxHoldMinutes: 10 };
+        return { action: 'WAIT', reason: 'No API key', confidence: 0, stopLoss: 0.25, takeProfit: 0.30, maxHoldMinutes: 10 };
     }
 
     const recentResults = tradeHistory

@@ -501,6 +501,17 @@ async function syncPositionFromChain(marketState, marketConfig, symbol) {
                 marketState.highestPriceSinceEntry = marketState.entryPrice;
                 marketState.lowestPriceSinceEntry = marketState.entryPrice;
                 if (!marketState.entryTime) marketState.entryTime = Date.now();
+                if (!marketState.entrySnapshot) {
+                    marketState.entrySnapshot = {
+                        trend: marketState.trend || 'UNKNOWN',
+                        volatility: marketState.volatility || 0,
+                        imbalance: marketState.lastImbalance || 0,
+                        priceHistory: (marketState.prices || []).slice(-10),
+                        timestamp: Date.now()
+                    };
+                    marketState.aiReason = marketState.aiReason || 'Position synced from chain (no AI context)';
+                    log(`[${symbol}] Entry snapshot created for chain-synced position`);
+                }
             }
         } else if (marketState.currentPosition) {
             resetPositionState(marketState);
@@ -668,12 +679,12 @@ async function processMarket(symbol) {
                 if (!marketState.entryTime) marketState.entryTime = Date.now();
             }
             if (marketState.aiStopLoss == null) {
-                marketState.aiStopLoss = 0.10;
-                aiBrain.think(`[${symbol}] Emergency SL assigned: 0.10% (position had no stop loss)`, 'safety');
+                marketState.aiStopLoss = 0.25;
+                aiBrain.think(`[${symbol}] Emergency SL assigned: 0.25% (position had no stop loss)`, 'safety');
             }
             if (marketState.aiTakeProfit == null) {
-                marketState.aiTakeProfit = 0.15;
-                aiBrain.think(`[${symbol}] Emergency TP assigned: 0.15% (position had no take profit)`, 'safety');
+                marketState.aiTakeProfit = 0.30;
+                aiBrain.think(`[${symbol}] Emergency TP assigned: 0.30% (position had no take profit)`, 'safety');
             }
             if (marketState.aiMaxHoldMinutes == null) {
                 marketState.aiMaxHoldMinutes = 30;
@@ -823,8 +834,8 @@ async function processMarket(symbol) {
                 return;
             }
 
-            marketState.aiStopLoss = 0.10;
-            marketState.aiTakeProfit = 0.15;
+            marketState.aiStopLoss = 0.25;
+            marketState.aiTakeProfit = 0.30;
             marketState.aiMaxHoldMinutes = decision.maxHoldMinutes;
             marketState.aiReason = decision.reason;
 
@@ -937,8 +948,8 @@ function generateDashboardHTML() {
 </head>
 <body>
     <div class="container">
-        <h1>AI Scalping Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v14</span></h1>
-        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Scalping Mode | v14 | TP: 0.15% SL: 0.10% | Fee: 0.07%</div>
+        <h1>AI Scalping Bot - GLM-4.7 Flash <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v14.1</span></h1>
+        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Scalping Mode | v14.1 | TP: 0.30% SL: 0.25% | Fee: 0.07%</div>
         
         <div class="grid">
             <div class="card">
@@ -952,7 +963,7 @@ function generateDashboardHTML() {
                 <div class="stat-row"><span class="stat-label">AI Model</span><span class="stat-value" style="color: #ff00ff;">GLM-4.7-Flash</span></div>
                 <div class="stat-row"><span class="stat-label">AI Interval</span><span class="stat-value">${CONFIG.AI_INTERVAL_MS / 1000}s</span></div>
                 <div class="stat-row"><span class="stat-label">Min Confidence</span><span class="stat-value">${(CONFIG.MIN_CONFIDENCE * 100).toFixed(0)}%</span></div>
-                <div class="stat-row"><span class="stat-label">Target TP / SL</span><span class="stat-value" style="color: #3fb950;">0.15% / 0.10%</span></div>
+                <div class="stat-row"><span class="stat-label">Target TP / SL</span><span class="stat-value" style="color: #3fb950;">0.30% / 0.25%</span></div>
                 <div class="stat-row"><span class="stat-label">Round-Trip Fee</span><span class="stat-value">0.07%</span></div>
                 <div class="stat-row"><span class="stat-label">SL Cooldown</span><span class="stat-value">60s</span></div>
                 <div class="stat-row"><span class="stat-label">Stagnation Close</span><span class="stat-value">10min</span></div>
@@ -1223,7 +1234,7 @@ function startDashboard() {
 
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   AI SCALPING BOT - GLM-4.7 Flash | v14');
+    log('   AI SCALPING BOT - GLM-4.7 Flash | v14.1');
     log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Scalping Mode`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);
