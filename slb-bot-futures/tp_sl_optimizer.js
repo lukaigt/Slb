@@ -9,9 +9,9 @@ const STATS_FILE = path.join(DATA_DIR, 'tp_sl_stats.json');
 const TP_OPTIONS = [0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.75, 1.00];
 const SL_OPTIONS = [0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.75, 1.00, 1.25, 1.50, 2.00];
 
-const MIN_TRADES_FOR_EXPLOIT = 20;
+const MIN_TRADES_FOR_EXPLOIT = 30;
 const EXPLORATION_RATE = 0.20;
-const MIN_COMBO_TRADES = 3;
+const MIN_COMBO_TRADES = 5;
 
 let stats = {
     version: 1,

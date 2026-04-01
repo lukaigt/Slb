@@ -473,7 +473,11 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
         holdTimeMin: parseFloat(holdTimeMin) || 0,
         fingerprint: marketState.entryFingerprint || {},
         entryMode: marketState.entryMode || 'UNKNOWN',
-        triggerSignals: marketState.triggerSignals || []
+        triggerSignals: marketState.triggerSignals || [],
+        tpUsed: marketState.aiTakeProfit || null,
+        slUsed: marketState.aiStopLoss || null,
+        tpSlMode: marketState.tpSlMode || null,
+        tpSlBase: marketState.tpSlBase || null
     });
 
     if (marketState.tpSlBase) {
@@ -1161,7 +1165,7 @@ function generateDashboardShell() {
         html += '<div class="stat-row"><span class="stat-label">Combos With Data</span><span class="stat-value">' + d.tpSlStats.combosWithData + '</span></div>';
         html += '<div class="stat-row"><span class="stat-label">Total TP/SL Trades</span><span class="stat-value">' + d.tpSlStats.totalTrades + '</span></div>';
         var tpProg = d.tpSlStats.learningProgress;
-        html += '<div style="margin:6px 0;"><div class="progress-bar"><div class="progress-fill" style="width:' + tpProg + '%;background:' + (tpProg >= 100 ? '#238636' : '#d29922') + ';"></div><div class="progress-text">TP/SL ' + tpProg + '% — ' + d.tpSlStats.totalTrades + '/20</div></div></div>';
+        html += '<div style="margin:6px 0;"><div class="progress-bar"><div class="progress-fill" style="width:' + tpProg + '%;background:' + (tpProg >= 100 ? '#238636' : '#d29922') + ';"></div><div class="progress-text">TP/SL ' + tpProg + '% — ' + d.tpSlStats.totalTrades + '/30</div></div></div>';
         if (d.tpSlStats.bestCombo) {
             var bc = d.tpSlStats.bestCombo;
             html += '<div class="stat-row"><span class="stat-label">Best Combo</span><span class="stat-value positive">TP ' + bc.tp.toFixed(2) + '% / SL ' + bc.sl.toFixed(2) + '%</span></div>';
