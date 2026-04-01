@@ -1225,6 +1225,54 @@ function generateDashboardHTML() {
 
         <div class="grid">
             <div class="card full-width">
+                <h2>Signal Combo Tracker — Which Combinations Win?</h2>
+                <p style="color: #8b949e; font-size: 0.8em; margin-bottom: 10px;">Every trade uses multiple signals. This shows which combos actually worked.</p>
+                <div style="overflow-x:auto;">
+                <table>
+                    <thead><tr><th>Combo (Signals Used Together)</th><th>Times</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th style="min-width:120px;">Performance</th></tr></thead>
+                    <tbody>
+                        ${(() => {
+                            const comboMap = {};
+                            const allT = tradeMemory.trades || [];
+                            for (const t of allT) {
+                                if (!t.triggerSignals || t.triggerSignals.length === 0) continue;
+                                const key = t.triggerSignals.slice().sort().join(' + ');
+                                if (!comboMap[key]) comboMap[key] = { wins: 0, losses: 0, signals: t.triggerSignals };
+                                if (t.result === 'WIN') comboMap[key].wins++;
+                                else comboMap[key].losses++;
+                            }
+                            const combos = Object.entries(comboMap).map(([k, v]) => ({
+                                key: k, ...v, total: v.wins + v.losses
+                            }));
+                            combos.sort((a, b) => b.total - a.total);
+                            if (combos.length === 0) return '<tr><td colspan="6" style="color:#484f58;text-align:center;padding:15px;">No combo data yet — trades will show combos after bot starts trading</td></tr>';
+                            return combos.slice(0, 20).map(c => {
+                                const wr = (c.wins / c.total * 100).toFixed(0);
+                                const wrClass = c.wins / c.total >= 0.5 ? 'positive' : 'negative';
+                                const winPct = c.wins / c.total * 100;
+                                const sigLabels = c.signals.map(s => {
+                                    const def = signalEngine.SIGNAL_DEFINITIONS.find(d => d.id === s);
+                                    return def ? def.name : s;
+                                });
+                                return '<tr>' +
+                                    '<td>' + sigLabels.map(n => '<span class="tag">' + n + '</span>').join(' ') + '</td>' +
+                                    '<td>' + c.total + '</td>' +
+                                    '<td class="positive">' + c.wins + '</td>' +
+                                    '<td class="negative">' + c.losses + '</td>' +
+                                    '<td class="' + wrClass + '" style="font-weight:bold;">' + wr + '%</td>' +
+                                    '<td><div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#21262d;">' +
+                                        '<div style="width:' + winPct + '%;background:#238636;"></div><div style="width:' + (100-winPct) + '%;background:#da3633;"></div>' +
+                                    '</div></td></tr>';
+                            }).join('');
+                        })()}
+                    </tbody>
+                </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <div class="card full-width">
                 <h2>Stored Pattern History (Last 10)</h2>
                 <div style="overflow-x:auto;">
                 <table>
