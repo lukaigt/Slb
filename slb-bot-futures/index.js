@@ -1041,12 +1041,25 @@ function generateDashboardData() {
     };
 }
 
-function generateDashboardShell() {
-    return `<!DOCTYPE html>
+function generateDashboardHTML() {
+    const d = generateDashboardData();
+
+    const categoryColors = {
+        entry: '#00ff88', exit: '#ff4444', monitor: '#00d4ff', ai_brain: '#ff00ff',
+        scan: '#555', skip: '#888', safety: '#ff6600', trade_win: '#3fb950',
+        trade_loss: '#f85149', error: '#ff0000', general: '#888'
+    };
+
+    function esc(s) { return s == null ? '-' : String(s).replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function tag(s) { return '<span class="tag">' + esc(s) + '</span>'; }
+    function usd(v) { return v != null ? '$' + v.toFixed(2) : '-'; }
+
+    let html = `<!DOCTYPE html>
 <html>
 <head>
     <title>v18 Self-Learning Bot - Dynamic TP/SL</title>
     <meta charset="UTF-8">
+    <meta http-equiv="refresh" content="6">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0d1117; color: #e6edf3; padding: 10px; font-size: 13px; }
@@ -1074,7 +1087,6 @@ function generateDashboardShell() {
         .health-green { background: #3fb950; }
         .health-red { background: #f85149; }
         .full-width { grid-column: 1 / -1; }
-        .span2 { grid-column: span 2; }
         .thinking-entry { padding: 5px 8px; margin: 2px 0; border-radius: 4px; font-size: 0.8em; border-left: 3px solid #30363d; background: #0d1117; word-break: break-word; }
         .thinking-time { color: #484f58; font-size: 0.78em; margin-right: 6px; }
         .progress-bar { height: 20px; border-radius: 4px; overflow: hidden; background: #21262d; position: relative; }
@@ -1089,350 +1101,311 @@ function generateDashboardShell() {
         .btn-status { font-size: 0.75em; color: #8b949e; text-align: center; min-height: 16px; margin-top: 3px; }
         .tag { background: #21262d; padding: 1px 5px; border-radius: 3px; margin: 1px; display: inline-block; font-size: 0.78em; }
         .fp-val { font-family: monospace; font-size: 0.78em; }
-        #lastUpdate { color: #484f58; font-size: 0.7em; position: fixed; bottom: 5px; right: 10px; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Self-Learning Bot <span style="color: #8957e5; font-size: 0.5em; vertical-align: middle;">v18 Dynamic TP/SL</span></h1>
-        <div class="subtitle" id="subtitle">Loading...</div>
-        <div id="dashboard">Loading dashboard data...</div>
-    </div>
-    <div id="lastUpdate"></div>
-    <script>
-    var categoryColors = {
-        entry: '#00ff88', exit: '#ff4444', monitor: '#00d4ff', ai_brain: '#ff00ff',
-        scan: '#555', skip: '#888', safety: '#ff6600', trade_win: '#3fb950',
-        trade_loss: '#f85149', error: '#ff0000', general: '#888'
-    };
+<div class="container">
+    <h1>Self-Learning Bot <span style="color: #8957e5; font-size: 0.5em; vertical-align: middle;">v18 Dynamic TP/SL</span></h1>
+    <div class="subtitle">Drift Protocol | ${d.leverage}x | ${d.tpSlStats.bestCombo ? 'Best TP/SL: ' + d.tpSlStats.bestCombo.tp.toFixed(2) + '/' + d.tpSlStats.bestCombo.sl.toFixed(2) + '%' : 'TP/SL: Learning...'} | Fee: 0.07% | ${d.pmStats.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | ${d.pmStats.totalStored} patterns | ${d.tpSlStats.isExploiting ? 'TP/SL OPTIMIZING' : 'TP/SL LEARNING (' + d.tpSlStats.learningProgress + '%)'}</div>
 
-    function esc(s) { return s == null ? '-' : String(s).replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-    function tag(s) { return '<span class="tag">' + esc(s) + '</span>'; }
-    function usd(v) { return v != null ? '$' + v.toFixed(2) : '-'; }
+    <div class="grid">`;
 
-    function renderDashboard(d) {
-        document.getElementById('subtitle').innerHTML =
-            'Drift Protocol | ' + d.leverage + 'x | ' +
-            (d.tpSlStats.bestCombo ? 'Best TP/SL: ' + d.tpSlStats.bestCombo.tp.toFixed(2) + '/' + d.tpSlStats.bestCombo.sl.toFixed(2) + '%' : 'TP/SL: Learning...') +
-            ' | Fee: 0.07% | ' +
-            (d.pmStats.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE') +
-            ' | ' + d.pmStats.totalStored + ' patterns | ' +
-            (d.tpSlStats.isExploiting ? 'TP/SL OPTIMIZING' : 'TP/SL LEARNING (' + d.tpSlStats.learningProgress + '%)');
+    // System Health
+    const dot = (ok) => '<span class="health-dot ' + (ok ? 'health-green' : 'health-red') + '"></span>';
+    html += '<div class="card"><h2>System Health</h2>';
+    html += '<div class="stat-row"><span class="stat-label">Status</span><span class="stat-value">' + (d.running ? dot(true) + 'Running' : dot(false) + 'Stopped') + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Mode</span><span class="stat-value">' + (d.simulation ? '<span class="sim-mode">SIMULATION</span>' : '<span class="live-mode">LIVE</span>') + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Drift</span><span class="stat-value">' + dot(d.driftConnected) + (d.driftConnected ? 'Connected' : 'Disconnected') + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">RPC</span><span class="stat-value">' + dot(d.rpcConnected) + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">DLOB</span><span class="stat-value">' + dot(d.dlobConnected) + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Uptime</span><span class="stat-value">' + d.uptime + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Heartbeat</span><span class="stat-value">' + d.heartbeatAgo + 's ago</span></div>';
+    html += '</div>';
 
-        var html = '';
+    // Learning Engine
+    html += '<div class="card"><h2>Learning Engine</h2>';
+    html += '<div class="stat-row"><span class="stat-label">Phase</span><span class="stat-value">' + (d.pmStats.isLearning ? '<span class="learning-badge">LEARNING</span>' : '<span class="exploit-badge">EXPLOITATION</span>') + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Patterns Stored</span><span class="stat-value" style="color:#58a6ff;">' + d.pmStats.totalStored + '</span></div>';
+    const prog = d.pmStats.learningProgress;
+    html += '<div style="margin:6px 0;"><div class="progress-bar"><div class="progress-fill" style="width:' + prog + '%;background:' + (prog >= 100 ? '#238636' : '#8957e5') + ';"></div><div class="progress-text">' + prog + '% — ' + d.pmStats.totalStored + '/30</div></div></div>';
+    const pmWR = d.pmStats.patternMatchWinRate;
+    const exWR = d.pmStats.explorationWinRate;
+    html += '<div class="stat-row"><span class="stat-label">Pattern Match WR</span><span class="stat-value ' + (pmWR >= 50 ? 'positive' : pmWR > 0 ? 'negative' : '') + '">' + (pmWR > 0 ? pmWR.toFixed(0) + '%' : '-') + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Exploration WR</span><span class="stat-value ' + (exWR >= 50 ? 'positive' : exWR > 0 ? 'negative' : '') + '">' + (exWR > 0 ? exWR.toFixed(0) + '%' : '-') + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">WR Threshold</span><span class="stat-value">55%</span></div>';
+    html += '</div>';
 
-        // Row 1: System Health + Learning Engine + Controls + Session Stats + Safety
-        html += '<div class="grid">';
+    // TP/SL Optimizer
+    html += '<div class="card"><h2>TP/SL Optimizer</h2>';
+    html += '<div class="stat-row"><span class="stat-label">Phase</span><span class="stat-value">' + (d.tpSlStats.isExploiting ? '<span class="exploit-badge">OPTIMIZING</span>' : '<span class="learning-badge">LEARNING</span>') + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Combos Tested</span><span class="stat-value" style="color:#58a6ff;">' + d.tpSlStats.totalCombos + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Mature Combos (' + (d.tpSlStats.minComboTrades||30) + '+ trades)</span><span class="stat-value">' + d.tpSlStats.combosWithData + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Total TP/SL Trades</span><span class="stat-value">' + d.tpSlStats.totalTrades + '</span></div>';
+    const tpProg = d.tpSlStats.learningProgress;
+    html += '<div style="margin:6px 0;"><div class="progress-bar"><div class="progress-fill" style="width:' + tpProg + '%;background:' + (tpProg >= 100 ? '#238636' : '#d29922') + ';"></div><div class="progress-text">TP/SL ' + tpProg + '% — ' + d.tpSlStats.totalTrades + '/30</div></div></div>';
+    if (d.tpSlStats.bestCombo) {
+        const bc = d.tpSlStats.bestCombo;
+        html += '<div class="stat-row"><span class="stat-label">Best Combo</span><span class="stat-value positive">TP ' + bc.tp.toFixed(2) + '% / SL ' + bc.sl.toFixed(2) + '%</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Best WR / Avg P&L</span><span class="stat-value">' + bc.winRate + '% / ' + (bc.avgProfit >= 0 ? '+' : '') + bc.avgProfit.toFixed(2) + '%</span></div>';
+    } else {
+        html += '<div class="stat-row"><span class="stat-label">Best Combo</span><span class="stat-value" style="color:#484f58;">Collecting data...</span></div>';
+    }
+    html += '<div class="stat-row"><span class="stat-label">Explore Rate</span><span class="stat-value">' + d.tpSlStats.explorationRate + '%</span></div>';
+    html += '</div>';
 
-        // System Health
-        html += '<div class="card"><h2>System Health</h2>';
-        var dot = function(ok) { return '<span class="health-dot ' + (ok ? 'health-green' : 'health-red') + '"></span>'; };
-        html += '<div class="stat-row"><span class="stat-label">Status</span><span class="stat-value">' + (d.running ? dot(true) + 'Running' : dot(false) + 'Stopped') + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Mode</span><span class="stat-value">' + (d.simulation ? '<span class="sim-mode">SIMULATION</span>' : '<span class="live-mode">LIVE</span>') + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Drift</span><span class="stat-value">' + dot(d.driftConnected) + (d.driftConnected ? 'Connected' : 'Disconnected') + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">RPC</span><span class="stat-value">' + dot(d.rpcConnected) + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">DLOB</span><span class="stat-value">' + dot(d.dlobConnected) + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Uptime</span><span class="stat-value">' + d.uptime + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Heartbeat</span><span class="stat-value">' + d.heartbeatAgo + 's ago</span></div>';
-        html += '</div>';
+    // Controls
+    html += '<div class="card"><h2>Controls</h2>';
+    if (d.paused) {
+        html += '<div style="margin-bottom:8px;"><span class="paused-badge">PAUSED</span> <span style="color:#8b949e;font-size:0.8em;">' + esc(d.pauseReason) + '</span></div>';
+        html += '<button class="btn btn-green" onclick="botAction(&#39;unpause&#39;)">Resume Bot</button>';
+    } else {
+        html += '<button class="btn btn-orange" onclick="botAction(&#39;pause&#39;)">Pause Bot</button>';
+    }
+    html += '<button class="btn btn-red" onclick="if(confirm(&#39;Close all positions?&#39;))botAction(&#39;close-all&#39;)">Close All Positions</button>';
+    html += '<button class="btn btn-gray" onclick="if(confirm(&#39;Reset session stats?&#39;))botAction(&#39;reset-stats&#39;)">Reset Stats</button>';
+    html += '<div class="btn-status" id="btnStatus"></div>';
+    html += '</div>';
 
-        // Learning Engine
-        html += '<div class="card"><h2>Learning Engine</h2>';
-        html += '<div class="stat-row"><span class="stat-label">Phase</span><span class="stat-value">' + (d.pmStats.isLearning ? '<span class="learning-badge">LEARNING</span>' : '<span class="exploit-badge">EXPLOITATION</span>') + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Patterns Stored</span><span class="stat-value" style="color:#58a6ff;">' + d.pmStats.totalStored + '</span></div>';
-        var prog = d.pmStats.learningProgress;
-        html += '<div style="margin:6px 0;"><div class="progress-bar"><div class="progress-fill" style="width:' + prog + '%;background:' + (prog >= 100 ? '#238636' : '#8957e5') + ';"></div><div class="progress-text">' + prog + '% — ' + d.pmStats.totalStored + '/' + 30 + '</div></div></div>';
-        var pmWR = d.pmStats.patternMatchWinRate;
-        var exWR = d.pmStats.explorationWinRate;
-        html += '<div class="stat-row"><span class="stat-label">Pattern Match WR</span><span class="stat-value ' + (pmWR >= 50 ? 'positive' : pmWR > 0 ? 'negative' : '') + '">' + (pmWR > 0 ? pmWR.toFixed(0) + '%' : '-') + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Exploration WR</span><span class="stat-value ' + (exWR >= 50 ? 'positive' : exWR > 0 ? 'negative' : '') + '">' + (exWR > 0 ? exWR.toFixed(0) + '%' : '-') + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">WR Threshold</span><span class="stat-value">55%</span></div>';
-        html += '</div>';
+    // Session Stats
+    html += '<div class="card"><h2>Session Stats</h2>';
+    html += '<div class="stat-row"><span class="stat-label">Trades</span><span class="stat-value">' + d.stats.totalTrades + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Win / Loss</span><span class="stat-value"><span class="positive">' + d.stats.wins + 'W</span> / <span class="negative">' + d.stats.losses + 'L</span></span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Win Rate</span><span class="stat-value ' + (parseFloat(d.stats.winRate) >= 50 ? 'positive' : parseFloat(d.stats.winRate) > 0 ? 'negative' : '') + '">' + d.stats.winRate + '%</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Total P&L</span><span class="stat-value ' + (d.stats.totalProfit >= 0 ? 'positive' : 'negative') + '">' + (d.stats.totalProfit >= 0 ? '+' : '') + d.stats.totalProfit.toFixed(2) + '%</span></div>';
+    html += '<div style="display:flex;gap:8px;margin-top:8px;">';
+    if (d.stats.bestTrade) html += '<div style="flex:1;padding:8px;border-radius:6px;background:#0d1117;"><div style="color:#3fb950;font-weight:bold;font-size:0.8em;">Best</div><div style="font-size:1.1em;color:#3fb950;">+' + d.stats.bestTrade.profit.toFixed(2) + '%</div><div style="font-size:0.75em;color:#8b949e;">' + d.stats.bestTrade.dir + ' ' + (d.stats.bestTrade.symbol||'') + '</div></div>';
+    else html += '<div style="flex:1;padding:8px;border-radius:6px;background:#0d1117;"><div style="color:#3fb950;font-weight:bold;font-size:0.8em;">Best</div><div style="color:#484f58;font-size:0.8em;">None</div></div>';
+    if (d.stats.worstTrade) html += '<div style="flex:1;padding:8px;border-radius:6px;background:#0d1117;"><div style="color:#f85149;font-weight:bold;font-size:0.8em;">Worst</div><div style="font-size:1.1em;color:#f85149;">' + d.stats.worstTrade.profit.toFixed(2) + '%</div><div style="font-size:0.75em;color:#8b949e;">' + d.stats.worstTrade.dir + ' ' + (d.stats.worstTrade.symbol||'') + '</div></div>';
+    else html += '<div style="flex:1;padding:8px;border-radius:6px;background:#0d1117;"><div style="color:#f85149;font-weight:bold;font-size:0.8em;">Worst</div><div style="color:#484f58;font-size:0.8em;">None</div></div>';
+    html += '</div></div>';
 
-        // TP/SL Optimizer Status
-        html += '<div class="card"><h2>TP/SL Optimizer</h2>';
-        html += '<div class="stat-row"><span class="stat-label">Phase</span><span class="stat-value">' + (d.tpSlStats.isExploiting ? '<span class="exploit-badge">OPTIMIZING</span>' : '<span class="learning-badge">LEARNING</span>') + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Combos Tested</span><span class="stat-value" style="color:#58a6ff;">' + d.tpSlStats.totalCombos + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Mature Combos (' + (d.tpSlStats.minComboTrades||10) + '+ trades)</span><span class="stat-value">' + d.tpSlStats.combosWithData + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Total TP/SL Trades</span><span class="stat-value">' + d.tpSlStats.totalTrades + '</span></div>';
-        var tpProg = d.tpSlStats.learningProgress;
-        html += '<div style="margin:6px 0;"><div class="progress-bar"><div class="progress-fill" style="width:' + tpProg + '%;background:' + (tpProg >= 100 ? '#238636' : '#d29922') + ';"></div><div class="progress-text">TP/SL ' + tpProg + '% — ' + d.tpSlStats.totalTrades + '/30</div></div></div>';
-        if (d.tpSlStats.bestCombo) {
-            var bc = d.tpSlStats.bestCombo;
-            html += '<div class="stat-row"><span class="stat-label">Best Combo</span><span class="stat-value positive">TP ' + bc.tp.toFixed(2) + '% / SL ' + bc.sl.toFixed(2) + '%</span></div>';
-            html += '<div class="stat-row"><span class="stat-label">Best WR / Avg P&L</span><span class="stat-value">' + bc.winRate + '% / ' + (bc.avgProfit >= 0 ? '+' : '') + bc.avgProfit.toFixed(2) + '%</span></div>';
-        } else {
-            html += '<div class="stat-row"><span class="stat-label">Best Combo</span><span class="stat-value" style="color:#484f58;">Collecting data...</span></div>';
-        }
-        html += '<div class="stat-row"><span class="stat-label">Explore Rate</span><span class="stat-value">' + d.tpSlStats.explorationRate + '%</span></div>';
-        html += '</div>';
+    // Safety
+    html += '<div class="card"><h2>Safety Layer</h2>';
+    html += '<div class="stat-row"><span class="stat-label">Daily P&L</span><span class="stat-value ' + (d.safety.dailyProfit >= 0 ? 'positive' : 'negative') + '">' + (d.safety.dailyProfit >= 0 ? '+' : '') + d.safety.dailyProfit.toFixed(2) + '%</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Daily Limit</span><span class="stat-value">' + d.safety.dailyLimit + '%</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Consec Losses</span><span class="stat-value ' + (d.safety.consecutiveLosses >= 3 ? 'negative' : '') + '">' + d.safety.consecutiveLosses + ' / ' + d.safety.maxConsecutive + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Trades Today</span><span class="stat-value">' + d.safety.tradesToday + '</span></div>';
+    html += '</div>';
 
-        // Controls
-        html += '<div class="card"><h2>Controls</h2>';
-        if (d.paused) {
-            html += '<div style="margin-bottom:8px;"><span class="paused-badge">PAUSED</span> <span style="color:#8b949e;font-size:0.8em;">' + esc(d.pauseReason) + '</span></div>';
-            html += "<button class=\"btn btn-green\" onclick=\"botAction('unpause')\">Resume Bot</button>";
-        } else {
-            html += "<button class=\"btn btn-orange\" onclick=\"botAction('pause')\">Pause Bot</button>";
-        }
-        html += "<button class=\"btn btn-red\" onclick=\"if(confirm('Close all positions?'))botAction('close-all')\">Close All Positions</button>";
-        html += "<button class=\"btn btn-gray\" onclick=\"if(confirm('Reset session stats?'))botAction('reset-stats')\">Reset Stats</button>";
-        html += '<div class="btn-status" id="btnStatus"></div>';
-        html += '</div>';
+    html += '</div>'; // end grid row 1
 
-        // Session Stats
-        html += '<div class="card"><h2>Session Stats</h2>';
-        html += '<div class="stat-row"><span class="stat-label">Trades</span><span class="stat-value">' + d.stats.totalTrades + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Win / Loss</span><span class="stat-value"><span class="positive">' + d.stats.wins + 'W</span> / <span class="negative">' + d.stats.losses + 'L</span></span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Win Rate</span><span class="stat-value ' + (parseFloat(d.stats.winRate) >= 50 ? 'positive' : parseFloat(d.stats.winRate) > 0 ? 'negative' : '') + '">' + d.stats.winRate + '%</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Total P&L</span><span class="stat-value ' + (d.stats.totalProfit >= 0 ? 'positive' : 'negative') + '">' + (d.stats.totalProfit >= 0 ? '+' : '') + d.stats.totalProfit.toFixed(2) + '%</span></div>';
-        html += '<div style="display:flex;gap:8px;margin-top:8px;">';
-        if (d.stats.bestTrade) html += '<div style="flex:1;padding:8px;border-radius:6px;background:#0d1117;"><div style="color:#3fb950;font-weight:bold;font-size:0.8em;">Best</div><div style="font-size:1.1em;color:#3fb950;">+' + d.stats.bestTrade.profit.toFixed(2) + '%</div><div style="font-size:0.75em;color:#8b949e;">' + d.stats.bestTrade.dir + ' ' + (d.stats.bestTrade.symbol||'') + '</div></div>';
-        else html += '<div style="flex:1;padding:8px;border-radius:6px;background:#0d1117;"><div style="color:#3fb950;font-weight:bold;font-size:0.8em;">Best</div><div style="color:#484f58;font-size:0.8em;">None</div></div>';
-        if (d.stats.worstTrade) html += '<div style="flex:1;padding:8px;border-radius:6px;background:#0d1117;"><div style="color:#f85149;font-weight:bold;font-size:0.8em;">Worst</div><div style="font-size:1.1em;color:#f85149;">' + d.stats.worstTrade.profit.toFixed(2) + '%</div><div style="font-size:0.75em;color:#8b949e;">' + d.stats.worstTrade.dir + ' ' + (d.stats.worstTrade.symbol||'') + '</div></div>';
-        else html += '<div style="flex:1;padding:8px;border-radius:6px;background:#0d1117;"><div style="color:#f85149;font-weight:bold;font-size:0.8em;">Worst</div><div style="color:#484f58;font-size:0.8em;">None</div></div>';
-        html += '</div>';
-        html += '</div>';
+    // Markets Overview
+    html += '<div class="grid"><div class="card full-width"><h2>Markets Overview</h2><div style="overflow-x:auto;"><table>';
+    html += '<thead><tr><th>Market</th><th>Price</th><th>Trend</th><th>Score</th><th>Phase</th><th>Imbalance</th><th>Volatility</th><th>Data Pts</th><th>Position</th><th>Entry $</th><th>P&L</th><th>SL/TP</th><th>TP/SL Mode</th><th>Hold</th><th>Entry Mode</th><th>Last Signal</th></tr></thead><tbody>';
+    for (const sym of d.activeMarkets) {
+        const m = d.markets[sym] || {};
+        const scoreC = m.score > 8 ? 'positive' : m.score < -8 ? 'negative' : 'neutral';
+        const trendC = (m.trend||'').indexOf('UP') >= 0 ? 'positive' : (m.trend||'').indexOf('DOWN') >= 0 ? 'negative' : 'neutral';
+        const posC = m.position === 'LONG' ? 'positive' : m.position === 'SHORT' ? 'negative' : '';
+        const pnlC = m.pnl >= 0 ? 'positive' : 'negative';
+        const lastSigText = m.lastSignal ? (m.lastSignal.action !== 'WAIT' ? m.lastSignal.action : 'WAIT') + ' L:' + m.lastSignal.longScore + ' S:' + m.lastSignal.shortScore : '-';
+        const lastSigC = m.lastSignal && m.lastSignal.action !== 'WAIT' ? 'positive' : '';
+        html += '<tr><td><strong>' + sym + '</strong></td>';
+        html += '<td>' + usd(m.price) + '</td>';
+        html += '<td class="' + trendC + '">' + m.trend + '</td>';
+        html += '<td class="' + scoreC + '"><strong>' + m.score + '</strong></td>';
+        html += '<td>' + m.phase + '</td>';
+        html += '<td class="' + (m.imbalance > 0 ? 'positive' : 'negative') + '">' + (m.imbalance * 100).toFixed(1) + '%</td>';
+        html += '<td>' + (m.volatility).toFixed(3) + '%</td>';
+        html += '<td style="color:#8b949e;">' + m.dataPoints + '</td>';
+        html += '<td class="' + posC + '" style="font-weight:bold;">' + (m.position || 'NONE') + '</td>';
+        html += '<td>' + (m.position ? usd(m.entryPrice) : '-') + '</td>';
+        html += '<td class="' + pnlC + '" style="font-weight:bold;">' + (m.position ? m.pnl.toFixed(2) + '%' : '-') + '</td>';
+        html += '<td>' + (m.position && m.sl != null ? m.sl.toFixed(2) + ' / ' + (m.tp != null ? m.tp.toFixed(2) : '?') : '-') + '</td>';
+        html += '<td>' + (m.position && m.tpSlMode ? tag(m.tpSlMode) : '-') + '</td>';
+        html += '<td>' + m.holdMin + '</td>';
+        html += '<td>' + (m.position && m.entryMode ? tag(m.entryMode) : '-') + '</td>';
+        html += '<td class="' + lastSigC + '" style="font-size:0.78em;">' + lastSigText + '</td></tr>';
+    }
+    html += '</tbody></table></div></div></div>';
 
-        // Safety
-        html += '<div class="card"><h2>Safety Layer</h2>';
-        html += '<div class="stat-row"><span class="stat-label">Daily P&L</span><span class="stat-value ' + (d.safety.dailyProfit >= 0 ? 'positive' : 'negative') + '">' + (d.safety.dailyProfit >= 0 ? '+' : '') + d.safety.dailyProfit.toFixed(2) + '%</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Daily Limit</span><span class="stat-value">' + d.safety.dailyLimit + '%</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Consec Losses</span><span class="stat-value ' + (d.safety.consecutiveLosses >= 3 ? 'negative' : '') + '">' + d.safety.consecutiveLosses + ' / ' + d.safety.maxConsecutive + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Trades Today</span><span class="stat-value">' + d.safety.tradesToday + '</span></div>';
-        html += '</div>';
-
-        html += '</div>'; // end grid row 1
-
-        // Markets Overview
-        html += '<div class="grid"><div class="card full-width"><h2>Markets Overview</h2><div style="overflow-x:auto;"><table>';
-        html += '<thead><tr><th>Market</th><th>Price</th><th>Trend</th><th>Score</th><th>Phase</th><th>Imbalance</th><th>Volatility</th><th>Data Pts</th><th>Position</th><th>Entry $</th><th>P&L</th><th>SL/TP</th><th>TP/SL Mode</th><th>Hold</th><th>Entry Mode</th><th>Last Signal</th></tr></thead><tbody>';
-        for (var i = 0; i < d.activeMarkets.length; i++) {
-            var sym = d.activeMarkets[i];
-            var m = d.markets[sym] || {};
-            var scoreC = m.score > 8 ? 'positive' : m.score < -8 ? 'negative' : 'neutral';
-            var trendC = (m.trend||'').indexOf('UP') >= 0 ? 'positive' : (m.trend||'').indexOf('DOWN') >= 0 ? 'negative' : 'neutral';
-            var posC = m.position === 'LONG' ? 'positive' : m.position === 'SHORT' ? 'negative' : '';
-            var pnlC = m.pnl >= 0 ? 'positive' : 'negative';
-            var lastSigText = m.lastSignal ? (m.lastSignal.action !== 'WAIT' ? m.lastSignal.action : 'WAIT') + ' L:' + m.lastSignal.longScore + ' S:' + m.lastSignal.shortScore : '-';
-            var lastSigC = m.lastSignal && m.lastSignal.action !== 'WAIT' ? 'positive' : '';
-            html += '<tr><td><strong>' + sym + '</strong></td>';
-            html += '<td>' + usd(m.price) + '</td>';
-            html += '<td class="' + trendC + '">' + m.trend + '</td>';
-            html += '<td class="' + scoreC + '"><strong>' + m.score + '</strong></td>';
-            html += '<td>' + m.phase + '</td>';
-            html += '<td class="' + (m.imbalance > 0 ? 'positive' : 'negative') + '">' + (m.imbalance * 100).toFixed(1) + '%</td>';
-            html += '<td>' + (m.volatility).toFixed(3) + '%</td>';
-            html += '<td style="color:#8b949e;">' + m.dataPoints + '</td>';
-            html += '<td class="' + posC + '" style="font-weight:bold;">' + (m.position || 'NONE') + '</td>';
-            html += '<td>' + (m.position ? usd(m.entryPrice) : '-') + '</td>';
-            html += '<td class="' + pnlC + '" style="font-weight:bold;">' + (m.position ? m.pnl.toFixed(2) + '%' : '-') + '</td>';
-            html += '<td>' + (m.position && m.sl != null ? m.sl.toFixed(2) + ' / ' + (m.tp != null ? m.tp.toFixed(2) : '?') : '-') + '</td>';
-            html += '<td>' + (m.position && m.tpSlMode ? tag(m.tpSlMode) : '-') + '</td>';
-            html += '<td>' + m.holdMin + '</td>';
-            html += '<td>' + (m.position && m.entryMode ? tag(m.entryMode) : '-') + '</td>';
-            html += '<td class="' + lastSigC + '" style="font-size:0.78em;">' + lastSigText + '</td></tr>';
-        }
-        html += '</tbody></table></div></div></div>';
-
-        // All Technical Indicators
-        html += '<div class="grid"><div class="card full-width"><h2>All Technical Indicators (12 per timeframe)</h2><div style="overflow-x:auto;"><table>';
-        html += '<thead><tr><th>Market</th><th>TF</th><th>RSI</th><th>EMA 9/21</th><th>EMA50</th><th>MACD Hist</th><th>BB Pos</th><th>BB Width</th><th>ATR</th><th>ATR%</th><th>StochRSI K/D</th><th>ADX</th><th>+DI/-DI</th><th>CCI</th><th>Will%R</th><th>ROC</th><th>Ready</th></tr></thead><tbody>';
-        for (var i = 0; i < d.activeMarkets.length; i++) {
-            var sym = d.activeMarkets[i];
-            var m = d.markets[sym];
-            var tfs = ['1m','5m','15m'];
-            for (var j = 0; j < tfs.length; j++) {
-                var tf = tfs[j];
-                var ind = m.indicators[tf];
-                if (!ind) {
-                    html += '<tr><td>' + (tf === '1m' ? '<strong>'+sym+'</strong>' : '') + '</td><td>' + tf + '</td><td colspan="15" style="color:#484f58;">Building data...</td></tr>';
-                    continue;
-                }
-                var rsiV = ind.rsi != null ? ind.rsi.toFixed(1) : '-';
-                var rsiC = ind.rsi != null ? (ind.rsi > 70 ? 'negative' : ind.rsi < 30 ? 'positive' : '') : '';
-                var emaT = ind.ema9 != null && ind.ema21 != null ? (ind.ema9 > ind.ema21 ? 'BULL' : 'BEAR') : '-';
-                var emaC = emaT === 'BULL' ? 'positive' : emaT === 'BEAR' ? 'negative' : '';
-                var ema50T = ind.ema50 != null ? usd(ind.ema50) : '-';
-                var macdH = ind.macdHist != null ? (ind.macdHist > 0 ? '+' : '') + ind.macdHist.toFixed(4) : '-';
-                var macdC = ind.macdHist != null ? (ind.macdHist > 0 ? 'positive' : 'negative') : '';
-                var bbP = ind.bbPos != null ? ind.bbPos.toFixed(0) + '%' : '-';
-                var bbW = ind.bbWidth != null ? ind.bbWidth.toFixed(2) : '-';
-                var atrV = ind.atr != null ? ind.atr.toFixed(4) : '-';
-                var atrP = ind.atrPct != null ? ind.atrPct.toFixed(3) + '%' : '-';
-                var stK = ind.stochK != null ? ind.stochK.toFixed(0) : '-';
-                var stD = ind.stochD != null ? ind.stochD.toFixed(0) : '-';
-                var stC = ind.stochK != null ? (ind.stochK > 80 ? 'negative' : ind.stochK < 20 ? 'positive' : '') : '';
-                var adxV = ind.adx != null ? ind.adx.toFixed(1) : '-';
-                var adxC = ind.adx != null ? (ind.adx > 25 ? 'positive' : 'neutral') : '';
-                var diV = ind.plusDI != null ? '+' + ind.plusDI.toFixed(0) + '/-' + ind.minusDI.toFixed(0) : '-';
-                var cciV = ind.cci != null ? ind.cci.toFixed(0) : '-';
-                var cciC = ind.cci != null ? (ind.cci > 100 ? 'negative' : ind.cci < -100 ? 'positive' : '') : '';
-                var wrV = ind.willR != null ? ind.willR.toFixed(0) : '-';
-                var wrC = ind.willR != null ? (ind.willR < -80 ? 'positive' : ind.willR > -20 ? 'negative' : '') : '';
-                var rocV = ind.roc != null ? ind.roc.toFixed(3) + '%' : '-';
-                var rocC = ind.roc != null ? (ind.roc > 0.15 ? 'positive' : ind.roc < -0.15 ? 'negative' : '') : '';
-                html += '<tr><td>' + (tf === '1m' ? '<strong>'+sym+'</strong>' : '') + '</td><td>' + tf + '</td>';
-                html += '<td class="' + rsiC + '">' + rsiV + '</td><td class="' + emaC + '">' + emaT + '</td><td style="font-size:0.78em;">' + ema50T + '</td>';
-                html += '<td class="' + macdC + '">' + macdH + '</td><td>' + bbP + '</td><td>' + bbW + '</td>';
-                html += '<td style="font-size:0.78em;">' + atrV + '</td><td>' + atrP + '</td><td class="' + stC + '">' + stK + '/' + stD + '</td>';
-                html += '<td class="' + adxC + '">' + adxV + '</td><td style="font-size:0.78em;">' + diV + '</td>';
-                html += '<td class="' + cciC + '">' + cciV + '</td><td class="' + wrC + '">' + wrV + '</td><td class="' + rocC + '">' + rocV + '</td>';
-                html += '<td style="color:#484f58;">' + ind.available + '/' + ind.total + '</td></tr>';
+    // Indicators
+    html += '<div class="grid"><div class="card full-width"><h2>All Technical Indicators (12 per timeframe)</h2><div style="overflow-x:auto;"><table>';
+    html += '<thead><tr><th>Market</th><th>TF</th><th>RSI</th><th>EMA 9/21</th><th>EMA50</th><th>MACD Hist</th><th>BB Pos</th><th>BB Width</th><th>ATR</th><th>ATR%</th><th>StochRSI K/D</th><th>ADX</th><th>+DI/-DI</th><th>CCI</th><th>Will%R</th><th>ROC</th><th>Ready</th></tr></thead><tbody>';
+    for (const sym of d.activeMarkets) {
+        const m = d.markets[sym];
+        for (const tf of ['1m','5m','15m']) {
+            const ind = m.indicators[tf];
+            if (!ind) {
+                html += '<tr><td>' + (tf === '1m' ? '<strong>'+sym+'</strong>' : '') + '</td><td>' + tf + '</td><td colspan="15" style="color:#484f58;">Building data...</td></tr>';
+                continue;
             }
+            const rsiC = ind.rsi != null ? (ind.rsi > 70 ? 'negative' : ind.rsi < 30 ? 'positive' : '') : '';
+            const emaT = ind.ema9 != null && ind.ema21 != null ? (ind.ema9 > ind.ema21 ? 'BULL' : 'BEAR') : '-';
+            const emaC = emaT === 'BULL' ? 'positive' : emaT === 'BEAR' ? 'negative' : '';
+            const macdH = ind.macdHist != null ? (ind.macdHist > 0 ? '+' : '') + ind.macdHist.toFixed(4) : '-';
+            const macdC = ind.macdHist != null ? (ind.macdHist > 0 ? 'positive' : 'negative') : '';
+            const stC = ind.stochK != null ? (ind.stochK > 80 ? 'negative' : ind.stochK < 20 ? 'positive' : '') : '';
+            const adxC = ind.adx != null ? (ind.adx > 25 ? 'positive' : 'neutral') : '';
+            const cciC = ind.cci != null ? (ind.cci > 100 ? 'negative' : ind.cci < -100 ? 'positive' : '') : '';
+            const wrC = ind.willR != null ? (ind.willR < -80 ? 'positive' : ind.willR > -20 ? 'negative' : '') : '';
+            const rocC = ind.roc != null ? (ind.roc > 0.15 ? 'positive' : ind.roc < -0.15 ? 'negative' : '') : '';
+            html += '<tr><td>' + (tf === '1m' ? '<strong>'+sym+'</strong>' : '') + '</td><td>' + tf + '</td>';
+            html += '<td class="' + rsiC + '">' + (ind.rsi != null ? ind.rsi.toFixed(1) : '-') + '</td>';
+            html += '<td class="' + emaC + '">' + emaT + '</td>';
+            html += '<td style="font-size:0.78em;">' + (ind.ema50 != null ? usd(ind.ema50) : '-') + '</td>';
+            html += '<td class="' + macdC + '">' + macdH + '</td>';
+            html += '<td>' + (ind.bbPos != null ? ind.bbPos.toFixed(0) + '%' : '-') + '</td>';
+            html += '<td>' + (ind.bbWidth != null ? ind.bbWidth.toFixed(2) : '-') + '</td>';
+            html += '<td style="font-size:0.78em;">' + (ind.atr != null ? ind.atr.toFixed(4) : '-') + '</td>';
+            html += '<td>' + (ind.atrPct != null ? ind.atrPct.toFixed(3) + '%' : '-') + '</td>';
+            html += '<td class="' + stC + '">' + (ind.stochK != null ? ind.stochK.toFixed(0) : '-') + '/' + (ind.stochD != null ? ind.stochD.toFixed(0) : '-') + '</td>';
+            html += '<td class="' + adxC + '">' + (ind.adx != null ? ind.adx.toFixed(1) : '-') + '</td>';
+            html += '<td style="font-size:0.78em;">' + (ind.plusDI != null ? '+' + ind.plusDI.toFixed(0) + '/-' + ind.minusDI.toFixed(0) : '-') + '</td>';
+            html += '<td class="' + cciC + '">' + (ind.cci != null ? ind.cci.toFixed(0) : '-') + '</td>';
+            html += '<td class="' + wrC + '">' + (ind.willR != null ? ind.willR.toFixed(0) : '-') + '</td>';
+            html += '<td class="' + rocC + '">' + (ind.roc != null ? ind.roc.toFixed(3) + '%' : '-') + '</td>';
+            html += '<td style="color:#484f58;">' + ind.available + '/' + ind.total + '</td></tr>';
         }
-        html += '</tbody></table></div></div></div>';
+    }
+    html += '</tbody></table></div></div></div>';
 
-        // S/R + Candle Patterns
-        html += '<div class="grid"><div class="card full-width"><h2>Support / Resistance & Candle Patterns</h2><table>';
-        html += '<thead><tr><th>Market</th><th>Supports</th><th>Resistances</th><th>Candle Patterns (5m)</th></tr></thead><tbody>';
-        for (var i = 0; i < d.activeMarkets.length; i++) {
-            var sym = d.activeMarkets[i];
-            var m = d.markets[sym];
-            var supText = m.supports && m.supports.length > 0 ? m.supports.map(function(s){return usd(s.price)+' ['+s.strength+'] '+Math.abs(s.distancePercent).toFixed(2)+'%';}).join('<br>') : '<span style="color:#484f58;">Building...</span>';
-            var resText = m.resistances && m.resistances.length > 0 ? m.resistances.map(function(r){return usd(r.price)+' ['+r.strength+'] '+r.distancePercent.toFixed(2)+'%';}).join('<br>') : '<span style="color:#484f58;">Building...</span>';
-            var cp = m.candlePatterns;
-            var cpText = cp && cp.patterns && cp.patterns.length > 0 ? cp.patterns.slice(-3).map(function(p){var c=p.signal.indexOf('BULLISH')>=0?'positive':p.signal.indexOf('BEARISH')>=0?'negative':'neutral';return '<span class="'+c+'">'+p.type+'</span>';}).join(', ') : '<span style="color:#484f58;">' + (cp?cp.summary:'Building...') + '</span>';
-            html += '<tr><td><strong>' + sym + '</strong></td><td>' + supText + '</td><td>' + resText + '</td><td>' + cpText + '</td></tr>';
-        }
-        html += '</tbody></table></div></div>';
+    // S/R + Candle Patterns
+    html += '<div class="grid"><div class="card full-width"><h2>Support / Resistance & Candle Patterns</h2><table>';
+    html += '<thead><tr><th>Market</th><th>Supports</th><th>Resistances</th><th>Candle Patterns (5m)</th></tr></thead><tbody>';
+    for (const sym of d.activeMarkets) {
+        const m = d.markets[sym];
+        const supText = m.supports && m.supports.length > 0 ? m.supports.map(s => usd(s.price)+' ['+s.strength+'] '+Math.abs(s.distancePercent).toFixed(2)+'%').join('<br>') : '<span style="color:#484f58;">Building...</span>';
+        const resText = m.resistances && m.resistances.length > 0 ? m.resistances.map(r => usd(r.price)+' ['+r.strength+'] '+r.distancePercent.toFixed(2)+'%').join('<br>') : '<span style="color:#484f58;">Building...</span>';
+        const cp = m.candlePatterns;
+        const cpText = cp && cp.patterns && cp.patterns.length > 0 ? cp.patterns.slice(-3).map(p => { const c2 = p.signal.indexOf('BULLISH')>=0?'positive':p.signal.indexOf('BEARISH')>=0?'negative':'neutral'; return '<span class="'+c2+'">'+p.type+'</span>'; }).join(', ') : '<span style="color:#484f58;">' + (cp?cp.summary:'Building...') + '</span>';
+        html += '<tr><td><strong>' + sym + '</strong></td><td>' + supText + '</td><td>' + resText + '</td><td>' + cpText + '</td></tr>';
+    }
+    html += '</tbody></table></div></div>';
 
-        // Pattern Memory Stats
-        html += '<div class="grid"><div class="card full-width"><h2>Pattern Memory - Learning Stats by Market & Direction</h2>';
-        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">';
-        var byM = d.pmStats.byMarket || {};
-        var mktKeys = Object.keys(byM);
-        if (mktKeys.length === 0) html += '<div style="color:#484f58;padding:10px;">No market data yet</div>';
-        for (var k = 0; k < mktKeys.length; k++) {
-            var mk = mktKeys[k]; var md = byM[mk]; var mt = md.wins + md.losses; var mwr = mt > 0 ? (md.wins/mt*100).toFixed(0) : 0;
-            html += '<div style="background:#0d1117;padding:10px;border-radius:6px;"><div style="font-weight:bold;color:#58a6ff;margin-bottom:4px;">' + mk + '</div><div style="font-size:0.85em;">W: <span class="positive">' + md.wins + '</span> L: <span class="negative">' + md.losses + '</span> WR: <span class="' + (mwr>=50?'positive':'negative') + '">' + mwr + '%</span></div></div>';
-        }
-        var byD = d.pmStats.byDirection || {};
-        var dKeys = Object.keys(byD);
-        for (var k = 0; k < dKeys.length; k++) {
-            var dk = dKeys[k]; var dd = byD[dk]; var dt = dd.wins + dd.losses; var dwr = dt > 0 ? (dd.wins/dt*100).toFixed(0) : 0;
-            html += '<div style="background:#0d1117;padding:10px;border-radius:6px;"><div style="font-weight:bold;color:' + (dk==='LONG'?'#3fb950':'#f85149') + ';margin-bottom:4px;">' + dk + '</div><div style="font-size:0.85em;">W: <span class="positive">' + dd.wins + '</span> L: <span class="negative">' + dd.losses + '</span> WR: <span class="' + (dwr>=50?'positive':'negative') + '">' + dwr + '%</span></div></div>';
-        }
-        html += '</div>';
-        // Hourly heatmap
-        var byH = d.pmStats.byHour || {};
-        if (Object.keys(byH).length > 0) {
-            html += '<div style="margin-top:10px;"><div style="color:#58a6ff;font-weight:600;margin-bottom:6px;">Win Rate by Hour (UTC)</div><div style="display:flex;flex-wrap:wrap;gap:4px;">';
-            for (var h = 0; h < 24; h++) {
-                var hd = byH[h.toString()] || {wins:0,losses:0}; var ht = hd.wins+hd.losses; var hwr = ht > 0 ? Math.round(hd.wins/ht*100) : -1;
-                var bg = hwr < 0 ? '#21262d' : hwr >= 60 ? '#238636' : hwr >= 40 ? '#d29922' : '#da3633';
-                html += '<div style="width:30px;height:30px;background:'+bg+';border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.7em;" title="'+h+':00 UTC - '+(ht>0?hwr+'% ('+ht+' trades)':'no trades')+'">'+h+'</div>';
-            }
-            html += '</div></div>';
+    // Pattern Memory Stats
+    html += '<div class="grid"><div class="card full-width"><h2>Pattern Memory - Learning Stats</h2>';
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">';
+    const byM = d.pmStats.byMarket || {};
+    for (const mk of Object.keys(byM)) {
+        const md = byM[mk]; const mt = md.wins + md.losses; const mwr = mt > 0 ? (md.wins/mt*100).toFixed(0) : 0;
+        html += '<div style="background:#0d1117;padding:10px;border-radius:6px;"><div style="font-weight:bold;color:#58a6ff;margin-bottom:4px;">' + mk + '</div><div style="font-size:0.85em;">W: <span class="positive">' + md.wins + '</span> L: <span class="negative">' + md.losses + '</span> WR: <span class="' + (mwr>=50?'positive':'negative') + '">' + mwr + '%</span></div></div>';
+    }
+    if (Object.keys(byM).length === 0) html += '<div style="color:#484f58;padding:10px;">No market data yet</div>';
+    const byD = d.pmStats.byDirection || {};
+    for (const dk of Object.keys(byD)) {
+        const dd = byD[dk]; const dt2 = dd.wins + dd.losses; const dwr = dt2 > 0 ? (dd.wins/dt2*100).toFixed(0) : 0;
+        html += '<div style="background:#0d1117;padding:10px;border-radius:6px;"><div style="font-weight:bold;color:' + (dk==='LONG'?'#3fb950':'#f85149') + ';margin-bottom:4px;">' + dk + '</div><div style="font-size:0.85em;">W: <span class="positive">' + dd.wins + '</span> L: <span class="negative">' + dd.losses + '</span> WR: <span class="' + (dwr>=50?'positive':'negative') + '">' + dwr + '%</span></div></div>';
+    }
+    html += '</div>';
+    // Hourly heatmap
+    const byH = d.pmStats.byHour || {};
+    if (Object.keys(byH).length > 0) {
+        html += '<div style="margin-top:10px;"><div style="color:#58a6ff;font-weight:600;margin-bottom:6px;">Win Rate by Hour (UTC)</div><div style="display:flex;flex-wrap:wrap;gap:4px;">';
+        for (let h = 0; h < 24; h++) {
+            const hd = byH[h.toString()] || {wins:0,losses:0}; const ht2 = hd.wins+hd.losses; const hwr = ht2 > 0 ? Math.round(hd.wins/ht2*100) : -1;
+            const bg = hwr < 0 ? '#21262d' : hwr >= 60 ? '#238636' : hwr >= 40 ? '#d29922' : '#da3633';
+            html += '<div style="width:30px;height:30px;background:'+bg+';border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.7em;" title="'+h+':00 UTC - '+(ht2>0?hwr+'% ('+ht2+' trades)':'no trades')+'">'+h+'</div>';
         }
         html += '</div></div>';
-
-        // Live Decisions
-        html += '<div class="grid"><div class="card full-width"><h2>Live Decisions & Pattern Matching</h2><div style="max-height:350px;overflow-y:auto;">';
-        if (d.brainLog.length === 0) html += '<div style="color:#484f58;padding:20px;text-align:center;">Waiting for decisions...</div>';
-        for (var i = 0; i < d.brainLog.length; i++) {
-            var t = d.brainLog[i]; var col = categoryColors[t.category] || '#888';
-            html += '<div class="thinking-entry" style="border-left-color:'+col+';"><span class="thinking-time">'+new Date(t.time).toLocaleTimeString()+'</span><span style="color:'+col+';font-weight:600;text-transform:uppercase;font-size:0.72em;">['+t.category+']</span> '+esc(t.message)+'</div>';
-        }
-        html += '</div></div></div>';
-
-        // Signal Performance
-        html += '<div class="grid"><div class="card full-width"><h2>Signal Performance Tracker (25 signals)</h2><div style="overflow-x:auto;"><table>';
-        html += '<thead><tr><th style="min-width:130px;">Signal</th><th>Wins</th><th>Losses</th><th>Total</th><th>Win Rate</th><th style="min-width:150px;">Performance</th></tr></thead><tbody>';
-        for (var i = 0; i < d.signalDefs.length; i++) {
-            var def = d.signalDefs[i]; var s = d.signalStats[def.id] || {wins:0,losses:0}; var total = s.wins+s.losses;
-            var wr = total > 0 ? (s.wins/total*100).toFixed(0) : '-'; var wrC2 = total > 0 ? (s.wins/total >= 0.5 ? 'positive' : 'negative') : '';
-            var winPct2 = total > 0 ? (s.wins/total*100) : 0;
-            html += '<tr><td style="font-weight:600;">'+def.name+'</td><td class="positive">'+s.wins+'</td><td class="negative">'+s.losses+'</td><td>'+total+'</td>';
-            html += '<td class="'+wrC2+'" style="font-weight:bold;">'+(total>0?wr+'%':'-')+'</td>';
-            html += '<td><div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#21262d;">'+(total>0?'<div style="width:'+winPct2+'%;background:#238636;"></div><div style="width:'+(100-winPct2)+'%;background:#da3633;"></div>':'')+'</div></td></tr>';
-        }
-        html += '</tbody></table></div></div></div>';
-
-        // Signal Combo Tracker
-        html += '<div class="grid"><div class="card full-width"><h2>Signal Combo Tracker - Which Combinations Win?</h2><p style="color:#8b949e;font-size:0.8em;margin-bottom:10px;">Every trade uses multiple signals. This shows which combos actually worked.</p><div style="overflow-x:auto;"><table>';
-        html += '<thead><tr><th>Combo (Signals Used Together)</th><th>Times</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th style="min-width:120px;">Performance</th></tr></thead><tbody>';
-        if (d.signalCombos.length === 0) html += '<tr><td colspan="6" style="color:#484f58;text-align:center;padding:15px;">No combo data yet</td></tr>';
-        for (var i = 0; i < d.signalCombos.length; i++) {
-            var c = d.signalCombos[i]; var cwr = (c.wins/c.total*100).toFixed(0); var cwrC = c.wins/c.total >= 0.5 ? 'positive' : 'negative'; var cwP = c.wins/c.total*100;
-            var sigLabels = c.signals.map(function(s2){var df=d.signalDefs.find(function(dd){return dd.id===s2;});return df?df.name:s2;});
-            html += '<tr><td>'+sigLabels.map(function(n){return tag(n);}).join(' ')+'</td><td>'+c.total+'</td><td class="positive">'+c.wins+'</td><td class="negative">'+c.losses+'</td>';
-            html += '<td class="'+cwrC+'" style="font-weight:bold;">'+cwr+'%</td>';
-            html += '<td><div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#21262d;"><div style="width:'+cwP+'%;background:#238636;"></div><div style="width:'+(100-cwP)+'%;background:#da3633;"></div></div></td></tr>';
-        }
-        html += '</tbody></table></div></div></div>';
-
-        // TP/SL Combo Performance
-        html += '<div class="grid"><div class="card full-width"><h2>TP/SL Combo Performance - Which TP/SL Settings Work Best?</h2><p style="color:#8b949e;font-size:0.8em;margin-bottom:10px;">Bot tests different TP/SL combos and learns which produce best results. ATR adjusts values for volatility.</p><div style="overflow-x:auto;"><table>';
-        html += '<thead><tr><th>TP %</th><th>SL %</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Avg P&L</th><th>Total P&L</th><th>Best</th><th>Worst</th><th>Score</th><th style="min-width:100px;">Performance</th></tr></thead><tbody>';
-        if (d.topCombos.length === 0) html += '<tr><td colspan="12" style="color:#484f58;text-align:center;padding:15px;">No TP/SL data yet - bot will test combos as it trades</td></tr>';
-        for (var i = 0; i < d.topCombos.length; i++) {
-            var tc = d.topCombos[i]; var tcWrC = tc.winRate >= 50 ? 'positive' : 'negative'; var tcPct = tc.total > 0 ? tc.winRate : 0;
-            html += '<tr><td style="font-weight:600;color:#58a6ff;">' + tc.tp.toFixed(2) + '%</td><td style="font-weight:600;color:#d29922;">' + tc.sl.toFixed(2) + '%</td>';
-            html += '<td>' + tc.total + '</td><td class="positive">' + tc.wins + '</td><td class="negative">' + tc.losses + '</td>';
-            html += '<td class="' + tcWrC + '" style="font-weight:bold;">' + tc.winRate.toFixed(1) + '%</td>';
-            html += '<td class="' + (tc.avgProfit >= 0 ? 'positive' : 'negative') + '">' + (tc.avgProfit >= 0 ? '+' : '') + tc.avgProfit.toFixed(2) + '%</td>';
-            html += '<td class="' + (tc.totalProfit >= 0 ? 'positive' : 'negative') + '">' + (tc.totalProfit >= 0 ? '+' : '') + tc.totalProfit.toFixed(2) + '%</td>';
-            html += '<td class="positive">' + (tc.bestProfit >= 0 ? '+' : '') + tc.bestProfit.toFixed(2) + '%</td>';
-            html += '<td class="negative">' + tc.worstProfit.toFixed(2) + '%</td>';
-            html += '<td>' + (tc.score != null ? tc.score.toFixed(3) : '-') + '</td>';
-            html += '<td><div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#21262d;">' + (tc.total > 0 ? '<div style="width:'+tcPct+'%;background:#238636;"></div><div style="width:'+(100-tcPct)+'%;background:#da3633;"></div>' : '') + '</div></td></tr>';
-        }
-        html += '</tbody></table></div></div></div>';
-
-        // Stored Pattern History
-        html += '<div class="grid"><div class="card full-width"><h2>Stored Pattern History (Last 10)</h2><div style="overflow-x:auto;"><table>';
-        html += '<thead><tr><th>Time</th><th>Market</th><th>Dir</th><th>Result</th><th>P&L</th><th>Exit</th><th>Hold</th><th>Mode</th><th>RSI 1m</th><th>StochK</th><th>BB Pos</th><th>CCI</th><th>Will%R</th><th>ADX</th><th>Imb</th><th>Trend</th><th>Triggers</th></tr></thead><tbody>';
-        if (d.recentPatterns.length === 0) html += '<tr><td colspan="17" style="color:#484f58;text-align:center;padding:15px;">No patterns stored yet</td></tr>';
-        for (var i = 0; i < d.recentPatterns.length; i++) {
-            var p = d.recentPatterns[i]; var fp = p.fingerprint || {};
-            html += '<tr><td style="font-size:0.75em;">' + new Date(p.timestamp).toLocaleTimeString() + '</td>';
-            html += '<td>' + (p.symbol||'-') + '</td>';
-            html += '<td class="' + (p.direction==='LONG'?'positive':'negative') + '">' + (p.direction||'-') + '</td>';
-            html += '<td class="' + (p.result==='WIN'?'positive':'negative') + '" style="font-weight:bold;">' + (p.result||'-') + '</td>';
-            html += '<td class="' + ((p.profitPercent||0)>=0?'positive':'negative') + '">' + ((p.profitPercent||0)>=0?'+':'') + (p.profitPercent||0).toFixed(2) + '%</td>';
-            html += '<td>' + (p.exitReason||'-') + '</td>';
-            html += '<td>' + (p.holdTimeMin||0).toFixed(0) + 'm</td>';
-            html += '<td>' + tag(p.entryMode||'-') + '</td>';
-            html += '<td class="fp-val">' + (fp.rsi_1m!=null?fp.rsi_1m.toFixed(1):'-') + '</td>';
-            html += '<td class="fp-val">' + (fp.stoch_k_1m!=null?fp.stoch_k_1m.toFixed(0):'-') + '</td>';
-            html += '<td class="fp-val">' + (fp.bb_position_1m!=null?(fp.bb_position_1m*100).toFixed(0)+'%':'-') + '</td>';
-            html += '<td class="fp-val">' + (fp.cci_1m!=null?fp.cci_1m.toFixed(0):'-') + '</td>';
-            html += '<td class="fp-val">' + (fp.willr_1m!=null?fp.willr_1m.toFixed(0):'-') + '</td>';
-            html += '<td class="fp-val">' + (fp.adx_1m!=null?fp.adx_1m.toFixed(0):'-') + '</td>';
-            html += '<td class="fp-val">' + (fp.imbalance!=null?(fp.imbalance*100).toFixed(0)+'%':'-') + '</td>';
-            html += '<td>' + (fp.trend===1?'<span class="positive">UP</span>':fp.trend===-1?'<span class="negative">DN</span>':'RNG') + '</td>';
-            html += '<td>' + ((p.triggerSignals||[]).slice(0,4).map(function(s3){return tag(s3);}).join(' ')||'-') + '</td></tr>';
-        }
-        html += '</tbody></table></div></div></div>';
-
-        // Trade History
-        html += '<div class="grid"><div class="card full-width"><h2>Complete Trade History (Last 50)</h2><div style="overflow-x:auto;"><table>';
-        html += '<thead><tr><th>Time</th><th>Market</th><th>Dir</th><th>Entry $</th><th>Exit $</th><th>P&L %</th><th>Result</th><th>Exit Reason</th><th>TP/SL Used</th><th>TP/SL Mode</th><th>Hold</th><th>Entry Mode</th><th>Sim</th><th style="min-width:220px;">Trigger Signals</th></tr></thead><tbody>';
-        if (d.recentTrades.length === 0) html += '<tr><td colspan="14" style="color:#484f58;text-align:center;padding:20px;">No trades yet</td></tr>';
-        for (var i = 0; i < d.recentTrades.length; i++) {
-            var t2 = d.recentTrades[i];
-            var sigDisp = t2.triggerSignals.length > 0 ? t2.triggerSignals.map(function(sig2){var df2=d.signalDefs.find(function(dd2){return dd2.id===sig2;});return tag(df2?df2.name:sig2);}).join(' ') : '<span style="color:#484f58;font-size:0.75em;">no data</span>';
-            html += '<tr><td style="font-size:0.75em;">' + new Date(t2.timestamp).toLocaleTimeString() + '<br>' + new Date(t2.timestamp).toLocaleDateString() + '</td>';
-            html += '<td>' + (t2.symbol||'-') + '</td>';
-            html += '<td class="' + (t2.direction==='LONG'?'positive':'negative') + '">' + t2.direction + '</td>';
-            html += '<td>' + usd(t2.entryPrice) + '</td>';
-            html += '<td>' + usd(t2.exitPrice) + '</td>';
-            html += '<td class="' + (t2.profitPercent>=0?'positive':'negative') + '" style="font-weight:bold;">' + (t2.profitPercent>=0?'+':'') + t2.profitPercent.toFixed(2) + '%</td>';
-            html += '<td class="' + (t2.result==='WIN'?'positive':'negative') + '" style="font-weight:bold;">' + t2.result + '</td>';
-            html += '<td>' + t2.exitReason + '</td>';
-            html += '<td style="font-size:0.78em;">' + (t2.tp!=null?'TP:'+t2.tp.toFixed(2)+' SL:'+t2.sl.toFixed(2):'-') + '</td>';
-            html += '<td>' + (t2.tpSlMode ? tag(t2.tpSlMode) : '-') + '</td>';
-            html += '<td>' + (t2.holdTimeMin||'?') + 'm</td>';
-            html += '<td>' + tag(t2.entryMode) + '</td>';
-            html += '<td>' + (t2.simulated?'SIM':'LIVE') + '</td>';
-            html += '<td>' + sigDisp + '</td></tr>';
-        }
-        html += '</tbody></table></div></div></div>';
-
-        document.getElementById('dashboard').innerHTML = html;
     }
+    html += '</div></div>';
 
+    // Live Decisions
+    html += '<div class="grid"><div class="card full-width"><h2>Live Decisions & Pattern Matching</h2><div style="max-height:350px;overflow-y:auto;">';
+    if (d.brainLog.length === 0) html += '<div style="color:#484f58;padding:20px;text-align:center;">Waiting for decisions...</div>';
+    for (const t of d.brainLog) {
+        const col = categoryColors[t.category] || '#888';
+        html += '<div class="thinking-entry" style="border-left-color:'+col+';"><span class="thinking-time">'+new Date(t.time).toLocaleTimeString()+'</span><span style="color:'+col+';font-weight:600;text-transform:uppercase;font-size:0.72em;">['+t.category+']</span> '+esc(t.message)+'</div>';
+    }
+    html += '</div></div></div>';
+
+    // Signal Performance
+    html += '<div class="grid"><div class="card full-width"><h2>Signal Performance Tracker (25 signals)</h2><div style="overflow-x:auto;"><table>';
+    html += '<thead><tr><th style="min-width:130px;">Signal</th><th>Wins</th><th>Losses</th><th>Total</th><th>Win Rate</th><th style="min-width:150px;">Performance</th></tr></thead><tbody>';
+    for (const def of d.signalDefs) {
+        const s = d.signalStats[def.id] || {wins:0,losses:0}; const total = s.wins+s.losses;
+        const wr = total > 0 ? (s.wins/total*100).toFixed(0) : '-'; const wrC2 = total > 0 ? (s.wins/total >= 0.5 ? 'positive' : 'negative') : '';
+        const winPct2 = total > 0 ? (s.wins/total*100) : 0;
+        html += '<tr><td style="font-weight:600;">'+def.name+'</td><td class="positive">'+s.wins+'</td><td class="negative">'+s.losses+'</td><td>'+total+'</td>';
+        html += '<td class="'+wrC2+'" style="font-weight:bold;">'+(total>0?wr+'%':'-')+'</td>';
+        html += '<td><div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#21262d;">'+(total>0?'<div style="width:'+winPct2+'%;background:#238636;"></div><div style="width:'+(100-winPct2)+'%;background:#da3633;"></div>':'')+'</div></td></tr>';
+    }
+    html += '</tbody></table></div></div></div>';
+
+    // Signal Combos
+    html += '<div class="grid"><div class="card full-width"><h2>Signal Combo Tracker - Which Combinations Win?</h2><div style="overflow-x:auto;"><table>';
+    html += '<thead><tr><th>Combo</th><th>Times</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th style="min-width:120px;">Performance</th></tr></thead><tbody>';
+    if (d.signalCombos.length === 0) html += '<tr><td colspan="6" style="color:#484f58;text-align:center;padding:15px;">No combo data yet</td></tr>';
+    for (const c of d.signalCombos) {
+        const cwr = (c.wins/c.total*100).toFixed(0); const cwrC = c.wins/c.total >= 0.5 ? 'positive' : 'negative'; const cwP = c.wins/c.total*100;
+        const sigLabels = c.signals.map(s2 => { const df = d.signalDefs.find(dd => dd.id===s2); return df?df.name:s2; });
+        html += '<tr><td>'+sigLabels.map(n => tag(n)).join(' ')+'</td><td>'+c.total+'</td><td class="positive">'+c.wins+'</td><td class="negative">'+c.losses+'</td>';
+        html += '<td class="'+cwrC+'" style="font-weight:bold;">'+cwr+'%</td>';
+        html += '<td><div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#21262d;"><div style="width:'+cwP+'%;background:#238636;"></div><div style="width:'+(100-cwP)+'%;background:#da3633;"></div></div></td></tr>';
+    }
+    html += '</tbody></table></div></div></div>';
+
+    // TP/SL Combo Performance
+    html += '<div class="grid"><div class="card full-width"><h2>TP/SL Combo Performance - Which Settings Work Best?</h2><div style="overflow-x:auto;"><table>';
+    html += '<thead><tr><th>TP %</th><th>SL %</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Avg P&L</th><th>Total P&L</th><th>Best</th><th>Worst</th><th>Score</th><th style="min-width:100px;">Performance</th></tr></thead><tbody>';
+    if (d.topCombos.length === 0) html += '<tr><td colspan="12" style="color:#484f58;text-align:center;padding:15px;">No TP/SL data yet</td></tr>';
+    for (const tc of d.topCombos) {
+        const tcWrC = tc.winRate >= 50 ? 'positive' : 'negative'; const tcPct = tc.total > 0 ? tc.winRate : 0;
+        html += '<tr><td style="font-weight:600;color:#58a6ff;">' + tc.tp.toFixed(2) + '%</td><td style="font-weight:600;color:#d29922;">' + tc.sl.toFixed(2) + '%</td>';
+        html += '<td>' + tc.total + '</td><td class="positive">' + tc.wins + '</td><td class="negative">' + tc.losses + '</td>';
+        html += '<td class="' + tcWrC + '" style="font-weight:bold;">' + tc.winRate.toFixed(1) + '%</td>';
+        html += '<td class="' + (tc.avgProfit >= 0 ? 'positive' : 'negative') + '">' + (tc.avgProfit >= 0 ? '+' : '') + tc.avgProfit.toFixed(2) + '%</td>';
+        html += '<td class="' + (tc.totalProfit >= 0 ? 'positive' : 'negative') + '">' + (tc.totalProfit >= 0 ? '+' : '') + tc.totalProfit.toFixed(2) + '%</td>';
+        html += '<td class="positive">' + (tc.bestProfit >= 0 ? '+' : '') + tc.bestProfit.toFixed(2) + '%</td>';
+        html += '<td class="negative">' + tc.worstProfit.toFixed(2) + '%</td>';
+        html += '<td>' + (tc.score != null ? tc.score.toFixed(3) : '-') + '</td>';
+        html += '<td><div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#21262d;">' + (tc.total > 0 ? '<div style="width:'+tcPct+'%;background:#238636;"></div><div style="width:'+(100-tcPct)+'%;background:#da3633;"></div>' : '') + '</div></td></tr>';
+    }
+    html += '</tbody></table></div></div></div>';
+
+    // Pattern History
+    html += '<div class="grid"><div class="card full-width"><h2>Stored Pattern History (Last 10)</h2><div style="overflow-x:auto;"><table>';
+    html += '<thead><tr><th>Time</th><th>Market</th><th>Dir</th><th>Result</th><th>P&L</th><th>Exit</th><th>Hold</th><th>Mode</th><th>RSI 1m</th><th>StochK</th><th>BB Pos</th><th>CCI</th><th>Will%R</th><th>ADX</th><th>Imb</th><th>Trend</th><th>Triggers</th></tr></thead><tbody>';
+    if (d.recentPatterns.length === 0) html += '<tr><td colspan="17" style="color:#484f58;text-align:center;padding:15px;">No patterns stored yet</td></tr>';
+    for (const p of d.recentPatterns) {
+        const fp = p.fingerprint || {};
+        html += '<tr><td style="font-size:0.75em;">' + new Date(p.timestamp).toLocaleTimeString() + '</td>';
+        html += '<td>' + (p.symbol||'-') + '</td>';
+        html += '<td class="' + (p.direction==='LONG'?'positive':'negative') + '">' + (p.direction||'-') + '</td>';
+        html += '<td class="' + (p.result==='WIN'?'positive':'negative') + '" style="font-weight:bold;">' + (p.result||'-') + '</td>';
+        html += '<td class="' + ((p.profitPercent||0)>=0?'positive':'negative') + '">' + ((p.profitPercent||0)>=0?'+':'') + (p.profitPercent||0).toFixed(2) + '%</td>';
+        html += '<td>' + (p.exitReason||'-') + '</td>';
+        html += '<td>' + (p.holdTimeMin||0).toFixed(0) + 'm</td>';
+        html += '<td>' + tag(p.entryMode||'-') + '</td>';
+        html += '<td class="fp-val">' + (fp.rsi_1m!=null?fp.rsi_1m.toFixed(1):'-') + '</td>';
+        html += '<td class="fp-val">' + (fp.stoch_k_1m!=null?fp.stoch_k_1m.toFixed(0):'-') + '</td>';
+        html += '<td class="fp-val">' + (fp.bb_position_1m!=null?(fp.bb_position_1m*100).toFixed(0)+'%':'-') + '</td>';
+        html += '<td class="fp-val">' + (fp.cci_1m!=null?fp.cci_1m.toFixed(0):'-') + '</td>';
+        html += '<td class="fp-val">' + (fp.willr_1m!=null?fp.willr_1m.toFixed(0):'-') + '</td>';
+        html += '<td class="fp-val">' + (fp.adx_1m!=null?fp.adx_1m.toFixed(0):'-') + '</td>';
+        html += '<td class="fp-val">' + (fp.imbalance!=null?(fp.imbalance*100).toFixed(0)+'%':'-') + '</td>';
+        html += '<td>' + (fp.trend===1?'<span class="positive">UP</span>':fp.trend===-1?'<span class="negative">DN</span>':'RNG') + '</td>';
+        html += '<td>' + ((p.triggerSignals||[]).slice(0,4).map(s3 => tag(s3)).join(' ')||'-') + '</td></tr>';
+    }
+    html += '</tbody></table></div></div></div>';
+
+    // Trade History
+    html += '<div class="grid"><div class="card full-width"><h2>Complete Trade History (Last 50)</h2><div style="overflow-x:auto;"><table>';
+    html += '<thead><tr><th>Time</th><th>Market</th><th>Dir</th><th>Entry $</th><th>Exit $</th><th>P&L %</th><th>Result</th><th>Exit Reason</th><th>TP/SL Used</th><th>TP/SL Mode</th><th>Hold</th><th>Entry Mode</th><th>Sim</th><th style="min-width:220px;">Trigger Signals</th></tr></thead><tbody>';
+    if (d.recentTrades.length === 0) html += '<tr><td colspan="14" style="color:#484f58;text-align:center;padding:20px;">No trades yet</td></tr>';
+    for (const t2 of d.recentTrades) {
+        const sigDisp = t2.triggerSignals.length > 0 ? t2.triggerSignals.map(sig2 => { const df2 = d.signalDefs.find(dd2 => dd2.id===sig2); return tag(df2?df2.name:sig2); }).join(' ') : '<span style="color:#484f58;font-size:0.75em;">no data</span>';
+        html += '<tr><td style="font-size:0.75em;">' + new Date(t2.timestamp).toLocaleTimeString() + '<br>' + new Date(t2.timestamp).toLocaleDateString() + '</td>';
+        html += '<td>' + (t2.symbol||'-') + '</td>';
+        html += '<td class="' + (t2.direction==='LONG'?'positive':'negative') + '">' + t2.direction + '</td>';
+        html += '<td>' + usd(t2.entryPrice) + '</td>';
+        html += '<td>' + usd(t2.exitPrice) + '</td>';
+        html += '<td class="' + (t2.profitPercent>=0?'positive':'negative') + '" style="font-weight:bold;">' + (t2.profitPercent>=0?'+':'') + t2.profitPercent.toFixed(2) + '%</td>';
+        html += '<td class="' + (t2.result==='WIN'?'positive':'negative') + '" style="font-weight:bold;">' + t2.result + '</td>';
+        html += '<td>' + t2.exitReason + '</td>';
+        html += '<td style="font-size:0.78em;">' + (t2.tp!=null?'TP:'+t2.tp.toFixed(2)+' SL:'+t2.sl.toFixed(2):'-') + '</td>';
+        html += '<td>' + (t2.tpSlMode ? tag(t2.tpSlMode) : '-') + '</td>';
+        html += '<td>' + (t2.holdTimeMin||'?') + 'm</td>';
+        html += '<td>' + tag(t2.entryMode) + '</td>';
+        html += '<td>' + (t2.simulated?'SIM':'LIVE') + '</td>';
+        html += '<td>' + sigDisp + '</td></tr>';
+    }
+    html += '</tbody></table></div></div></div>';
+
+    // Button script
+    html += `
+    <script>
     function botAction(action) {
         var s = document.getElementById('btnStatus');
         if (s) { s.textContent = 'Processing...'; s.style.color = '#d29922'; }
@@ -1440,34 +1413,19 @@ function generateDashboardShell() {
             .then(function(r) { return r.json(); })
             .then(function(dd) {
                 if (s) { s.textContent = dd.message || 'Done'; s.style.color = '#3fb950'; }
-                setTimeout(fetchData, 500);
             })
             .catch(function(e) {
                 if (s) { s.textContent = 'Error: ' + e.message; s.style.color = '#f85149'; }
             });
     }
-
-    var fetchErrors = 0;
-    function fetchData() {
-        fetch('/api/data')
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                fetchErrors = 0;
-                renderDashboard(data);
-                document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
-            })
-            .catch(function(e) {
-                fetchErrors++;
-                document.getElementById('lastUpdate').textContent = 'Update failed (' + fetchErrors + '): ' + e.message;
-            });
-    }
-
-    fetchData();
-    setInterval(fetchData, 5000);
     </script>
+</div>
 </body>
 </html>`;
+
+    return html;
 }
+
 
 function startDashboard() {
     const server = http.createServer(async (req, res) => {
@@ -1515,7 +1473,7 @@ function startDashboard() {
             sendJson({ ok: true, message: 'Stats reset' });
         } else {
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
-            res.end(generateDashboardShell());
+            res.end(generateDashboardHTML());
         }
     });
 
