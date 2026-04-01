@@ -693,8 +693,8 @@ async function processMarket(symbol) {
                 if (!marketState.entryTime) marketState.entryTime = Date.now();
             }
             if (marketState.aiStopLoss == null) {
-                marketState.aiStopLoss = 0.25;
-                aiBrain.think(`[${symbol}] Emergency SL assigned: 0.25% (position had no stop loss)`, 'safety');
+                marketState.aiStopLoss = 0.50;
+                aiBrain.think(`[${symbol}] Emergency SL assigned: 0.50% (position had no stop loss)`, 'safety');
             }
             if (marketState.aiTakeProfit == null) {
                 marketState.aiTakeProfit = 0.30;
@@ -778,7 +778,7 @@ async function processMarket(symbol) {
                 return;
             }
 
-            marketState.aiStopLoss = 0.25;
+            marketState.aiStopLoss = 0.50;
             marketState.aiTakeProfit = 0.30;
             marketState.aiMaxHoldMinutes = 30;
             marketState.aiReason = signal.reason;
@@ -786,7 +786,7 @@ async function processMarket(symbol) {
                 .filter(([, dir]) => dir === signal.direction)
                 .map(([sig]) => sig);
 
-            aiBrain.think(`[${symbol}] ENTRY ${signal.action} | Score: ${Math.max(signal.longScore, signal.shortScore)}/${signal.totalSignals} | SL: 0.25% | TP: 0.30% | ${signal.reason}`, 'entry');
+            aiBrain.think(`[${symbol}] ENTRY ${signal.action} | Score: ${Math.max(signal.longScore, signal.shortScore)}/${signal.totalSignals} | SL: 0.50% | TP: 0.30% | ${signal.reason}`, 'entry');
             await openPosition(signal.action, marketState, marketConfig, symbol);
         }
     } catch (error) {
@@ -851,7 +851,7 @@ function generateDashboardHTML() {
     return `<!DOCTYPE html>
 <html>
 <head>
-    <title>Scalping Bot v15 - Signal Engine</title>
+    <title>Scalping Bot v16 - Mean Reversion</title>
     <meta charset="UTF-8">
     <meta http-equiv="refresh" content="5">
     <style>
@@ -895,8 +895,8 @@ function generateDashboardHTML() {
 </head>
 <body>
     <div class="container">
-        <h1>Scalping Bot - Signal Engine <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v15</span></h1>
-        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Rule-Based Scalping | v15 | TP: 0.30% SL: 0.25% | Fee: 0.07% | No AI — Pure Signals</div>
+        <h1>Scalping Bot - Mean Reversion <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v16</span></h1>
+        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Mean Reversion Scalping | v16 | TP: 0.30% SL: 0.50% | Fee: 0.07% | Buy Dips, Sell Rips</div>
         
         <div class="grid">
             <div class="card">
@@ -907,10 +907,10 @@ function generateDashboardHTML() {
                 <div class="stat-row"><span class="stat-label"><span class="health-dot ${botStatus.driftConnected ? 'health-green' : 'health-red'}"></span>Drift</span><span class="stat-value">${botStatus.driftConnected ? 'OK' : 'DOWN'}</span></div>
                 <div class="stat-row"><span class="stat-label"><span class="health-dot ${anyDlobConnected ? 'health-green' : 'health-red'}"></span>DLOB</span><span class="stat-value">${anyDlobConnected ? 'OK' : 'DOWN'}</span></div>
                 <div class="stat-row"><span class="stat-label">Mode</span><span>${CONFIG.SIMULATION_MODE ? '<span class="sim-mode">SIMULATION</span>' : '<span class="live-mode">LIVE</span>'} ${safetyStatus.paused ? '<span class="paused-badge">PAUSED</span>' : ''}</span></div>
-                <div class="stat-row"><span class="stat-label">Engine</span><span class="stat-value" style="color: #ff00ff;">Signal Scoring</span></div>
+                <div class="stat-row"><span class="stat-label">Engine</span><span class="stat-value" style="color: #ff00ff;">Mean Reversion</span></div>
                 <div class="stat-row"><span class="stat-label">Check Interval</span><span class="stat-value">${CONFIG.AI_INTERVAL_MS / 1000}s</span></div>
-                <div class="stat-row"><span class="stat-label">Min Signals</span><span class="stat-value">4 of 9</span></div>
-                <div class="stat-row"><span class="stat-label">Target TP / SL</span><span class="stat-value" style="color: #3fb950;">0.30% / 0.25%</span></div>
+                <div class="stat-row"><span class="stat-label">Min Signals</span><span class="stat-value">5 of 9 (reversal)</span></div>
+                <div class="stat-row"><span class="stat-label">Target TP / SL</span><span class="stat-value" style="color: #3fb950;">0.30% / 0.50%</span></div>
                 <div class="stat-row"><span class="stat-label">Round-Trip Fee</span><span class="stat-value">0.07%</span></div>
                 <div class="stat-row"><span class="stat-label">SL Cooldown</span><span class="stat-value">60s</span></div>
                 <div class="stat-row"><span class="stat-label">Stagnation Close</span><span class="stat-value">10min</span></div>
@@ -1070,7 +1070,7 @@ function generateDashboardHTML() {
 
         <div class="grid">
             <div class="card full-width">
-                <h2>Signal Engine - Live Decisions</h2>
+                <h2>Mean Reversion Engine - Live Decisions</h2>
                 <div style="max-height: 400px; overflow-y: auto;">
                     ${brainLog.slice(0, 50).map(t => {
                         const color = categoryColors[t.category] || '#888';
@@ -1150,7 +1150,7 @@ function generateDashboardHTML() {
                             '<td>' + (t.holdTimeMin || '?') + 'm</td>' +
                             '<td>' + sigDisplay + '</td>' +
                         '</tr>';
-                    }).join('') || '<tr><td colspan="9" style="color: #484f58; text-align: center; padding: 20px;">No trades yet — signal engine scanning markets...</td></tr>'}
+                    }).join('') || '<tr><td colspan="9" style="color: #484f58; text-align: center; padding: 20px;">No trades yet — mean reversion engine scanning markets...</td></tr>'}
                 </table>
                 </div>
             </div>
@@ -1233,8 +1233,8 @@ function startDashboard() {
 
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   SCALPING BOT - Signal Engine | v15');
-    log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Rule-Based Scalping`);
+    log('   SCALPING BOT - Mean Reversion Engine | v16');
+    log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Mean Reversion Scalping`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);
     log(`Leverage: ${CONFIG.LEVERAGE}x`);
@@ -1242,7 +1242,7 @@ async function main() {
     log(`Trade Size: ${CONFIG.TRADE_AMOUNT_USDC} USDC per market`);
     log(`Signal Check Interval: ${CONFIG.AI_INTERVAL_MS / 1000}s`);
     log(`Position Check Interval: ${CONFIG.CHECK_INTERVAL_MS / 1000}s`);
-    log(`Min Signals Required: 4 of 9`);
+    log(`Min Signals Required: 5 of 9 (mean reversion)`);
     log(`Daily Loss Limit: ${safety.getStatus().dailyLossLimit}%`);
     log(`Dashboard: http://0.0.0.0:${CONFIG.DASHBOARD_PORT}`);
     log('═══════════════════════════════════════════════════════════');
@@ -1331,7 +1331,7 @@ async function main() {
             tradeMemory.sessionStats.startTime = new Date().toISOString();
         }
 
-        log('Starting trading loop (signal engine mode)...');
+        log('Starting trading loop (mean reversion mode)...');
         async function dynamicLoop() {
             await tradingLoop();
             const hasPos = ACTIVE_MARKETS.some(s => {

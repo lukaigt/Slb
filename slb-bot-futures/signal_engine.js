@@ -1,15 +1,15 @@
 'use strict';
 
 const SIGNAL_DEFINITIONS = [
-    { id: 'ema_cross_1m', name: '1m EMA Cross' },
-    { id: 'macd_hist_1m', name: '1m MACD Hist' },
-    { id: 'rsi_momentum_1m', name: '1m RSI Zone' },
+    { id: 'rsi_reversal', name: 'RSI Reversal' },
+    { id: 'stoch_reversal', name: 'StochRSI Reversal' },
+    { id: 'bb_bounce', name: 'Bollinger Bounce' },
+    { id: 'sr_proximity', name: 'S/R Proximity' },
+    { id: 'macd_divergence', name: 'MACD Divergence' },
     { id: 'ema_trend_5m', name: '5m EMA Trend' },
-    { id: 'macd_hist_5m', name: '5m MACD Hist' },
-    { id: 'adx_direction', name: 'ADX Direction' },
+    { id: 'adx_strength', name: 'ADX Strength' },
     { id: 'imbalance_flow', name: 'Orderbook Flow' },
-    { id: 'stoch_momentum', name: 'StochRSI Mom' },
-    { id: 'price_momentum', name: 'Price Momentum' },
+    { id: 'price_exhaustion', name: 'Price Exhaustion' },
 ];
 
 function evaluateSignals(marketState) {
@@ -38,32 +38,83 @@ function evaluateSignals(marketState) {
         return result;
     }
 
-    if (ind1m.ema9 !== null && ind1m.ema21 !== null && ind1m.ema9 !== ind1m.ema21) {
-        if (ind1m.ema9 > ind1m.ema21) {
-            result.signals.ema_cross_1m = 'LONG';
-            result.longScore++;
-        } else {
-            result.signals.ema_cross_1m = 'SHORT';
-            result.shortScore++;
-        }
-    }
-
-    if (ind1m.macd && ind1m.macd.histogram !== undefined) {
-        if (ind1m.macd.histogram > 0) {
-            result.signals.macd_hist_1m = 'LONG';
-            result.longScore++;
-        } else if (ind1m.macd.histogram < 0) {
-            result.signals.macd_hist_1m = 'SHORT';
-            result.shortScore++;
-        }
-    }
-
     if (ind1m.rsi !== null) {
-        if (ind1m.rsi >= 50 && ind1m.rsi <= 65) {
-            result.signals.rsi_momentum_1m = 'LONG';
+        if (ind1m.rsi <= 30) {
+            result.signals.rsi_reversal = 'LONG';
             result.longScore++;
-        } else if (ind1m.rsi >= 35 && ind1m.rsi < 50) {
-            result.signals.rsi_momentum_1m = 'SHORT';
+        } else if (ind1m.rsi >= 70) {
+            result.signals.rsi_reversal = 'SHORT';
+            result.shortScore++;
+        }
+    }
+
+    if (ind1m.stochRSI) {
+        const k = ind1m.stochRSI.k;
+        const d = ind1m.stochRSI.d;
+        if (k < 25 && k > d) {
+            result.signals.stoch_reversal = 'LONG';
+            result.longScore++;
+        } else if (k > 75 && k < d) {
+            result.signals.stoch_reversal = 'SHORT';
+            result.shortScore++;
+        }
+    }
+
+    if (ind1m.bollinger && price) {
+        const bbRange = ind1m.bollinger.upper - ind1m.bollinger.lower;
+        if (bbRange > 0) {
+            const bbPosition = (price - ind1m.bollinger.lower) / bbRange;
+            if (bbPosition <= 0.05) {
+                result.signals.bb_bounce = 'LONG';
+                result.longScore++;
+            } else if (bbPosition >= 0.95) {
+                result.signals.bb_bounce = 'SHORT';
+                result.shortScore++;
+            }
+        }
+    }
+
+    if (sr && price) {
+        let nearestSupport = null;
+        let nearestResistance = null;
+        if (sr.supports) {
+            for (const s of sr.supports) {
+                const dist = Math.abs(s.distancePercent);
+                if (dist < 0.30 && (s.strength === 'STRONG' || s.strength === 'MODERATE')) {
+                    if (!nearestSupport || dist < Math.abs(nearestSupport.distancePercent)) {
+                        nearestSupport = s;
+                    }
+                }
+            }
+        }
+        if (sr.resistances) {
+            for (const r of sr.resistances) {
+                const dist = Math.abs(r.distancePercent);
+                if (dist < 0.30 && (r.strength === 'STRONG' || r.strength === 'MODERATE')) {
+                    if (!nearestResistance || dist < Math.abs(nearestResistance.distancePercent)) {
+                        nearestResistance = r;
+                    }
+                }
+            }
+        }
+        if (nearestSupport) {
+            result.signals.sr_proximity = 'LONG';
+            result.longScore++;
+        } else if (nearestResistance) {
+            result.signals.sr_proximity = 'SHORT';
+            result.shortScore++;
+        }
+    }
+
+    if (ind1m.macd && prices.length >= 8) {
+        const recentPrices = prices.slice(-8);
+        const priceTrend = recentPrices[recentPrices.length - 1] - recentPrices[0];
+        const hist = ind1m.macd.histogram;
+        if (priceTrend < 0 && hist > -0.001 && hist < 0.01) {
+            result.signals.macd_divergence = 'LONG';
+            result.longScore++;
+        } else if (priceTrend > 0 && hist < 0.001 && hist > -0.01) {
+            result.signals.macd_divergence = 'SHORT';
             result.shortScore++;
         }
     }
@@ -78,25 +129,15 @@ function evaluateSignals(marketState) {
         }
     }
 
-    if (ind5m.macd && ind5m.macd.histogram !== undefined) {
-        if (ind5m.macd.histogram > 0) {
-            result.signals.macd_hist_5m = 'LONG';
-            result.longScore++;
-        } else if (ind5m.macd.histogram < 0) {
-            result.signals.macd_hist_5m = 'SHORT';
-            result.shortScore++;
-        }
-    }
-
     const adx1m = ind1m.adx ? ind1m.adx.adx : 0;
     const adx5m = ind5m.adx ? ind5m.adx.adx : 0;
-    if (adx1m > 15 || adx5m > 15) {
+    if (adx1m > 20 || adx5m > 20) {
         const bestAdx = adx5m >= adx1m ? ind5m.adx : ind1m.adx;
         if (bestAdx && bestAdx.plusDI > bestAdx.minusDI) {
-            result.signals.adx_direction = 'LONG';
+            result.signals.adx_strength = 'LONG';
             result.longScore++;
         } else if (bestAdx && bestAdx.minusDI > bestAdx.plusDI) {
-            result.signals.adx_direction = 'SHORT';
+            result.signals.adx_strength = 'SHORT';
             result.shortScore++;
         }
     }
@@ -111,26 +152,20 @@ function evaluateSignals(marketState) {
         }
     }
 
-    if (ind1m.stochRSI) {
-        const k = ind1m.stochRSI.k;
-        const d = ind1m.stochRSI.d;
-        if (k > d && k > 20 && k < 80) {
-            result.signals.stoch_momentum = 'LONG';
-            result.longScore++;
-        } else if (k < d && k > 20 && k < 80) {
-            result.signals.stoch_momentum = 'SHORT';
-            result.shortScore++;
-        }
-    }
-
-    if (prices.length >= 4) {
-        const priceChange1m = ((prices[prices.length - 1] - prices[prices.length - 4]) / prices[prices.length - 4]) * 100;
-        if (priceChange1m > 0.03) {
-            result.signals.price_momentum = 'LONG';
-            result.longScore++;
-        } else if (priceChange1m < -0.03) {
-            result.signals.price_momentum = 'SHORT';
-            result.shortScore++;
+    if (prices.length >= 8) {
+        const lookback = prices.slice(-8);
+        const maxP = Math.max(...lookback);
+        const minP = Math.min(...lookback);
+        const range = maxP - minP;
+        if (range > 0 && price) {
+            const posInRange = (price - minP) / range;
+            if (posInRange <= 0.10) {
+                result.signals.price_exhaustion = 'LONG';
+                result.longScore++;
+            } else if (posInRange >= 0.90) {
+                result.signals.price_exhaustion = 'SHORT';
+                result.shortScore++;
+            }
         }
     }
 
@@ -144,45 +179,42 @@ function evaluateSignals(marketState) {
         return result;
     }
 
-    if (dominantScore < 4) {
-        result.failReason = `Only ${dominantScore} signals for ${direction} (need 4+). L:${result.longScore} S:${result.shortScore}`;
+    if (dominantScore < 5) {
+        result.failReason = `Only ${dominantScore} signals for ${direction} (need 5+). L:${result.longScore} S:${result.shortScore}`;
         return result;
     }
 
-    if (!result.signals.ema_cross_1m || !result.signals.ema_trend_5m) {
-        result.failReason = `EMA signals not ready (1m: ${result.signals.ema_cross_1m || 'none'}, 5m: ${result.signals.ema_trend_5m || 'none'})`;
-        return result;
-    }
-    if (result.signals.ema_cross_1m !== result.signals.ema_trend_5m) {
-        result.failReason = `1m/5m EMA disagree (1m: ${result.signals.ema_cross_1m}, 5m: ${result.signals.ema_trend_5m})`;
+    const hasReversal = result.signals.rsi_reversal === direction ||
+                        result.signals.stoch_reversal === direction ||
+                        result.signals.bb_bounce === direction;
+    if (!hasReversal) {
+        result.failReason = `No reversal signal (RSI/StochRSI/BB) for ${direction} — need at least one mean-reversion trigger`;
         return result;
     }
 
-    if (adx1m < 15 && adx5m < 15) {
-        result.failReason = `ADX too low (1m: ${adx1m.toFixed(1)}, 5m: ${adx5m.toFixed(1)}) — dead market`;
+    if (!result.signals.ema_trend_5m) {
+        result.failReason = '5m EMA trend not available';
+        return result;
+    }
+    if (result.signals.ema_trend_5m !== direction) {
+        result.failReason = `5m trend ${result.signals.ema_trend_5m} disagrees with ${direction} reversal — only buy dips in uptrends, sell rips in downtrends`;
+        return result;
+    }
+
+    const atr1m = ind1m.atr;
+    if (!atr1m || !price) {
+        result.failReason = 'ATR or price unavailable — cannot verify volatility';
+        return result;
+    }
+    const atrPct = (atr1m / price) * 100;
+    if (atrPct < 0.08) {
+        result.failReason = `ATR too low (${atrPct.toFixed(3)}%) — not enough volatility to reach TP`;
         return result;
     }
 
     if (trend === 'RANGING') {
         result.failReason = 'Market is RANGING — no entry';
         return result;
-    }
-
-    if (sr && price) {
-        if (direction === 'LONG' && sr.resistances) {
-            const nearRes = sr.resistances.find(r => r.strength === 'STRONG' && r.distancePercent < 0.20);
-            if (nearRes) {
-                result.failReason = `LONG blocked: strong resistance $${nearRes.price.toFixed(2)} (${nearRes.distancePercent.toFixed(2)}% away)`;
-                return result;
-            }
-        }
-        if (direction === 'SHORT' && sr.supports) {
-            const nearSup = sr.supports.find(s => s.strength === 'STRONG' && Math.abs(s.distancePercent) < 0.20);
-            if (nearSup) {
-                result.failReason = `SHORT blocked: strong support $${nearSup.price.toFixed(2)} (${Math.abs(nearSup.distancePercent).toFixed(2)}% away)`;
-                return result;
-            }
-        }
     }
 
     result.action = direction;
