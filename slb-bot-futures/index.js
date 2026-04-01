@@ -1180,12 +1180,12 @@ function generateDashboardShell() {
         html += '<div class="card"><h2>Controls</h2>';
         if (d.paused) {
             html += '<div style="margin-bottom:8px;"><span class="paused-badge">PAUSED</span> <span style="color:#8b949e;font-size:0.8em;">' + esc(d.pauseReason) + '</span></div>';
-            html += '<button class="btn btn-green" onclick="botAction(\\'unpause\\')">Resume Bot</button>';
+            html += "<button class=\"btn btn-green\" onclick=\"botAction('unpause')\">Resume Bot</button>";
         } else {
-            html += '<button class="btn btn-orange" onclick="botAction(\\'pause\\')">Pause Bot</button>';
+            html += "<button class=\"btn btn-orange\" onclick=\"botAction('pause')\">Pause Bot</button>";
         }
-        html += '<button class="btn btn-red" onclick="if(confirm(\\'Close all positions?\\'))botAction(\\'close-all\\')">Close All Positions</button>';
-        html += '<button class="btn btn-gray" onclick="if(confirm(\\'Reset session stats?\\'))botAction(\\'reset-stats\\')">Reset Stats</button>';
+        html += "<button class=\"btn btn-red\" onclick=\"if(confirm('Close all positions?'))botAction('close-all')\">Close All Positions</button>";
+        html += "<button class=\"btn btn-gray\" onclick=\"if(confirm('Reset session stats?'))botAction('reset-stats')\">Reset Stats</button>";
         html += '<div class="btn-status" id="btnStatus"></div>';
         html += '</div>';
 

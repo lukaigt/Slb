@@ -341,7 +341,11 @@ function storeTrade(tradeData) {
         holdTimeMin: tradeData.holdTimeMin,
         fingerprint: tradeData.fingerprint || {},
         entryMode: tradeData.entryMode || 'UNKNOWN',
-        triggerSignals: tradeData.triggerSignals || []
+        triggerSignals: tradeData.triggerSignals || [],
+        tpUsed: tradeData.tpUsed || null,
+        slUsed: tradeData.slUsed || null,
+        tpSlMode: tradeData.tpSlMode || null,
+        tpSlBase: tradeData.tpSlBase || null
     };
 
     patterns.trades.push(entry);
