@@ -19,6 +19,7 @@ const aiBrain = require('./ai_brain');
 const safety = require('./self_tuner');
 const indicators = require('./indicators');
 const signalEngine = require('./signal_engine');
+const patternMemory = require('./pattern_memory');
 
 dotenv.config();
 
@@ -79,7 +80,10 @@ function createEmptyMarketState() {
         candlePatterns: null,
         priceChangeHistory: [],
         directionalScore: null,
-        momentumPhase: null
+        momentumPhase: null,
+        entryFingerprint: null,
+        entryMode: null,
+        lastSignalResult: null
     };
 }
 
@@ -108,6 +112,7 @@ let botStatus = {
 };
 let lastHeartbeat = Date.now();
 let botStartTime = Date.now();
+let lastLogTime = 0;
 
 function log(message) {
     const timestamp = new Date().toISOString();
@@ -452,6 +457,21 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
     tradeMemory.sessionStats.totalProfitPercent += profitPercent;
     saveMemory();
 
+    patternMemory.storeTrade({
+        timestamp: trade.timestamp,
+        symbol,
+        direction: pos,
+        entryPrice: marketState.entryPrice,
+        exitPrice: currentPrice,
+        profitPercent,
+        result,
+        exitReason,
+        holdTimeMin: parseFloat(holdTimeMin) || 0,
+        fingerprint: marketState.entryFingerprint || {},
+        entryMode: marketState.entryMode || 'UNKNOWN',
+        triggerSignals: marketState.triggerSignals || []
+    });
+
     aiBrain.recordTradeResult(symbol, pos, result, profitPercent, exitReason);
     safety.recordTradeResult(profitPercent, result === 'WIN');
 
@@ -482,6 +502,8 @@ function resetPositionState(marketState) {
     marketState.aiReason = null;
     marketState.entrySnapshot = null;
     marketState.triggerSignals = [];
+    marketState.entryFingerprint = null;
+    marketState.entryMode = null;
 }
 
 async function syncPositionFromChain(marketState, marketConfig, symbol) {
@@ -771,10 +793,13 @@ async function processMarket(symbol) {
 
             marketState.lastAiCall = now;
 
+            marketState.symbol = symbol;
             const signal = signalEngine.evaluateSignals(marketState);
+            marketState.lastSignalResult = signal;
 
             if (signal.action === 'WAIT') {
-                aiBrain.think(`[${symbol}] SIGNAL: WAIT — ${signal.failReason} | L:${signal.longScore} S:${signal.shortScore}`, 'scan');
+                const modeTag = signal.entryMode ? ` [${signal.entryMode}]` : '';
+                aiBrain.think(`[${symbol}] SIGNAL: WAIT${modeTag} — ${signal.failReason} | L:${signal.longScore} S:${signal.shortScore}`, 'scan');
                 return;
             }
 
@@ -785,8 +810,10 @@ async function processMarket(symbol) {
             marketState.triggerSignals = Object.entries(signal.signals)
                 .filter(([, dir]) => dir === signal.direction)
                 .map(([sig]) => sig);
+            marketState.entryFingerprint = signal.fingerprint;
+            marketState.entryMode = signal.entryMode;
 
-            aiBrain.think(`[${symbol}] ENTRY ${signal.action} | Score: ${Math.max(signal.longScore, signal.shortScore)}/${signal.totalSignals} | SL: 0.50% | TP: 0.30% | ${signal.reason}`, 'entry');
+            aiBrain.think(`[${symbol}] ENTRY ${signal.action} [${signal.entryMode}] | Score: ${Math.max(signal.longScore, signal.shortScore)}/${signal.totalSignals} | SL: 0.50% | TP: 0.30% | ${signal.reason}`, 'entry');
             await openPosition(signal.action, marketState, marketConfig, symbol);
         }
     } catch (error) {
@@ -828,12 +855,14 @@ async function tradingLoop() {
 
 function generateDashboardHTML() {
     const stats = tradeMemory.sessionStats;
-    const recentTrades = tradeMemory.trades.slice(-25).reverse();
+    const recentTrades = tradeMemory.trades.slice(-50).reverse();
     const winRate = stats.totalTrades > 0 ? (stats.wins / stats.totalTrades * 100).toFixed(1) : '0.0';
     const uptime = formatUptime(Date.now() - botStartTime);
     const heartbeatAgo = Math.round((Date.now() - lastHeartbeat) / 1000);
     const safetyStatus = safety.getStatus();
     const brainLog = aiBrain.getThinkingLog();
+    const pmStats = patternMemory.getStats();
+    const recentPatterns = patternMemory.getRecentPatterns(10);
 
     const anyRpcConnected = ACTIVE_MARKETS.some(s => botStatus.markets[s]?.rpcConnected);
     const anyDlobConnected = ACTIVE_MARKETS.some(s => botStatus.markets[s]?.dlobConnected);
@@ -851,52 +880,57 @@ function generateDashboardHTML() {
     return `<!DOCTYPE html>
 <html>
 <head>
-    <title>Scalping Bot v16 - Mean Reversion</title>
+    <title>v17 Self-Learning Bot - Pattern Memory</title>
     <meta charset="UTF-8">
     <meta http-equiv="refresh" content="5">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0d1117; color: #e6edf3; padding: 15px; font-size: 14px; }
-        .container { max-width: 1600px; margin: 0 auto; }
-        h1 { color: #58a6ff; margin-bottom: 15px; font-size: 1.4em; }
-        .subtitle { color: #8b949e; font-size: 0.85em; margin-bottom: 15px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; margin-bottom: 15px; }
-        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 15px; }
-        .card h2 { color: #58a6ff; font-size: 1em; margin-bottom: 12px; border-bottom: 1px solid #30363d; padding-bottom: 8px; }
-        .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #21262d; }
-        .stat-label { color: #8b949e; font-size: 0.9em; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0d1117; color: #e6edf3; padding: 10px; font-size: 13px; }
+        .container { max-width: 1800px; margin: 0 auto; }
+        h1 { color: #58a6ff; margin-bottom: 8px; font-size: 1.3em; }
+        .subtitle { color: #8b949e; font-size: 0.82em; margin-bottom: 12px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin-bottom: 10px; }
+        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; }
+        .card h2 { color: #58a6ff; font-size: 0.95em; margin-bottom: 10px; border-bottom: 1px solid #30363d; padding-bottom: 6px; }
+        .stat-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #21262d; font-size: 0.9em; }
+        .stat-label { color: #8b949e; }
         .stat-value { font-weight: bold; }
         .positive { color: #3fb950; }
         .negative { color: #f85149; }
         .neutral { color: #d29922; }
-        .sim-mode { background: #1f6feb; color: white; padding: 3px 12px; border-radius: 12px; display: inline-block; font-size: 0.85em; }
-        .live-mode { background: #238636; color: white; padding: 3px 12px; border-radius: 12px; display: inline-block; font-size: 0.85em; }
-        .paused-badge { background: #da3633; color: white; padding: 3px 12px; border-radius: 12px; display: inline-block; font-size: 0.85em; }
-        table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
-        th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #21262d; }
-        th { color: #58a6ff; font-weight: 600; }
-        .health-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+        .sim-mode { background: #1f6feb; color: white; padding: 2px 10px; border-radius: 12px; display: inline-block; font-size: 0.8em; }
+        .live-mode { background: #238636; color: white; padding: 2px 10px; border-radius: 12px; display: inline-block; font-size: 0.8em; }
+        .paused-badge { background: #da3633; color: white; padding: 2px 10px; border-radius: 12px; display: inline-block; font-size: 0.8em; }
+        .learning-badge { background: #8957e5; color: white; padding: 2px 10px; border-radius: 12px; display: inline-block; font-size: 0.8em; }
+        .exploit-badge { background: #238636; color: white; padding: 2px 10px; border-radius: 12px; display: inline-block; font-size: 0.8em; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.82em; }
+        th, td { padding: 5px 6px; text-align: left; border-bottom: 1px solid #21262d; }
+        th { color: #58a6ff; font-weight: 600; position: sticky; top: 0; background: #161b22; }
+        .health-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
         .health-green { background: #3fb950; }
         .health-red { background: #f85149; }
         .full-width { grid-column: 1 / -1; }
-        .thinking-entry { padding: 6px 10px; margin: 3px 0; border-radius: 4px; font-size: 0.82em; border-left: 3px solid #30363d; background: #0d1117; word-break: break-word; }
-        .thinking-time { color: #484f58; font-size: 0.8em; margin-right: 8px; }
-        .best-worst { display: flex; gap: 15px; }
-        .best-worst > div { flex: 1; padding: 10px; border-radius: 6px; background: #0d1117; }
-        .btn { padding: 10px 18px; border: none; border-radius: 6px; font-size: 0.9em; font-weight: 600; cursor: pointer; width: 100%; margin-bottom: 8px; transition: opacity 0.2s; }
+        .span2 { grid-column: span 2; }
+        .thinking-entry { padding: 5px 8px; margin: 2px 0; border-radius: 4px; font-size: 0.8em; border-left: 3px solid #30363d; background: #0d1117; word-break: break-word; }
+        .thinking-time { color: #484f58; font-size: 0.78em; margin-right: 6px; }
+        .progress-bar { height: 20px; border-radius: 4px; overflow: hidden; background: #21262d; position: relative; }
+        .progress-fill { height: 100%; transition: width 0.3s; }
+        .progress-text { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 0.75em; font-weight: bold; }
+        .btn { padding: 8px 14px; border: none; border-radius: 6px; font-size: 0.85em; font-weight: 600; cursor: pointer; width: 100%; margin-bottom: 6px; }
         .btn:hover { opacity: 0.85; }
-        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
         .btn-green { background: #238636; color: white; }
         .btn-orange { background: #d29922; color: #0d1117; }
         .btn-red { background: #da3633; color: white; }
         .btn-gray { background: #30363d; color: #e6edf3; }
-        .btn-status { font-size: 0.8em; color: #8b949e; text-align: center; min-height: 20px; margin-top: 4px; }
+        .btn-status { font-size: 0.75em; color: #8b949e; text-align: center; min-height: 16px; margin-top: 3px; }
+        .tag { background: #21262d; padding: 1px 5px; border-radius: 3px; margin: 1px; display: inline-block; font-size: 0.78em; }
+        .fp-val { font-family: monospace; font-size: 0.78em; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Scalping Bot - Mean Reversion <span style="color: #ff6b00; font-size: 0.5em; vertical-align: middle;">v16</span></h1>
-        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Mean Reversion Scalping | v16 | TP: 0.30% SL: 0.50% | Fee: 0.07% | Buy Dips, Sell Rips</div>
+        <h1>Self-Learning Bot <span style="color: #8957e5; font-size: 0.5em; vertical-align: middle;">v17 Pattern Memory</span></h1>
+        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x | TP: 0.30% SL: 0.50% | Fee: 0.07% | Learns from every trade | ${pmStats.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | ${pmStats.totalStored} patterns stored</div>
         
         <div class="grid">
             <div class="card">
@@ -907,31 +941,79 @@ function generateDashboardHTML() {
                 <div class="stat-row"><span class="stat-label"><span class="health-dot ${botStatus.driftConnected ? 'health-green' : 'health-red'}"></span>Drift</span><span class="stat-value">${botStatus.driftConnected ? 'OK' : 'DOWN'}</span></div>
                 <div class="stat-row"><span class="stat-label"><span class="health-dot ${anyDlobConnected ? 'health-green' : 'health-red'}"></span>DLOB</span><span class="stat-value">${anyDlobConnected ? 'OK' : 'DOWN'}</span></div>
                 <div class="stat-row"><span class="stat-label">Mode</span><span>${CONFIG.SIMULATION_MODE ? '<span class="sim-mode">SIMULATION</span>' : '<span class="live-mode">LIVE</span>'} ${safetyStatus.paused ? '<span class="paused-badge">PAUSED</span>' : ''}</span></div>
-                <div class="stat-row"><span class="stat-label">Engine</span><span class="stat-value" style="color: #ff00ff;">Mean Reversion</span></div>
+                <div class="stat-row"><span class="stat-label">Engine</span><span class="stat-value" style="color: #8957e5;">v17 Pattern Memory</span></div>
                 <div class="stat-row"><span class="stat-label">Check Interval</span><span class="stat-value">${CONFIG.AI_INTERVAL_MS / 1000}s</span></div>
-                <div class="stat-row"><span class="stat-label">Min Signals</span><span class="stat-value">5 of 9 (reversal)</span></div>
-                <div class="stat-row"><span class="stat-label">Target TP / SL</span><span class="stat-value" style="color: #3fb950;">0.30% / 0.50%</span></div>
-                <div class="stat-row"><span class="stat-label">Round-Trip Fee</span><span class="stat-value">0.07%</span></div>
+                <div class="stat-row"><span class="stat-label">Min Signals</span><span class="stat-value">3+ agreeing</span></div>
+                <div class="stat-row"><span class="stat-label">TP / SL</span><span class="stat-value" style="color: #3fb950;">0.30% / 0.50%</span></div>
+                <div class="stat-row"><span class="stat-label">Fee</span><span class="stat-value">0.07%</span></div>
                 <div class="stat-row"><span class="stat-label">SL Cooldown</span><span class="stat-value">60s</span></div>
-                <div class="stat-row"><span class="stat-label">Stagnation Close</span><span class="stat-value">10min</span></div>
+                <div class="stat-row"><span class="stat-label">Stagnation</span><span class="stat-value">10min</span></div>
                 <div class="stat-row"><span class="stat-label">Max Hold</span><span class="stat-value">30min</span></div>
             </div>
 
             <div class="card">
-                <h2>Bot Controls</h2>
+                <h2>Learning Engine</h2>
+                <div class="stat-row"><span class="stat-label">Phase</span><span>${pmStats.isLearning ? '<span class="learning-badge">LEARNING</span>' : '<span class="exploit-badge">EXPLOITATION</span>'}</span></div>
+                <div class="stat-row"><span class="stat-label">Patterns Stored</span><span class="stat-value" style="color: #8957e5;">${pmStats.totalStored}</span></div>
+                <div style="margin: 8px 0;">
+                    <div style="color: #8b949e; font-size: 0.8em; margin-bottom: 3px;">Learning Progress (${pmStats.learningProgress}%)</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${pmStats.learningProgress}%; background: ${pmStats.isLearning ? '#8957e5' : '#238636'};"></div>
+                        <span class="progress-text">${pmStats.totalStored} / ${patternMemory.MIN_TRADES_FOR_LEARNING}</span>
+                    </div>
+                </div>
+                <div class="stat-row"><span class="stat-label">Overall Win Rate</span><span class="stat-value ${pmStats.overallWinRate >= 50 ? 'positive' : 'negative'}">${pmStats.overallWinRate}%</span></div>
+                <div class="stat-row"><span class="stat-label">Pattern Match Entries</span><span class="stat-value">${pmStats.patternMatchEntries}</span></div>
+                <div class="stat-row"><span class="stat-label">Pattern Match WR</span><span class="stat-value ${pmStats.patternMatchWinRate >= 50 ? 'positive' : pmStats.patternMatchEntries > 0 ? 'negative' : ''}">${pmStats.patternMatchEntries > 0 ? pmStats.patternMatchWinRate + '%' : 'N/A'}</span></div>
+                <div class="stat-row"><span class="stat-label">Exploration Entries</span><span class="stat-value">${pmStats.explorationEntries}</span></div>
+                <div class="stat-row"><span class="stat-label">Exploration WR</span><span class="stat-value ${pmStats.explorationWinRate >= 50 ? 'positive' : pmStats.explorationEntries > 0 ? 'negative' : ''}">${pmStats.explorationEntries > 0 ? pmStats.explorationWinRate + '%' : 'N/A'}</span></div>
+                <div class="stat-row"><span class="stat-label">Win Rate Threshold</span><span class="stat-value">${(patternMemory.WIN_RATE_THRESHOLD * 100).toFixed(0)}%</span></div>
+            </div>
+
+            <div class="card">
+                <h2>Controls</h2>
                 ${safetyStatus.paused 
                     ? '<button class="btn btn-green" onclick="botAction(\'unpause\')">Resume Trading</button>'
                     : '<button class="btn btn-orange" onclick="botAction(\'pause\')">Pause Trading</button>'
                 }
-                <button class="btn btn-red" onclick="if(confirm(\'Close ALL open positions immediately?\')) botAction(\'close-all\')">Close All Positions</button>
-                <button class="btn btn-gray" onclick="if(confirm(\'Reset all session stats to zero?\')) botAction(\'reset-stats\')">Reset Session Stats</button>
+                <button class="btn btn-red" onclick="if(confirm('Close ALL positions?')) botAction('close-all')">Close All Positions</button>
+                <button class="btn btn-gray" onclick="if(confirm('Reset session stats?')) botAction('reset-stats')">Reset Session Stats</button>
                 <div class="btn-status" id="btnStatus"></div>
+                <div style="margin-top: 10px;">
+                    <h2>Session Stats</h2>
+                    <div class="stat-row"><span class="stat-label">Total Trades</span><span class="stat-value">${stats.totalTrades}</span></div>
+                    <div class="stat-row"><span class="stat-label">W / L</span><span class="stat-value"><span class="positive">${stats.wins}</span> / <span class="negative">${stats.losses}</span></span></div>
+                    <div class="stat-row"><span class="stat-label">Win Rate</span><span class="stat-value ${parseFloat(winRate) >= 50 ? 'positive' : 'negative'}">${winRate}%</span></div>
+                    <div class="stat-row"><span class="stat-label">Total P&L</span><span class="stat-value ${stats.totalProfitPercent >= 0 ? 'positive' : 'negative'}">${stats.totalProfitPercent.toFixed(2)}%</span></div>
+                </div>
             </div>
-            
-            <div class="card" style="grid-column: span 2;">
+
+            <div class="card">
+                <h2>Safety + Best/Worst</h2>
+                <div class="stat-row"><span class="stat-label">Daily P&L</span><span class="stat-value ${safetyStatus.dailyPnl >= 0 ? 'positive' : 'negative'}">${safetyStatus.dailyPnl.toFixed(2)}%</span></div>
+                <div class="stat-row"><span class="stat-label">Daily Limit</span><span class="stat-value">-${safetyStatus.dailyLossLimit}%</span></div>
+                <div class="stat-row"><span class="stat-label">Daily Trades</span><span class="stat-value">${safetyStatus.dailyTrades}</span></div>
+                <div class="stat-row"><span class="stat-label">Consec Loss</span><span class="stat-value ${safetyStatus.consecutiveLosses >= 4 ? 'negative' : ''}">${safetyStatus.consecutiveLosses} / ${safetyStatus.maxConsecutiveLosses}</span></div>
+                <div class="stat-row"><span class="stat-label">Status</span><span class="${safetyStatus.paused ? 'negative' : 'positive'}">${safetyStatus.paused ? 'PAUSED' : 'ACTIVE'}</span></div>
+                <div style="display:flex; gap:8px; margin-top:10px;">
+                    <div style="flex:1; padding:8px; border-radius:6px; background:#0d1117;">
+                        <div style="color: #3fb950; font-weight: bold; font-size: 0.8em;">Best</div>
+                        ${bestTrade ? `<div style="font-size:1.1em;color:#3fb950;">+${(bestTrade.profitPercent||0).toFixed(2)}%</div><div style="font-size:0.75em;color:#8b949e;">${bestTrade.direction} ${bestTrade.symbol||''}</div>` : '<div style="color:#484f58;font-size:0.8em;">None</div>'}
+                    </div>
+                    <div style="flex:1; padding:8px; border-radius:6px; background:#0d1117;">
+                        <div style="color: #f85149; font-weight: bold; font-size: 0.8em;">Worst</div>
+                        ${worstTrade ? `<div style="font-size:1.1em;color:#f85149;">${(worstTrade.profitPercent||0).toFixed(2)}%</div><div style="font-size:0.75em;color:#8b949e;">${worstTrade.direction} ${worstTrade.symbol||''}</div>` : '<div style="color:#484f58;font-size:0.8em;">None</div>'}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <div class="card full-width">
                 <h2>Markets Overview</h2>
+                <div style="overflow-x:auto;">
                 <table>
-                    <thead><tr><th>Market</th><th>Price</th><th>Score</th><th>Phase</th><th>Trend</th><th>Imbalance</th><th>Position</th><th>P&L</th><th>AI SL/TP</th><th>Hold</th></tr></thead>
+                    <thead><tr><th>Market</th><th>Price</th><th>Trend</th><th>Score</th><th>Phase</th><th>Imbalance</th><th>Volatility</th><th>Data Pts</th><th>Position</th><th>Entry $</th><th>P&L</th><th>SL/TP</th><th>Hold</th><th>Entry Mode</th><th>Last Signal</th></tr></thead>
                     <tbody>
                         ${ACTIVE_MARKETS.map(symbol => {
                             const m = botStatus.markets[symbol] || {};
@@ -948,63 +1030,96 @@ function generateDashboardHTML() {
                             const holdMin = pos && ms.entryTime ? ((Date.now() - ms.entryTime) / 60000).toFixed(0) + 'm' : '-';
                             const scoreVal = m.directionalScore || 0;
                             const scoreClass = scoreVal > 8 ? 'positive' : scoreVal < -8 ? 'negative' : 'neutral';
-                            const phaseVal = m.momentumPhase || 'N/A';
-                            const phaseClass = phaseVal.includes('EARLY') ? 'positive' : phaseVal.includes('EXHAUSTED') ? 'negative' : phaseVal.includes('ACTIVE') ? 'positive' : 'neutral';
+                            const lastSig = ms.lastSignalResult;
+                            const lastSigText = lastSig ? (lastSig.action !== 'WAIT' ? lastSig.action + ' L:' + lastSig.longScore + ' S:' + lastSig.shortScore : 'WAIT L:' + lastSig.longScore + ' S:' + lastSig.shortScore) : '-';
+                            const lastSigClass = lastSig && lastSig.action !== 'WAIT' ? 'positive' : '';
                             return `<tr>
                                 <td><strong>${symbol}</strong></td>
                                 <td>$${(m.price || 0).toFixed(2)}</td>
-                                <td class="${scoreClass}"><strong>${scoreVal} [${m.directionalBias || 'N/A'}]</strong></td>
-                                <td class="${phaseClass}">${phaseVal}</td>
-                                <td class="${m.trend === 'UPTREND' ? 'positive' : m.trend === 'DOWNTREND' ? 'negative' : 'neutral'}">${m.trend || 'BUILDING'}</td>
+                                <td class="${(m.trend||'').includes('UP') ? 'positive' : (m.trend||'').includes('DOWN') ? 'negative' : 'neutral'}">${m.trend || 'BUILDING'}</td>
+                                <td class="${scoreClass}"><strong>${scoreVal}</strong></td>
+                                <td>${m.momentumPhase || 'N/A'}</td>
                                 <td class="${(m.imbalance || 0) > 0 ? 'positive' : 'negative'}">${((m.imbalance || 0) * 100).toFixed(1)}%</td>
-                                <td class="${pos === 'LONG' ? 'positive' : pos === 'SHORT' ? 'negative' : ''}">${pos || 'NONE'}</td>
-                                <td class="${pnlVal >= 0 ? 'positive' : 'negative'}">${pos ? pnlVal.toFixed(2) + '%' : '-'}</td>
-                                <td>${pos && ms.aiStopLoss != null ? ms.aiStopLoss.toFixed(2) + '/' + (ms.aiTakeProfit != null ? ms.aiTakeProfit.toFixed(2) : '?') : (pos ? 'synced' : '-')}</td>
+                                <td>${(m.volatility || 0).toFixed(3)}%</td>
+                                <td style="color:#8b949e;">${ms.prices ? ms.prices.length : 0}</td>
+                                <td class="${pos === 'LONG' ? 'positive' : pos === 'SHORT' ? 'negative' : ''}" style="font-weight:bold;">${pos || 'NONE'}</td>
+                                <td>${pos ? '$' + (ms.entryPrice || 0).toFixed(2) : '-'}</td>
+                                <td class="${pnlVal >= 0 ? 'positive' : 'negative'}" style="font-weight:bold;">${pos ? pnlVal.toFixed(2) + '%' : '-'}</td>
+                                <td>${pos && ms.aiStopLoss != null ? ms.aiStopLoss.toFixed(2) + ' / ' + (ms.aiTakeProfit != null ? ms.aiTakeProfit.toFixed(2) : '?') : '-'}</td>
                                 <td>${holdMin}</td>
+                                <td>${pos && ms.entryMode ? '<span class="tag">' + ms.entryMode + '</span>' : '-'}</td>
+                                <td class="${lastSigClass}" style="font-size:0.78em;">${lastSigText}</td>
                             </tr>`;
                         }).join('')}
                     </tbody>
                 </table>
+                </div>
             </div>
         </div>
 
         <div class="grid">
             <div class="card full-width">
-                <h2>Technical Indicators</h2>
+                <h2>All Technical Indicators (12 per timeframe)</h2>
+                <div style="overflow-x:auto;">
                 <table>
-                    <thead><tr><th>Market</th><th>TF</th><th>RSI</th><th>EMA 9/21</th><th>MACD</th><th>BB Position</th><th>ATR</th><th>StochRSI</th><th>ADX</th><th>Data</th></tr></thead>
+                    <thead><tr><th>Market</th><th>TF</th><th>RSI</th><th>EMA 9/21</th><th>EMA50</th><th>MACD Hist</th><th>BB Pos</th><th>BB Width</th><th>ATR</th><th>ATR%</th><th>StochRSI K/D</th><th>ADX</th><th>+DI/-DI</th><th>CCI</th><th>Will%R</th><th>ROC</th><th>Ready</th></tr></thead>
                     <tbody>
                         ${ACTIVE_MARKETS.map(symbol => {
                             const ms = marketStates[symbol] || {};
+                            const price = ms.lastPrice || 1;
                             return ['1m', '5m', '15m'].map(tf => {
                                 const ind = tf === '1m' ? ms.indicators1m : tf === '5m' ? ms.indicators5m : ms.indicators15m;
-                                if (!ind || !ind.ready) return '<tr><td>' + symbol + '</td><td>' + tf + '</td><td colspan="8" style="color:#484f58;">Building data...</td></tr>';
-                                const rsiVal = ind.rsi !== null ? ind.rsi.toFixed(1) : '-';
-                                const rsiClass = ind.rsi > 70 ? 'negative' : ind.rsi < 30 ? 'positive' : '';
-                                const rsiLabel = ind.rsi > 70 ? ' OB' : ind.rsi < 30 ? ' OS' : '';
-                                const emaText = ind.ema9 !== null && ind.ema21 !== null ? (ind.ema9 > ind.ema21 ? 'BULL' : 'BEAR') : '-';
-                                const emaClass = emaText === 'BULL' ? 'positive' : emaText === 'BEAR' ? 'negative' : '';
-                                const macdText = ind.macd ? (ind.macd.histogram > 0 ? '+' + ind.macd.histogram.toFixed(4) : ind.macd.histogram.toFixed(4)) : '-';
-                                const macdClass = ind.macd ? (ind.macd.histogram > 0 ? 'positive' : 'negative') : '';
-                                const bbText = ind.bollinger ? ((ind.ema9 || ind.bollinger.middle) > ind.bollinger.lower ? (((ind.ema9 || ind.bollinger.middle) - ind.bollinger.lower) / (ind.bollinger.upper - ind.bollinger.lower) * 100).toFixed(0) + '%' : '-') : '-';
-                                const atrText = ind.atr !== null ? ind.atr.toFixed(4) : '-';
-                                const stochText = ind.stochRSI ? 'K:' + ind.stochRSI.k.toFixed(0) + ' D:' + ind.stochRSI.d.toFixed(0) : '-';
-                                const stochClass = ind.stochRSI ? (ind.stochRSI.k > 80 ? 'negative' : ind.stochRSI.k < 20 ? 'positive' : '') : '';
-                                const adxText = ind.adx ? ind.adx.adx.toFixed(1) + (ind.adx.plusDI > ind.adx.minusDI ? ' +' : ' -') : '-';
-                                const adxClass = ind.adx ? (ind.adx.adx > 25 ? 'positive' : ind.adx.adx < 20 ? 'negative' : 'neutral') : '';
-                                return '<tr><td>' + (tf === '1m' ? '<strong>' + symbol + '</strong>' : '') + '</td><td>' + tf + '</td>' +
-                                    '<td class="' + rsiClass + '">' + rsiVal + rsiLabel + '</td>' +
-                                    '<td class="' + emaClass + '">' + emaText + '</td>' +
-                                    '<td class="' + macdClass + '">' + macdText + '</td>' +
-                                    '<td>' + bbText + '</td>' +
-                                    '<td>' + atrText + '</td>' +
-                                    '<td class="' + stochClass + '">' + stochText + '</td>' +
-                                    '<td class="' + adxClass + '">' + adxText + '</td>' +
-                                    '<td style="color:#484f58;">' + (ind.indicatorsAvailable || 0) + '/' + (ind.indicatorsTotal || 9) + '</td></tr>';
+                                if (!ind || !ind.ready) return '<tr><td>' + (tf==='1m' ? '<strong>'+symbol+'</strong>' : '') + '</td><td>' + tf + '</td><td colspan="15" style="color:#484f58;">Building data...</td></tr>';
+                                const rsiV = ind.rsi != null ? ind.rsi.toFixed(1) : '-';
+                                const rsiC = ind.rsi > 70 ? 'negative' : ind.rsi < 30 ? 'positive' : '';
+                                const emaT = ind.ema9 != null && ind.ema21 != null ? (ind.ema9 > ind.ema21 ? 'BULL' : 'BEAR') : '-';
+                                const emaC = emaT === 'BULL' ? 'positive' : emaT === 'BEAR' ? 'negative' : '';
+                                const ema50T = ind.ema50 != null ? '$' + ind.ema50.toFixed(2) : '-';
+                                const macdH = ind.macd ? (ind.macd.histogram > 0 ? '+' : '') + ind.macd.histogram.toFixed(4) : '-';
+                                const macdC = ind.macd ? (ind.macd.histogram > 0 ? 'positive' : 'negative') : '';
+                                let bbPos = '-';
+                                if (ind.bollinger) {
+                                    const r = ind.bollinger.upper - ind.bollinger.lower;
+                                    bbPos = r > 0 ? ((price - ind.bollinger.lower) / r * 100).toFixed(0) + '%' : '-';
+                                }
+                                const bbW = ind.bollinger ? ind.bollinger.bandwidth.toFixed(2) : '-';
+                                const atrV = ind.atr != null ? ind.atr.toFixed(4) : '-';
+                                const atrP = ind.atr != null ? ((ind.atr/price)*100).toFixed(3) + '%' : '-';
+                                const stK = ind.stochRSI ? ind.stochRSI.k.toFixed(0) : '-';
+                                const stD = ind.stochRSI ? ind.stochRSI.d.toFixed(0) : '-';
+                                const stC = ind.stochRSI ? (ind.stochRSI.k > 80 ? 'negative' : ind.stochRSI.k < 20 ? 'positive' : '') : '';
+                                const adxV = ind.adx ? ind.adx.adx.toFixed(1) : '-';
+                                const adxC = ind.adx ? (ind.adx.adx > 25 ? 'positive' : 'neutral') : '';
+                                const diV = ind.adx ? '+' + ind.adx.plusDI.toFixed(0) + '/-' + ind.adx.minusDI.toFixed(0) : '-';
+                                const cciV = ind.cci != null ? ind.cci.toFixed(0) : '-';
+                                const cciC = ind.cci != null ? (ind.cci > 100 ? 'negative' : ind.cci < -100 ? 'positive' : '') : '';
+                                const wrV = ind.willR != null ? ind.willR.toFixed(0) : '-';
+                                const wrC = ind.willR != null ? (ind.willR < -80 ? 'positive' : ind.willR > -20 ? 'negative' : '') : '';
+                                const rocV = ind.roc != null ? ind.roc.toFixed(3) + '%' : '-';
+                                const rocC = ind.roc != null ? (ind.roc > 0.15 ? 'positive' : ind.roc < -0.15 ? 'negative' : '') : '';
+                                return '<tr>' +
+                                    '<td>' + (tf==='1m' ? '<strong>'+symbol+'</strong>' : '') + '</td>' +
+                                    '<td>' + tf + '</td>' +
+                                    '<td class="' + rsiC + '">' + rsiV + '</td>' +
+                                    '<td class="' + emaC + '">' + emaT + '</td>' +
+                                    '<td style="font-size:0.78em;">' + ema50T + '</td>' +
+                                    '<td class="' + macdC + '">' + macdH + '</td>' +
+                                    '<td>' + bbPos + '</td>' +
+                                    '<td>' + bbW + '</td>' +
+                                    '<td style="font-size:0.78em;">' + atrV + '</td>' +
+                                    '<td>' + atrP + '</td>' +
+                                    '<td class="' + stC + '">' + stK + '/' + stD + '</td>' +
+                                    '<td class="' + adxC + '">' + adxV + '</td>' +
+                                    '<td style="font-size:0.78em;">' + diV + '</td>' +
+                                    '<td class="' + cciC + '">' + cciV + '</td>' +
+                                    '<td class="' + wrC + '">' + wrV + '</td>' +
+                                    '<td class="' + rocC + '">' + rocV + '</td>' +
+                                    '<td style="color:#484f58;">' + (ind.indicatorsAvailable||0) + '/' + (ind.indicatorsTotal||12) + '</td></tr>';
                             }).join('');
                         }).join('')}
                     </tbody>
                 </table>
+                </div>
             </div>
         </div>
 
@@ -1018,13 +1133,13 @@ function generateDashboardHTML() {
                             const ms = marketStates[symbol] || {};
                             const sr = ms.supportResistance;
                             const cp = ms.candlePatterns;
-                            const supText = sr && sr.supports.length > 0
-                                ? sr.supports.map(s => '$' + s.price.toFixed(2) + ' [' + s.strength + ', ' + s.touches + 'x, ' + (s.timeSpanMinutes || 0) + 'min] ' + Math.abs(s.distancePercent).toFixed(2) + '% below').join('<br>')
+                            const supText = sr && sr.supports && sr.supports.length > 0
+                                ? sr.supports.map(s => '$' + s.price.toFixed(2) + ' [' + s.strength + '] ' + Math.abs(s.distancePercent).toFixed(2) + '%').join('<br>')
                                 : '<span style="color:#484f58;">Building...</span>';
-                            const resText = sr && sr.resistances.length > 0
-                                ? sr.resistances.map(r => '$' + r.price.toFixed(2) + ' [' + r.strength + ', ' + r.touches + 'x, ' + (r.timeSpanMinutes || 0) + 'min] ' + r.distancePercent.toFixed(2) + '% above').join('<br>')
+                            const resText = sr && sr.resistances && sr.resistances.length > 0
+                                ? sr.resistances.map(r => '$' + r.price.toFixed(2) + ' [' + r.strength + '] ' + r.distancePercent.toFixed(2) + '%').join('<br>')
                                 : '<span style="color:#484f58;">Building...</span>';
-                            const cpText = cp && cp.patterns.length > 0
+                            const cpText = cp && cp.patterns && cp.patterns.length > 0
                                 ? cp.patterns.slice(-3).map(p => '<span class="' + (p.signal.includes('BULLISH') ? 'positive' : p.signal.includes('BEARISH') ? 'negative' : 'neutral') + '">' + p.type + '</span>').join(', ')
                                 : '<span style="color:#484f58;">' + (cp ? cp.summary : 'Building...') + '</span>';
                             return '<tr><td><strong>' + symbol + '</strong></td><td>' + supText + '</td><td>' + resText + '</td><td>' + cpText + '</td></tr>';
@@ -1035,68 +1150,55 @@ function generateDashboardHTML() {
         </div>
 
         <div class="grid">
-            <div class="card">
-                <h2>Session Stats</h2>
-                <div class="stat-row"><span class="stat-label">Total Trades</span><span class="stat-value">${stats.totalTrades}</span></div>
-                <div class="stat-row"><span class="stat-label">Wins / Losses</span><span class="stat-value"><span class="positive">${stats.wins}</span> / <span class="negative">${stats.losses}</span></span></div>
-                <div class="stat-row"><span class="stat-label">Win Rate</span><span class="stat-value ${parseFloat(winRate) >= 50 ? 'positive' : 'negative'}">${winRate}%</span></div>
-                <div class="stat-row"><span class="stat-label">Total P&L</span><span class="stat-value ${stats.totalProfitPercent >= 0 ? 'positive' : 'negative'}">${stats.totalProfitPercent.toFixed(2)}%</span></div>
-            </div>
-
-            <div class="card">
-                <h2>Daily Safety</h2>
-                <div class="stat-row"><span class="stat-label">Daily P&L</span><span class="stat-value ${safetyStatus.dailyPnl >= 0 ? 'positive' : 'negative'}">${safetyStatus.dailyPnl.toFixed(2)}%</span></div>
-                <div class="stat-row"><span class="stat-label">Daily Loss Limit</span><span class="stat-value">-${safetyStatus.dailyLossLimit}%</span></div>
-                <div class="stat-row"><span class="stat-label">Daily Trades</span><span class="stat-value">${safetyStatus.dailyTrades}</span></div>
-                <div class="stat-row"><span class="stat-label">Daily Win Rate</span><span class="stat-value">${safetyStatus.dailyWinRate}%</span></div>
-                <div class="stat-row"><span class="stat-label">Consec. Losses</span><span class="stat-value ${safetyStatus.consecutiveLosses >= 5 ? 'negative' : ''}">${safetyStatus.consecutiveLosses} / ${safetyStatus.maxConsecutiveLosses}</span></div>
-                <div class="stat-row"><span class="stat-label">Status</span><span class="${safetyStatus.paused ? 'negative' : 'positive'}">${safetyStatus.paused ? 'PAUSED: ' + safetyStatus.pauseReason : 'ACTIVE'}</span></div>
-            </div>
-
-            <div class="card">
-                <h2>Best / Worst Trade</h2>
-                <div class="best-worst">
-                    <div>
-                        <div style="color: #3fb950; font-weight: bold; margin-bottom: 5px;">Best</div>
-                        ${bestTrade ? `<div style="font-size: 1.3em; color: #3fb950;">+${(bestTrade.profitPercent || 0).toFixed(2)}%</div><div style="font-size: 0.8em; color: #8b949e;">${bestTrade.direction} | ${bestTrade.symbol || ''}</div>` : '<div style="color: #484f58;">No trades yet</div>'}
-                    </div>
-                    <div>
-                        <div style="color: #f85149; font-weight: bold; margin-bottom: 5px;">Worst</div>
-                        ${worstTrade ? `<div style="font-size: 1.3em; color: #f85149;">${(worstTrade.profitPercent || 0).toFixed(2)}%</div><div style="font-size: 0.8em; color: #8b949e;">${worstTrade.direction} | ${worstTrade.symbol || ''}</div>` : '<div style="color: #484f58;">No trades yet</div>'}
-                    </div>
+            <div class="card full-width">
+                <h2>Pattern Memory - Learning Stats by Market & Direction</h2>
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;">
+                    ${Object.entries(pmStats.byMarket || {}).map(([mkt, d]) => {
+                        const t = d.wins + d.losses;
+                        const wr = t > 0 ? (d.wins / t * 100).toFixed(0) : 0;
+                        return '<div style="background:#0d1117;padding:10px;border-radius:6px;">' +
+                            '<div style="font-weight:bold;color:#58a6ff;margin-bottom:4px;">' + mkt + '</div>' +
+                            '<div style="font-size:0.85em;">W: <span class="positive">' + d.wins + '</span> L: <span class="negative">' + d.losses + '</span> WR: <span class="' + (wr >= 50 ? 'positive' : 'negative') + '">' + wr + '%</span></div>' +
+                            '</div>';
+                    }).join('') || '<div style="color:#484f58;padding:10px;">No market data yet</div>'}
+                    ${Object.entries(pmStats.byDirection || {}).map(([dir, d]) => {
+                        const t = d.wins + d.losses;
+                        const wr = t > 0 ? (d.wins / t * 100).toFixed(0) : 0;
+                        return '<div style="background:#0d1117;padding:10px;border-radius:6px;">' +
+                            '<div style="font-weight:bold;color:' + (dir === 'LONG' ? '#3fb950' : '#f85149') + ';margin-bottom:4px;">' + dir + '</div>' +
+                            '<div style="font-size:0.85em;">W: <span class="positive">' + d.wins + '</span> L: <span class="negative">' + d.losses + '</span> WR: <span class="' + (wr >= 50 ? 'positive' : 'negative') + '">' + wr + '%</span></div>' +
+                            '</div>';
+                    }).join('')}
                 </div>
+                ${Object.keys(pmStats.byHour || {}).length > 0 ? '<div style="margin-top:10px;"><div style="color:#58a6ff;font-weight:600;margin-bottom:6px;">Win Rate by Hour (UTC)</div><div style="display:flex;flex-wrap:wrap;gap:4px;">' + 
+                    Array.from({length: 24}, (_, h) => {
+                        const hd = (pmStats.byHour || {})[h.toString()] || {wins:0,losses:0};
+                        const ht = hd.wins + hd.losses;
+                        const hwr = ht > 0 ? Math.round(hd.wins / ht * 100) : -1;
+                        const bg = hwr < 0 ? '#21262d' : hwr >= 60 ? '#238636' : hwr >= 40 ? '#d29922' : '#da3633';
+                        return '<div style="width:30px;height:30px;background:' + bg + ';border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.7em;" title="' + h + ':00 UTC - ' + (ht > 0 ? hwr + '% (' + ht + ' trades)' : 'no trades') + '">' + h + '</div>';
+                    }).join('') + '</div></div>' : ''}
             </div>
         </div>
 
         <div class="grid">
             <div class="card full-width">
-                <h2>Mean Reversion Engine - Live Decisions</h2>
-                <div style="max-height: 400px; overflow-y: auto;">
-                    ${brainLog.slice(0, 50).map(t => {
+                <h2>Live Decisions & Pattern Matching</h2>
+                <div style="max-height: 350px; overflow-y: auto;">
+                    ${brainLog.slice(0, 60).map(t => {
                         const color = categoryColors[t.category] || '#888';
-                        return `<div class="thinking-entry" style="border-left-color: ${color};">
-                            <span class="thinking-time">${new Date(t.time).toLocaleTimeString()}</span>
-                            <span style="color: ${color}; font-weight: 600; text-transform: uppercase; font-size: 0.75em;">[${t.category}]</span>
-                            ${t.message}
-                        </div>`;
-                    }).join('') || '<div style="color: #484f58; padding: 20px; text-align: center;">Waiting for signal decisions...</div>'}
+                        return '<div class="thinking-entry" style="border-left-color: ' + color + ';"><span class="thinking-time">' + new Date(t.time).toLocaleTimeString() + '</span><span style="color:' + color + ';font-weight:600;text-transform:uppercase;font-size:0.72em;">[' + t.category + ']</span> ' + t.message + '</div>';
+                    }).join('') || '<div style="color: #484f58; padding: 20px; text-align: center;">Waiting for decisions...</div>'}
                 </div>
             </div>
         </div>
 
         <div class="grid">
             <div class="card full-width">
-                <h2>Signal Performance Tracker</h2>
-                <p style="color: #8b949e; font-size: 0.85em; margin-bottom: 12px;">Which signals are winning and losing? Tracks every signal that triggered an entry.</p>
+                <h2>Signal Performance Tracker (25 signals)</h2>
+                <div style="overflow-x:auto;">
                 <table>
-                    <thead><tr>
-                        <th style="min-width:140px;">Signal</th>
-                        <th style="min-width:60px;">Wins</th>
-                        <th style="min-width:60px;">Losses</th>
-                        <th style="min-width:60px;">Total</th>
-                        <th style="min-width:80px;">Win Rate</th>
-                        <th style="min-width:200px;">Performance</th>
-                    </tr></thead>
+                    <thead><tr><th style="min-width:130px;">Signal</th><th>Wins</th><th>Losses</th><th>Total</th><th>Win Rate</th><th style="min-width:150px;">Performance</th></tr></thead>
                     <tbody>
                         ${(() => {
                             const sigStats = tradeMemory.signalStats || {};
@@ -1106,51 +1208,86 @@ function generateDashboardHTML() {
                                 const total = s.wins + s.losses;
                                 const wr = total > 0 ? (s.wins / total * 100).toFixed(0) : '-';
                                 const wrClass = total > 0 ? (s.wins / total >= 0.5 ? 'positive' : 'negative') : '';
-                                const barWidth = total > 0 ? Math.min(100, total * 10) : 0;
                                 const winPct = total > 0 ? (s.wins / total * 100) : 0;
-                                return '<tr>' +
-                                    '<td style="font-weight:600;">' + def.name + '</td>' +
-                                    '<td class="positive">' + s.wins + '</td>' +
-                                    '<td class="negative">' + s.losses + '</td>' +
-                                    '<td>' + total + '</td>' +
-                                    '<td class="' + wrClass + '" style="font-weight:bold;">' + (total > 0 ? wr + '%' : 'No data') + '</td>' +
-                                    '<td><div style="display:flex;height:18px;border-radius:4px;overflow:hidden;background:#21262d;min-width:180px;">' +
-                                        (total > 0 ? '<div style="width:' + winPct + '%;background:#238636;"></div><div style="width:' + (100 - winPct) + '%;background:#da3633;"></div>' : '') +
-                                    '</div></td>' +
-                                '</tr>';
+                                return '<tr><td style="font-weight:600;">' + def.name + '</td>' +
+                                    '<td class="positive">' + s.wins + '</td><td class="negative">' + s.losses + '</td><td>' + total + '</td>' +
+                                    '<td class="' + wrClass + '" style="font-weight:bold;">' + (total > 0 ? wr + '%' : '-') + '</td>' +
+                                    '<td><div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#21262d;">' +
+                                        (total > 0 ? '<div style="width:' + winPct + '%;background:#238636;"></div><div style="width:' + (100-winPct) + '%;background:#da3633;"></div>' : '') +
+                                    '</div></td></tr>';
                             }).join('');
                         })()}
                     </tbody>
                 </table>
+                </div>
             </div>
         </div>
 
         <div class="grid">
             <div class="card full-width">
-                <h2>Recent Trades</h2>
-                <div style="overflow-x: auto;">
+                <h2>Stored Pattern History (Last 10)</h2>
+                <div style="overflow-x:auto;">
                 <table>
-                    <tr><th>Time</th><th>Market</th><th>Dir</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Exit</th><th>Hold</th><th style="min-width:250px;">Trigger Signals</th></tr>
+                    <thead><tr><th>Time</th><th>Market</th><th>Dir</th><th>Result</th><th>P&L</th><th>Exit</th><th>Hold</th><th>Mode</th><th>RSI 1m</th><th>StochK</th><th>BB Pos</th><th>CCI</th><th>Will%R</th><th>ADX</th><th>Imb</th><th>Trend</th><th>Triggers</th></tr></thead>
+                    <tbody>
+                        ${recentPatterns.map(p => {
+                            const fp = p.fingerprint || {};
+                            return '<tr>' +
+                                '<td style="font-size:0.75em;">' + new Date(p.timestamp).toLocaleTimeString() + '</td>' +
+                                '<td>' + (p.symbol || '-') + '</td>' +
+                                '<td class="' + (p.direction === 'LONG' ? 'positive' : 'negative') + '">' + (p.direction || '-') + '</td>' +
+                                '<td class="' + (p.result === 'WIN' ? 'positive' : 'negative') + '" style="font-weight:bold;">' + (p.result || '-') + '</td>' +
+                                '<td class="' + ((p.profitPercent||0) >= 0 ? 'positive' : 'negative') + '">' + ((p.profitPercent||0) >= 0 ? '+' : '') + (p.profitPercent||0).toFixed(2) + '%</td>' +
+                                '<td>' + (p.exitReason || '-') + '</td>' +
+                                '<td>' + (p.holdTimeMin||0).toFixed(0) + 'm</td>' +
+                                '<td><span class="tag">' + (p.entryMode || '-') + '</span></td>' +
+                                '<td class="fp-val">' + (fp.rsi_1m != null ? fp.rsi_1m.toFixed(1) : '-') + '</td>' +
+                                '<td class="fp-val">' + (fp.stoch_k_1m != null ? fp.stoch_k_1m.toFixed(0) : '-') + '</td>' +
+                                '<td class="fp-val">' + (fp.bb_position_1m != null ? (fp.bb_position_1m * 100).toFixed(0) + '%' : '-') + '</td>' +
+                                '<td class="fp-val">' + (fp.cci_1m != null ? fp.cci_1m.toFixed(0) : '-') + '</td>' +
+                                '<td class="fp-val">' + (fp.willr_1m != null ? fp.willr_1m.toFixed(0) : '-') + '</td>' +
+                                '<td class="fp-val">' + (fp.adx_1m != null ? fp.adx_1m.toFixed(0) : '-') + '</td>' +
+                                '<td class="fp-val">' + (fp.imbalance != null ? (fp.imbalance * 100).toFixed(0) + '%' : '-') + '</td>' +
+                                '<td>' + (fp.trend === 1 ? '<span class="positive">UP</span>' : fp.trend === -1 ? '<span class="negative">DN</span>' : 'RNG') + '</td>' +
+                                '<td>' + ((p.triggerSignals || []).slice(0, 4).map(s => '<span class="tag">' + s + '</span>').join(' ') || '-') + '</td>' +
+                            '</tr>';
+                        }).join('') || '<tr><td colspan="17" style="color: #484f58; text-align: center; padding: 15px;">No patterns stored yet — bot will learn as it trades...</td></tr>'}
+                    </tbody>
+                </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <div class="card full-width">
+                <h2>Complete Trade History (Last 50)</h2>
+                <div style="overflow-x:auto;">
+                <table>
+                    <thead><tr><th>Time</th><th>Market</th><th>Dir</th><th>Entry $</th><th>Exit $</th><th>P&L %</th><th>Result</th><th>Exit Reason</th><th>Hold</th><th>Mode</th><th>Sim</th><th style="min-width:220px;">Trigger Signals</th></tr></thead>
+                    <tbody>
                     ${recentTrades.map(t => {
                         const sigNames = (t.triggerSignals || []).map(sig => {
                             const def = signalEngine.SIGNAL_DEFINITIONS.find(d => d.id === sig);
                             return def ? def.name : sig;
                         });
                         const sigDisplay = sigNames.length > 0
-                            ? sigNames.map(n => '<span style="background:#21262d;padding:2px 6px;border-radius:3px;margin:1px;display:inline-block;font-size:0.8em;">' + n + '</span>').join(' ')
-                            : '<span style="color:#484f58;font-size:0.8em;">' + (t.aiReason || 'no data') + '</span>';
+                            ? sigNames.map(n => '<span class="tag">' + n + '</span>').join(' ')
+                            : '<span style="color:#484f58;font-size:0.75em;">no data</span>';
                         return '<tr>' +
-                            '<td style="font-size:0.8em;">' + new Date(t.timestamp).toLocaleTimeString() + '</td>' +
-                            '<td>' + t.symbol + '</td>' +
+                            '<td style="font-size:0.75em;">' + new Date(t.timestamp).toLocaleTimeString() + '<br>' + new Date(t.timestamp).toLocaleDateString() + '</td>' +
+                            '<td>' + (t.symbol || '-') + '</td>' +
                             '<td class="' + (t.direction === 'LONG' ? 'positive' : 'negative') + '">' + t.direction + '</td>' +
                             '<td>$' + (t.entryPrice || 0).toFixed(2) + '</td>' +
                             '<td>$' + (t.exitPrice || 0).toFixed(2) + '</td>' +
-                            '<td class="' + (t.profitPercent >= 0 ? 'positive' : 'negative') + '">' + (t.profitPercent >= 0 ? '+' : '') + t.profitPercent.toFixed(2) + '%</td>' +
+                            '<td class="' + (t.profitPercent >= 0 ? 'positive' : 'negative') + '" style="font-weight:bold;">' + (t.profitPercent >= 0 ? '+' : '') + t.profitPercent.toFixed(2) + '%</td>' +
+                            '<td class="' + (t.result === 'WIN' ? 'positive' : 'negative') + '" style="font-weight:bold;">' + t.result + '</td>' +
                             '<td>' + t.exitReason + '</td>' +
                             '<td>' + (t.holdTimeMin || '?') + 'm</td>' +
-                            '<td>' + sigDisplay + '</td>' +
-                        '</tr>';
-                    }).join('') || '<tr><td colspan="9" style="color: #484f58; text-align: center; padding: 20px;">No trades yet — mean reversion engine scanning markets...</td></tr>'}
+                            '<td><span class="tag">' + (t.entryMode || t.aiReason || '-') + '</span></td>' +
+                            '<td>' + (t.simulated ? 'SIM' : 'LIVE') + '</td>' +
+                            '<td>' + sigDisplay + '</td></tr>';
+                    }).join('') || '<tr><td colspan="12" style="color: #484f58; text-align: center; padding: 20px;">No trades yet — engine scanning markets...</td></tr>'}
+                    </tbody>
                 </table>
                 </div>
             </div>
@@ -1233,8 +1370,8 @@ function startDashboard() {
 
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   SCALPING BOT - Mean Reversion Engine | v16');
-    log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Mean Reversion Scalping`);
+    log('   SELF-LEARNING BOT v17 - Pattern Memory Engine');
+    log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Pattern Matching`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);
     log(`Leverage: ${CONFIG.LEVERAGE}x`);
@@ -1242,7 +1379,8 @@ async function main() {
     log(`Trade Size: ${CONFIG.TRADE_AMOUNT_USDC} USDC per market`);
     log(`Signal Check Interval: ${CONFIG.AI_INTERVAL_MS / 1000}s`);
     log(`Position Check Interval: ${CONFIG.CHECK_INTERVAL_MS / 1000}s`);
-    log(`Min Signals Required: 5 of 9 (mean reversion)`);
+    log(`Indicators: 12 per timeframe (RSI, EMA, MACD, BB, ATR, StochRSI, ADX, CCI, WilliamsR, ROC)`);
+    log(`Pattern Memory: Stores every trade fingerprint in data/ (persistent)`);
     log(`Daily Loss Limit: ${safety.getStatus().dailyLossLimit}%`);
     log(`Dashboard: http://0.0.0.0:${CONFIG.DASHBOARD_PORT}`);
     log('═══════════════════════════════════════════════════════════');
@@ -1264,9 +1402,11 @@ async function main() {
     loadMemory();
     loadPriceHistory();
     safety.loadConfig();
+    patternMemory.load();
     startDashboard();
 
-    aiBrain.think('Bot starting up - AI brain online with technical indicators (RSI, EMA, MACD, BB, ATR, StochRSI, ADX)', 'ai_brain');
+    const pmS = patternMemory.getStats();
+    aiBrain.think(`Bot v17 starting — Pattern Memory Engine | ${pmS.totalStored} patterns stored | ${pmS.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | 12 indicators per TF`, 'ai_brain');
 
     try {
         const connection = new Connection(CONFIG.RPC_URL, { commitment: 'confirmed' });
@@ -1369,6 +1509,7 @@ async function main() {
             botStatus.running = false;
             saveMemory();
             savePriceHistory();
+            patternMemory.save();
             const openPositions = ACTIVE_MARKETS.filter(s => {
                 const ms = marketStates[s];
                 return ms && (CONFIG.SIMULATION_MODE ? ms.simulatedPosition : ms.currentPosition);

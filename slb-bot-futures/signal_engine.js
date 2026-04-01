@@ -1,16 +1,6 @@
 'use strict';
 
-const SIGNAL_DEFINITIONS = [
-    { id: 'rsi_reversal', name: 'RSI Reversal' },
-    { id: 'stoch_reversal', name: 'StochRSI Reversal' },
-    { id: 'bb_bounce', name: 'Bollinger Bounce' },
-    { id: 'sr_proximity', name: 'S/R Proximity' },
-    { id: 'macd_divergence', name: 'MACD Divergence' },
-    { id: 'ema_trend_5m', name: '5m EMA Trend' },
-    { id: 'adx_strength', name: 'ADX Strength' },
-    { id: 'imbalance_flow', name: 'Orderbook Flow' },
-    { id: 'price_exhaustion', name: 'Price Exhaustion' },
-];
+const patternMemory = require('./pattern_memory');
 
 function evaluateSignals(marketState) {
     const ind1m = marketState.indicators1m;
@@ -31,6 +21,10 @@ function evaluateSignals(marketState) {
         reason: '',
         failReason: '',
         confidence: 0,
+        entryMode: 'NONE',
+        patternMatch: null,
+        fingerprint: null,
+        indicatorSnapshot: {}
     };
 
     if (!ind1m || !ind1m.ready || !ind5m || !ind5m.ready) {
@@ -38,219 +32,221 @@ function evaluateSignals(marketState) {
         return result;
     }
 
-    if (ind1m.rsi !== null) {
-        if (ind1m.rsi <= 30) {
-            result.signals.rsi_reversal = 'LONG';
-            result.longScore++;
-        } else if (ind1m.rsi >= 70) {
-            result.signals.rsi_reversal = 'SHORT';
-            result.shortScore++;
-        }
+    if (ind1m.rsi != null) {
+        if (ind1m.rsi <= 30) { result.signals.rsi_oversold_1m = 'LONG'; result.longScore++; }
+        else if (ind1m.rsi >= 70) { result.signals.rsi_overbought_1m = 'SHORT'; result.shortScore++; }
+        if (ind1m.rsi >= 40 && ind1m.rsi <= 60) { result.signals.rsi_neutral_1m = 'NEUTRAL'; }
+    }
+
+    if (ind5m.rsi != null) {
+        if (ind5m.rsi <= 35) { result.signals.rsi_oversold_5m = 'LONG'; result.longScore++; }
+        else if (ind5m.rsi >= 65) { result.signals.rsi_overbought_5m = 'SHORT'; result.shortScore++; }
     }
 
     if (ind1m.stochRSI) {
-        const k = ind1m.stochRSI.k;
-        const d = ind1m.stochRSI.d;
-        if (k < 25 && k > d) {
-            result.signals.stoch_reversal = 'LONG';
-            result.longScore++;
-        } else if (k > 75 && k < d) {
-            result.signals.stoch_reversal = 'SHORT';
-            result.shortScore++;
-        }
+        const k = ind1m.stochRSI.k, d = ind1m.stochRSI.d;
+        if (k < 20 && k > d) { result.signals.stoch_bounce_1m = 'LONG'; result.longScore++; }
+        else if (k > 80 && k < d) { result.signals.stoch_drop_1m = 'SHORT'; result.shortScore++; }
     }
 
     if (ind1m.bollinger && price) {
-        const bbRange = ind1m.bollinger.upper - ind1m.bollinger.lower;
-        if (bbRange > 0) {
-            const bbPosition = (price - ind1m.bollinger.lower) / bbRange;
-            if (bbPosition <= 0.05) {
-                result.signals.bb_bounce = 'LONG';
-                result.longScore++;
-            } else if (bbPosition >= 0.95) {
-                result.signals.bb_bounce = 'SHORT';
-                result.shortScore++;
-            }
+        const range = ind1m.bollinger.upper - ind1m.bollinger.lower;
+        if (range > 0) {
+            const pos = (price - ind1m.bollinger.lower) / range;
+            if (pos <= 0.05) { result.signals.bb_lower_1m = 'LONG'; result.longScore++; }
+            else if (pos >= 0.95) { result.signals.bb_upper_1m = 'SHORT'; result.shortScore++; }
         }
     }
 
-    if (sr && price) {
-        let nearestSupport = null;
-        let nearestResistance = null;
-        let supportDist = Infinity;
-        let resistanceDist = Infinity;
-        if (sr.supports) {
-            for (const s of sr.supports) {
-                const dist = Math.abs(s.distancePercent);
-                if (dist < 0.30 && (s.strength === 'STRONG' || s.strength === 'MODERATE')) {
-                    if (dist < supportDist) {
-                        nearestSupport = s;
-                        supportDist = dist;
-                    }
-                }
-            }
-        }
-        if (sr.resistances) {
-            for (const r of sr.resistances) {
-                const dist = Math.abs(r.distancePercent);
-                if (dist < 0.30 && (r.strength === 'STRONG' || r.strength === 'MODERATE')) {
-                    if (dist < resistanceDist) {
-                        nearestResistance = r;
-                        resistanceDist = dist;
-                    }
-                }
-            }
-        }
-        if (nearestSupport && nearestResistance) {
-            if (supportDist <= resistanceDist) {
-                result.signals.sr_proximity = 'LONG';
-                result.longScore++;
-            } else {
-                result.signals.sr_proximity = 'SHORT';
-                result.shortScore++;
-            }
-        } else if (nearestSupport) {
-            result.signals.sr_proximity = 'LONG';
-            result.longScore++;
-        } else if (nearestResistance) {
-            result.signals.sr_proximity = 'SHORT';
-            result.shortScore++;
-        }
+    if (ind1m.cci != null) {
+        if (ind1m.cci <= -100) { result.signals.cci_oversold_1m = 'LONG'; result.longScore++; }
+        else if (ind1m.cci >= 100) { result.signals.cci_overbought_1m = 'SHORT'; result.shortScore++; }
+    }
+
+    if (ind1m.willR != null) {
+        if (ind1m.willR <= -80) { result.signals.willr_oversold_1m = 'LONG'; result.longScore++; }
+        else if (ind1m.willR >= -20) { result.signals.willr_overbought_1m = 'SHORT'; result.shortScore++; }
     }
 
     if (ind1m.macd && prices.length >= 8) {
-        const recentPrices = prices.slice(-8);
-        const priceTrend = recentPrices[recentPrices.length - 1] - recentPrices[0];
+        const priceTrend = prices[prices.length - 1] - prices[prices.length - 8];
         const hist = ind1m.macd.histogram;
-        if (priceTrend < 0 && hist > -0.001 && hist < 0.01) {
-            result.signals.macd_divergence = 'LONG';
-            result.longScore++;
-        } else if (priceTrend > 0 && hist < 0.001 && hist > -0.01) {
-            result.signals.macd_divergence = 'SHORT';
-            result.shortScore++;
-        }
+        if (priceTrend < 0 && hist > 0) { result.signals.macd_bull_div = 'LONG'; result.longScore++; }
+        else if (priceTrend > 0 && hist < 0) { result.signals.macd_bear_div = 'SHORT'; result.shortScore++; }
     }
 
-    if (ind5m.ema9 !== null && ind5m.ema21 !== null && ind5m.ema9 !== ind5m.ema21) {
-        if (ind5m.ema9 > ind5m.ema21) {
-            result.signals.ema_trend_5m = 'LONG';
-            result.longScore++;
-        } else {
-            result.signals.ema_trend_5m = 'SHORT';
-            result.shortScore++;
-        }
+    if (ind5m.ema9 != null && ind5m.ema21 != null && ind5m.ema9 !== ind5m.ema21) {
+        if (ind5m.ema9 > ind5m.ema21) { result.signals.ema_trend_5m = 'LONG'; result.longScore++; }
+        else { result.signals.ema_trend_5m = 'SHORT'; result.shortScore++; }
     }
 
-    const adx1m = ind1m.adx ? ind1m.adx.adx : 0;
-    const adx5m = ind5m.adx ? ind5m.adx.adx : 0;
-    if (adx1m > 20 || adx5m > 20) {
-        const bestAdx = adx5m >= adx1m ? ind5m.adx : ind1m.adx;
-        if (bestAdx && bestAdx.plusDI > bestAdx.minusDI) {
-            result.signals.adx_strength = 'LONG';
-            result.longScore++;
-        } else if (bestAdx && bestAdx.minusDI > bestAdx.plusDI) {
-            result.signals.adx_strength = 'SHORT';
-            result.shortScore++;
+    if (ind1m.adx) {
+        if (ind1m.adx.adx > 20) {
+            if (ind1m.adx.plusDI > ind1m.adx.minusDI) { result.signals.adx_bull_1m = 'LONG'; result.longScore++; }
+            else if (ind1m.adx.minusDI > ind1m.adx.plusDI) { result.signals.adx_bear_1m = 'SHORT'; result.shortScore++; }
         }
     }
 
     if (Math.abs(imbalance) > 0.15) {
-        if (imbalance > 0) {
-            result.signals.imbalance_flow = 'LONG';
-            result.longScore++;
-        } else {
-            result.signals.imbalance_flow = 'SHORT';
-            result.shortScore++;
+        if (imbalance > 0) { result.signals.orderbook_buy = 'LONG'; result.longScore++; }
+        else { result.signals.orderbook_sell = 'SHORT'; result.shortScore++; }
+    }
+
+    if (sr && price) {
+        let sDist = Infinity, rDist = Infinity;
+        if (sr.supports) for (const s of sr.supports) {
+            const d = Math.abs(s.distancePercent);
+            if (d < 0.30 && (s.strength !== 'WEAK') && d < sDist) sDist = d;
         }
+        if (sr.resistances) for (const r of sr.resistances) {
+            const d = Math.abs(r.distancePercent);
+            if (d < 0.30 && (r.strength !== 'WEAK') && d < rDist) rDist = d;
+        }
+        if (sDist < rDist && sDist < Infinity) { result.signals.near_support = 'LONG'; result.longScore++; }
+        else if (rDist < sDist && rDist < Infinity) { result.signals.near_resistance = 'SHORT'; result.shortScore++; }
     }
 
     if (prices.length >= 8) {
         const lookback = prices.slice(-8);
-        const maxP = Math.max(...lookback);
-        const minP = Math.min(...lookback);
+        const maxP = Math.max(...lookback), minP = Math.min(...lookback);
         const range = maxP - minP;
-        if (range > 0 && price) {
-            const posInRange = (price - minP) / range;
-            if (posInRange <= 0.10) {
-                result.signals.price_exhaustion = 'LONG';
-                result.longScore++;
-            } else if (posInRange >= 0.90) {
-                result.signals.price_exhaustion = 'SHORT';
-                result.shortScore++;
-            }
+        if (range > 0) {
+            const pos = (price - minP) / range;
+            if (pos <= 0.10) { result.signals.price_at_low = 'LONG'; result.longScore++; }
+            else if (pos >= 0.90) { result.signals.price_at_high = 'SHORT'; result.shortScore++; }
         }
+    }
+
+    if (ind1m.roc != null) {
+        if (ind1m.roc < -0.15) { result.signals.roc_oversold = 'LONG'; result.longScore++; }
+        else if (ind1m.roc > 0.15) { result.signals.roc_overbought = 'SHORT'; result.shortScore++; }
     }
 
     result.totalSignals = Object.keys(result.signals).length;
 
-    const dominantScore = Math.max(result.longScore, result.shortScore);
-    const direction = result.longScore > result.shortScore ? 'LONG' : result.shortScore > result.longScore ? 'SHORT' : null;
+    const direction = result.longScore > result.shortScore ? 'LONG'
+        : result.shortScore > result.longScore ? 'SHORT' : null;
 
     if (!direction) {
-        result.failReason = `Signals split evenly L:${result.longScore} S:${result.shortScore} — no clear direction`;
+        result.failReason = `Signals split L:${result.longScore} S:${result.shortScore}`;
         return result;
     }
 
-    if (dominantScore < 5) {
-        result.failReason = `Only ${dominantScore} signals for ${direction} (need 5+). L:${result.longScore} S:${result.shortScore}`;
+    const dominantScore = Math.max(result.longScore, result.shortScore);
+
+    if (dominantScore < 3) {
+        result.failReason = `Only ${dominantScore} signals for ${direction} (need 3+). L:${result.longScore} S:${result.shortScore}`;
         return result;
     }
 
-    const hasReversal = result.signals.rsi_reversal === direction ||
-                        result.signals.stoch_reversal === direction ||
-                        result.signals.bb_bounce === direction;
-    if (!hasReversal) {
-        result.failReason = `No reversal signal (RSI/StochRSI/BB) for ${direction} — need at least one mean-reversion trigger`;
+    if (!ind1m.atr || !price || price <= 0) {
+        result.failReason = 'ATR or price unavailable — cannot assess volatility';
+        return result;
+    }
+    const atrPct = (ind1m.atr / price) * 100;
+    if (atrPct < 0.05) {
+        result.failReason = `ATR too low (${atrPct.toFixed(3)}%) — dead market`;
         return result;
     }
 
-    if (!result.signals.ema_trend_5m) {
-        result.failReason = '5m EMA trend not available';
-        return result;
-    }
-    if (result.signals.ema_trend_5m !== direction) {
-        result.failReason = `5m trend ${result.signals.ema_trend_5m} disagrees with ${direction} reversal — only buy dips in uptrends, sell rips in downtrends`;
-        return result;
-    }
+    result.indicatorSnapshot = buildSnapshot(marketState);
+    const fingerprint = patternMemory.createFingerprint(marketState);
+    result.fingerprint = fingerprint;
 
-    const atr1m = ind1m.atr;
-    if (!atr1m || !price) {
-        result.failReason = 'ATR or price unavailable — cannot verify volatility';
-        return result;
-    }
-    const atrPct = (atr1m / price) * 100;
-    if (atrPct < 0.08) {
-        result.failReason = `ATR too low (${atrPct.toFixed(3)}%) — not enough volatility to reach TP`;
-        return result;
-    }
+    const decision = patternMemory.shouldEnter(fingerprint, direction, marketState.symbol || '');
 
-    if (trend === 'RANGING') {
-        result.failReason = 'Market is RANGING — no entry';
+    if (!decision.enter) {
+        result.failReason = decision.reason;
+        result.entryMode = decision.mode;
+        result.patternMatch = decision.matchData;
         return result;
     }
 
     result.action = direction;
     result.direction = direction;
-    result.confidence = Math.min(0.95, 0.50 + (dominantScore * 0.07));
+    result.entryMode = decision.mode;
+    result.patternMatch = decision.matchData;
+    result.confidence = Math.min(0.95, 0.50 + (dominantScore * 0.05));
 
     const activeSignals = Object.entries(result.signals)
         .filter(([, dir]) => dir === direction)
-        .map(([sig]) => {
-            const def = SIGNAL_DEFINITIONS.find(d => d.id === sig);
-            return def ? def.name : sig;
-        });
+        .map(([sig]) => sig);
 
-    result.reason = `${direction} | Score ${dominantScore}/${result.totalSignals} | ${activeSignals.join(', ')}`;
+    result.reason = `${direction} | ${dominantScore} signals | ${decision.mode} | ${activeSignals.join(', ')}`;
 
     return result;
 }
 
-function getSignalDefinitions() {
-    return SIGNAL_DEFINITIONS;
+function buildSnapshot(marketState) {
+    const snap = {};
+    const ind1m = marketState.indicators1m || {};
+    const ind5m = marketState.indicators5m || {};
+
+    snap.rsi_1m = ind1m.rsi != null ? r(ind1m.rsi) : null;
+    snap.rsi_5m = ind5m.rsi != null ? r(ind5m.rsi) : null;
+    snap.ema9_1m = ind1m.ema9 != null ? r(ind1m.ema9) : null;
+    snap.ema21_1m = ind1m.ema21 != null ? r(ind1m.ema21) : null;
+    snap.ema50_1m = ind1m.ema50 != null ? r(ind1m.ema50) : null;
+    snap.ema9_5m = ind5m.ema9 != null ? r(ind5m.ema9) : null;
+    snap.ema21_5m = ind5m.ema21 != null ? r(ind5m.ema21) : null;
+    if (ind1m.macd) { snap.macd_h_1m = r(ind1m.macd.histogram); snap.macd_l_1m = r(ind1m.macd.macd); }
+    if (ind5m.macd) { snap.macd_h_5m = r(ind5m.macd.histogram); }
+    if (ind1m.bollinger) { snap.bb_upper_1m = r(ind1m.bollinger.upper); snap.bb_lower_1m = r(ind1m.bollinger.lower); snap.bb_bw_1m = r(ind1m.bollinger.bandwidth); }
+    if (ind1m.stochRSI) { snap.stoch_k_1m = r(ind1m.stochRSI.k); snap.stoch_d_1m = r(ind1m.stochRSI.d); }
+    if (ind5m.stochRSI) { snap.stoch_k_5m = r(ind5m.stochRSI.k); }
+    if (ind1m.adx) { snap.adx_1m = r(ind1m.adx.adx); snap.pdi_1m = r(ind1m.adx.plusDI); snap.mdi_1m = r(ind1m.adx.minusDI); }
+    if (ind5m.adx) { snap.adx_5m = r(ind5m.adx.adx); }
+    snap.atr_1m = ind1m.atr != null ? r(ind1m.atr) : null;
+    snap.atr_5m = ind5m.atr != null ? r(ind5m.atr) : null;
+    snap.cci_1m = ind1m.cci != null ? r(ind1m.cci) : null;
+    snap.willr_1m = ind1m.willR != null ? r(ind1m.willR) : null;
+    snap.roc_1m = ind1m.roc != null ? r(ind1m.roc) : null;
+    snap.cci_5m = ind5m.cci != null ? r(ind5m.cci) : null;
+    snap.willr_5m = ind5m.willR != null ? r(ind5m.willR) : null;
+    snap.imbalance = r(marketState.lastImbalance || 0);
+    snap.trend = marketState.trend || 'UNKNOWN';
+    snap.price = marketState.lastPrice || 0;
+
+    return snap;
 }
+
+function r(v) { return Math.round(v * 100) / 100; }
+
+function getSignalDefinitions() {
+    return [
+        { id: 'rsi_oversold_1m', name: 'RSI Oversold 1m' },
+        { id: 'rsi_overbought_1m', name: 'RSI Overbought 1m' },
+        { id: 'rsi_oversold_5m', name: 'RSI Oversold 5m' },
+        { id: 'rsi_overbought_5m', name: 'RSI Overbought 5m' },
+        { id: 'stoch_bounce_1m', name: 'StochRSI Bounce' },
+        { id: 'stoch_drop_1m', name: 'StochRSI Drop' },
+        { id: 'bb_lower_1m', name: 'BB Lower Touch' },
+        { id: 'bb_upper_1m', name: 'BB Upper Touch' },
+        { id: 'cci_oversold_1m', name: 'CCI Oversold' },
+        { id: 'cci_overbought_1m', name: 'CCI Overbought' },
+        { id: 'willr_oversold_1m', name: 'Williams%R Oversold' },
+        { id: 'willr_overbought_1m', name: 'Williams%R Overbought' },
+        { id: 'macd_bull_div', name: 'MACD Bull Divergence' },
+        { id: 'macd_bear_div', name: 'MACD Bear Divergence' },
+        { id: 'ema_trend_5m', name: '5m EMA Trend' },
+        { id: 'adx_bull_1m', name: 'ADX Bullish' },
+        { id: 'adx_bear_1m', name: 'ADX Bearish' },
+        { id: 'orderbook_buy', name: 'Orderbook Buyers' },
+        { id: 'orderbook_sell', name: 'Orderbook Sellers' },
+        { id: 'near_support', name: 'Near Support' },
+        { id: 'near_resistance', name: 'Near Resistance' },
+        { id: 'price_at_low', name: 'Price At Low' },
+        { id: 'price_at_high', name: 'Price At High' },
+        { id: 'roc_oversold', name: 'ROC Oversold' },
+        { id: 'roc_overbought', name: 'ROC Overbought' },
+    ];
+}
+
+const SIGNAL_DEFINITIONS = getSignalDefinitions();
 
 module.exports = {
     evaluateSignals,
     getSignalDefinitions,
     SIGNAL_DEFINITIONS,
+    buildSnapshot
 };

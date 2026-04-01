@@ -233,6 +233,34 @@ function calcADX(candles, period = 14) {
     return { adx, plusDI: last.plusDI, minusDI: last.minusDI };
 }
 
+function calcCCI(candles, period = 20) {
+    if (candles.length < period) return null;
+    const slice = candles.slice(-period);
+    const typicals = slice.map(c => (c.high + c.low + c.close) / 3);
+    const mean = typicals.reduce((a, b) => a + b, 0) / period;
+    const meanDev = typicals.reduce((sum, tp) => sum + Math.abs(tp - mean), 0) / period;
+    if (meanDev === 0) return 0;
+    return (typicals[typicals.length - 1] - mean) / (0.015 * meanDev);
+}
+
+function calcWilliamsR(candles, period = 14) {
+    if (candles.length < period) return null;
+    const slice = candles.slice(-period);
+    const highestHigh = Math.max(...slice.map(c => c.high));
+    const lowestLow = Math.min(...slice.map(c => c.low));
+    const close = slice[slice.length - 1].close;
+    if (highestHigh === lowestLow) return -50;
+    return ((highestHigh - close) / (highestHigh - lowestLow)) * -100;
+}
+
+function calcROC(closes, period = 12) {
+    if (closes.length < period + 1) return null;
+    const current = closes[closes.length - 1];
+    const past = closes[closes.length - 1 - period];
+    if (past === 0) return 0;
+    return ((current - past) / past) * 100;
+}
+
 function calculateAllIndicators(candles) {
     if (!candles || candles.length < 5) {
         return { ready: false, reason: 'Not enough candle data yet' };
@@ -249,6 +277,9 @@ function calculateAllIndicators(candles) {
     result.atr = calcATR(candles, 14);
     result.stochRSI = calcStochRSI(closes, 14, 14, 3, 3);
     result.adx = calcADX(candles, 14);
+    result.cci = calcCCI(candles, 20);
+    result.willR = calcWilliamsR(candles, 14);
+    result.roc = calcROC(closes, 12);
 
     if (closes.length >= 22) {
         const prevCloses = closes.slice(0, -1);
@@ -261,10 +292,11 @@ function calculateAllIndicators(candles) {
 
     const available = [
         result.ema9, result.ema21, result.ema50, result.rsi, result.macd,
-        result.bollinger, result.atr, result.stochRSI, result.adx
+        result.bollinger, result.atr, result.stochRSI, result.adx,
+        result.cci, result.willR, result.roc
     ].filter(v => v !== null).length;
     result.indicatorsAvailable = available;
-    result.indicatorsTotal = 9;
+    result.indicatorsTotal = 12;
 
     return result;
 }

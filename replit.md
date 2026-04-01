@@ -1,69 +1,61 @@
 # Solana Futures Trading Bot
 
 ## Overview
-This project is a rule-based perpetual futures scalping bot on Solana mainnet using Drift Protocol. The bot trades SOL-PERP, BTC-PERP, and ETH-PERP simultaneously using a mean-reversion signal scoring engine (no AI model). v16: replaced momentum-chasing signals with mean-reversion signals — buys dips near support when RSI/StochRSI show oversold, sells rips near resistance when overbought. 5m EMA trend filter ensures dips are bought in uptrends only. Fixed TP 0.30%, SL 0.50%, 0.07% actual Drift fees (Tier 1). Requires 5+ of 9 signals agreeing + at least one reversal trigger.
+This project is a self-learning perpetual futures scalping bot on Solana mainnet using Drift Protocol. The bot trades SOL-PERP, BTC-PERP, and ETH-PERP simultaneously. v17: Pattern Memory Engine — stores every trade with full indicator fingerprints (38 data points), learns which setups win/lose via k-nearest-neighbor similarity matching, dynamically selects when to enter based on historical pattern win rates. Two phases: Learning (< 30 trades, enters freely to collect data) and Exploitation (30+ trades, only enters if similar past patterns won at 55%+ rate). 12 indicators per timeframe. Persistent data in `data/` directory survives code updates.
 
 ## User Preferences
 - Always ask before modifying code
 - Explain every decision in detail
 - Tell the truth, never promise impossible things
-- Keep bot simple, avoid over-complication
 - No paid APIs (use free tiers / cheap models)
 - Security is critical (no key exposure, keys in .env only)
-- Dashboard for monitoring is important
+- Dashboard must show EVERYTHING — full transparency
 - User deploys to VPS manually via GitHub (push here, pull on VPS)
+- VPS deploy: `cd ~/Slb && git fetch --all && git reset --hard origin/main && cd slb-bot-futures && npm install && pm2 restart drift-bot`
 
 ## System Architecture
 
 ### UI/UX Decisions
-The bot includes a dark-theme web dashboard providing real-time monitoring and insights. This dashboard displays:
-- System health, operational mode, signal engine status, and safety status.
-- Interactive control buttons: Pause/Resume trading, Close All Positions, Reset Session Stats.
-- Market-specific data: price, trend, score, phase, imbalance, current position, P&L, SL/TP, and hold time.
-- Detailed support/resistance levels with strength indicators and detected candle patterns.
-- A comprehensive table of 9 technical indicators across 3 timeframes, color-coded for easy interpretation.
-- **Signal Performance Tracker**: shows each of the 9 signals with wins, losses, total trades, win rate, and a visual green/red bar — so the user can see which signals work and which don't.
-- Session statistics including win rate, P&L, and total trades.
-- Daily safety status, showing daily P&L against limits and pause status.
-- References to best/worst trades.
-- A live log of mean reversion engine decisions with reasoning.
-- Recent trade history with entry/exit, P&L, exit reason, and trigger signals shown as tags.
+Comprehensive dark-theme dashboard (v17) showing everything the bot does:
+- System health, connections, uptime, heartbeat
+- Learning Engine status: phase (LEARNING/EXPLOITATION), patterns stored, progress bar, pattern match win rate vs exploration win rate, win rate threshold
+- Controls: Pause/Resume, Close All, Reset Stats
+- Markets Overview: price, trend, score, phase, imbalance, volatility, data points, position, entry price, P&L, SL/TP, hold time, entry mode, last signal result
+- All 12 Technical Indicators across 3 timeframes: RSI, EMA 9/21, EMA50, MACD Hist, BB Position, BB Width, ATR, ATR%, StochRSI K/D, ADX, +DI/-DI, CCI, Williams%R, ROC — all color-coded
+- Support/Resistance levels with strength + Candle Patterns
+- Pattern Memory stats: by market, by direction, by hour (24-hour heatmap)
+- Live decision log with pattern matching reasoning
+- Signal Performance Tracker: 25 signals with win/loss bars
+- Stored Pattern History: last 10 patterns with full fingerprint data (RSI, StochK, BB, CCI, Will%R, ADX, Imbalance, Trend, triggers)
+- Complete Trade History: last 50 trades with time, market, direction, entry/exit prices, P&L%, result, exit reason, hold time, entry mode, sim/live flag, trigger signals
 
 ### Technical Implementations
-The core of the bot involves:
-- **Signal Engine (`signal_engine.js`)**: Mean-reversion scoring system with 9 signals: RSI Reversal (≤30 LONG, ≥70 SHORT), StochRSI Reversal (K<25 crossing up, K>75 crossing down), Bollinger Bounce (price at lower/upper band), S/R Proximity (near support=LONG, near resistance=SHORT), MACD Divergence (histogram diverging from price), 5m EMA Trend (directional filter), ADX Strength (trend strength), Orderbook Flow (imbalance), Price Exhaustion (price at extremes of recent range). Needs 5+ agreeing + at least one reversal signal (RSI/StochRSI/BB) + 5m EMA trend confirmation + ATR volatility gate.
-- **Entry Flow (`index.js`)**: Signal engine evaluated every 15 seconds per market. 1-minute cooldown after stop-loss exits. Entry requires 5+ of 9 signals agreeing, at least one reversal trigger, 5m trend agreement, sufficient ATR. Each trade records which signals triggered it.
-- **Position Management**: 10-minute stagnation close (raw P&L between -1% and +1% = stalled trade). Hard TP close (no trailing — scalping takes profit immediately). Emergency circuit breaker at -20%. Max hold 30min default.
-- **Technical Indicators (`indicators.js`)**: 9 indicators (RSI, EMA, MACD, Bollinger Bands, ATR, Stochastic RSI, ADX) across 1-minute, 5-minute, and 15-minute timeframes. Support/Resistance Calculator with strength scoring. Candle Pattern Analyzer on 5-minute timeframe. Directional score and momentum phase detection.
-- **Safety Layer (`self_tuner.js`)**: Enforces critical safety rules: 10% daily loss limit, 4-consecutive-loss pause (only counts losses > 5% P&L as real losses), both resetting at midnight UTC.
-- **Data Flow**: Prices and orderbook data collected every 15 seconds. Indicators, S/R, and candle patterns computed frequently. Signal engine called every 15 seconds per market when no position is open. Open positions monitored every 2 seconds.
-- **Trade Execution**: Uses Drift SDK for on-chain perpetual orders, supporting both simulation and live trading. Manages positions across all 3 markets simultaneously. Fees: 0.07% round trip (Drift Tier 1 taker). Fixed TP 0.30%, SL 0.50%. Chain-synced positions get entry snapshots populated.
-- **Signal Stats Tracking**: Each trade records its trigger signals. tradeMemory.signalStats tracks per-signal wins/losses persistently. Dashboard shows signal performance with visual bars.
-- **AI Brain (`ai_brain.js`)**: Retained for logging/thinking utilities only. No longer used for entry decisions.
+- **Pattern Memory (`pattern_memory.js`)**: Stores every trade with 38-dimension indicator fingerprint in `data/patterns.json`. K-nearest-neighbor similarity matching (k=10, euclidean distance on normalized vectors). Learning phase (< 30 trades): enters freely. Exploitation phase (30+ trades): checks if similar past trades won at 55%+ rate before entering. Stats tracked: by market, direction, hour, pattern-match vs exploration entries.
+- **Signal Engine (`signal_engine.js`)**: 25 possible signals across multiple indicators and timeframes. RSI oversold/overbought (1m + 5m), StochRSI bounce/drop, Bollinger band touches, CCI oversold/overbought, Williams%R extremes, MACD divergence, EMA trend, ADX directional, orderbook flow, S/R proximity, price exhaustion, ROC extremes. Needs 3+ signals agreeing + ATR gate. Pattern memory decides final entry/skip.
+- **Indicators (`indicators.js`)**: 12 indicators per timeframe: RSI, EMA (9/21/50), MACD, Bollinger Bands, ATR, Stochastic RSI, ADX (+DI/-DI), CCI, Williams %R, ROC. Computed on 1m, 5m, 15m candles. Support/Resistance Calculator, Candle Pattern Analyzer, Directional Score, Momentum Phase.
+- **Position Management**: 10-minute stagnation close, hard TP 0.30%, SL 0.50%, circuit breaker at -20%, max hold 30min.
+- **Safety Layer (`self_tuner.js`)**: 10% daily loss limit, 4-consecutive-loss pause, midnight UTC reset.
+- **Persistent Storage**: `data/` directory gitignored — survives `git reset --hard` on VPS. Contains `patterns.json` (all trade fingerprints) and `learning_stats.json` (aggregated stats). Portable format readable by any system.
+- **AI Brain (`ai_brain.js`)**: Retained for logging/thinking utilities only.
 
 ### System Design Choices
-- **Mean-reversion scalping**: Buys oversold dips near support, sells overbought rips near resistance. Enters early (before the bounce) instead of late (after the move). 5m EMA trend filter prevents buying dips in downtrends.
-- **Signal scoring system**: 9 independent signals, each votes LONG or SHORT. Need 5+ agreeing + at least one reversal signal for entry. This prevents entering without a clear mean-reversion setup.
-- **Wider SL for noise tolerance**: SL 0.50%, TP 0.30%. Gives trades room to breathe. Needs higher win rate but should achieve it with better entry timing.
-- **ATR volatility gate**: Only enters when 1m ATR shows enough market movement to reach TP target.
-- **Fast cycles**: 15s check interval, 1min SL cooldown, 10min stagnation close, 30min max hold. Immediate re-entry after wins.
-- **Multi-market capability**: Trades SOL-PERP, BTC-PERP, and ETH-PERP concurrently.
-- **Real-time Monitoring**: Dashboard provides full transparency with signal performance tracking.
-- **Robust Risk Management**: Circuit breaker, daily loss limits, consecutive loss pauses, post-stop-loss cooldown, stagnation close.
+- **Self-learning via pattern memory**: Bot stores every trade with full market context. Over time learns which indicator combinations lead to wins. No fixed rules — the data decides.
+- **Two-phase approach**: Learning phase trades freely to collect data. Exploitation phase only enters when similar past patterns show positive expectation.
+- **Dynamic indicator usage**: 25 possible signals, bot uses as many as fire. Not limited to fixed number. Pattern matching weights all indicators via fingerprint similarity.
+- **Persistent, portable data**: Stored in simple JSON files on VPS storage. Survives code updates. Can be read by any future system (bot, AI, analytics).
+- **Comprehensive monitoring**: Dashboard shows absolutely everything — every indicator, every decision, every pattern match, every trade with full context.
 
 ### Version History
-- **v16**: Replaced momentum-chasing signals with mean-reversion signals. Buys dips (RSI ≤30, StochRSI reversal, Bollinger lower band, near support) and sells rips (RSI ≥70, StochRSI reversal, Bollinger upper band, near resistance). 5m EMA trend filter: only buy dips in uptrends, sell rips in downtrends. Requires 5+ signals (up from 4) + at least one reversal trigger. ATR volatility gate blocks entries in dead markets. SL widened to 0.50% (from 0.25%) for noise tolerance. TP kept at 0.30%.
-- **v15**: Replaced AI (GLM-4.7-Flash) with hardcoded signal scoring engine. 9 momentum signals. Need 4+ agreeing. Zero API cost, fully deterministic. Result: 0% win rate — all signals chased momentum (entered at end of micro-moves, got stopped out by mean reversion).
-- **v14.1**: Wider SL/TP (0.25%/0.30%). Stricter AI prompt. Result: 1W/5L (17%).
-- **v14**: Scalping mode. Fixed TP 0.15%, SL 0.10%. Result: 8W/17L (32%) — SL too tight.
-- **v13**: Rolled back to working entry logic. Natural AI prompt. Confidence 0.75.
-- **v12.1**: Loosened v12 pre-filters. Still too restrictive.
-- **v12**: Structured 6-step AI checklist and hard pre-filters. Too strict — 8 hours zero trades.
+- **v17**: Self-learning Pattern Memory Engine. Stores every trade with 38-dimension fingerprint. K-NN similarity matching. Learning/Exploitation phases. 12 indicators per TF (added CCI, Williams%R, ROC). 25 signal types. Persistent data in `data/`. Comprehensive dashboard showing everything.
+- **v16**: Mean-reversion signals. Buys dips, sells rips. 9 signals, 5+ required + reversal trigger + EMA trend + ATR gate. Result: too few trades.
+- **v15**: Hardcoded signal engine. 9 momentum signals. Result: 0% win rate — chased momentum.
+- **v14.1**: Wider SL/TP. Result: 17% win rate.
+- **v14**: Scalping mode. Result: 32% win rate — SL too tight.
 
 ## External Dependencies
-- **@drift-labs/sdk**: For interacting with the Drift Protocol for on-chain perpetual futures trading.
-- **@solana/web3.js**: Solana blockchain SDK for network interactions.
-- **axios**: Used for making HTTP requests (retained for ai_brain.js utility, not used for entry decisions).
-- **bs58**: For Base58 encoding and decoding, primarily used for handling private keys.
-- **dotenv**: For managing environment variables securely.
-- **Helius RPC**: Used as the Solana RPC endpoint for reliable blockchain data access (Configured via `SOLANA_RPC_URL`).
+- **@drift-labs/sdk**: Drift Protocol for on-chain perpetual futures trading.
+- **@solana/web3.js**: Solana blockchain SDK.
+- **axios**: HTTP requests (ai_brain.js utility).
+- **bs58**: Base58 encoding for private keys.
+- **dotenv**: Environment variables.
+- **Helius RPC**: Solana RPC endpoint (via `SOLANA_RPC_URL`).
