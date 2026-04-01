@@ -1089,8 +1089,6 @@ function generateDashboardShell() {
         .btn-status { font-size: 0.75em; color: #8b949e; text-align: center; min-height: 16px; margin-top: 3px; }
         .tag { background: #21262d; padding: 1px 5px; border-radius: 3px; margin: 1px; display: inline-block; font-size: 0.78em; }
         .fp-val { font-family: monospace; font-size: 0.78em; }
-        .update-flash { transition: background-color 0.3s; }
-        .update-flash.updated { background-color: rgba(88, 166, 255, 0.05); }
         #lastUpdate { color: #484f58; font-size: 0.7em; position: fixed; bottom: 5px; right: 10px; }
     </style>
 </head>
@@ -1108,15 +1106,8 @@ function generateDashboardShell() {
         trade_loss: '#f85149', error: '#ff0000', general: '#888'
     };
 
-    function cls(val, posThreshold, negThreshold) {
-        if (val == null) return '';
-        if (typeof posThreshold === 'string') return val.toString().includes(posThreshold) ? 'positive' : val.toString().includes(negThreshold) ? 'negative' : '';
-        return val > posThreshold ? 'positive' : val < negThreshold ? 'negative' : '';
-    }
-
     function esc(s) { return s == null ? '-' : String(s).replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
     function tag(s) { return '<span class="tag">' + esc(s) + '</span>'; }
-    function pct(v, d) { return v != null ? v.toFixed(d || 2) + '%' : '-'; }
     function usd(v) { return v != null ? '$' + v.toFixed(2) : '-'; }
 
     function renderDashboard(d) {
