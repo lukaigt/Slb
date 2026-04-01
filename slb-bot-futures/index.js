@@ -20,6 +20,7 @@ const safety = require('./self_tuner');
 const indicators = require('./indicators');
 const signalEngine = require('./signal_engine');
 const patternMemory = require('./pattern_memory');
+const tpSlOptimizer = require('./tp_sl_optimizer');
 
 dotenv.config();
 
@@ -83,7 +84,9 @@ function createEmptyMarketState() {
         momentumPhase: null,
         entryFingerprint: null,
         entryMode: null,
-        lastSignalResult: null
+        lastSignalResult: null,
+        tpSlMode: null,
+        tpSlBase: null
     };
 }
 
@@ -434,6 +437,7 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
         holdTimeMin,
         aiStopLoss: marketState.aiStopLoss,
         aiTakeProfit: marketState.aiTakeProfit,
+        tpSlMode: marketState.tpSlMode || null,
         aiReason: marketState.aiReason,
         triggerSignals: marketState.triggerSignals || [],
         simulated: CONFIG.SIMULATION_MODE,
@@ -472,6 +476,12 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
         triggerSignals: marketState.triggerSignals || []
     });
 
+    if (marketState.tpSlBase) {
+        tpSlOptimizer.recordResult(marketState.tpSlBase.tp, marketState.tpSlBase.sl, result, profitPercent, symbol);
+    } else if (marketState.aiTakeProfit != null && marketState.aiStopLoss != null) {
+        tpSlOptimizer.recordResult(marketState.aiTakeProfit, marketState.aiStopLoss, result, profitPercent, symbol);
+    }
+
     aiBrain.recordTradeResult(symbol, pos, result, profitPercent, exitReason);
     safety.recordTradeResult(profitPercent, result === 'WIN');
 
@@ -504,6 +514,8 @@ function resetPositionState(marketState) {
     marketState.triggerSignals = [];
     marketState.entryFingerprint = null;
     marketState.entryMode = null;
+    marketState.tpSlMode = null;
+    marketState.tpSlBase = null;
 }
 
 async function syncPositionFromChain(marketState, marketConfig, symbol) {
@@ -714,13 +726,18 @@ async function processMarket(symbol) {
                 marketState.lowestPriceSinceEntry = price;
                 if (!marketState.entryTime) marketState.entryTime = Date.now();
             }
-            if (marketState.aiStopLoss == null) {
-                marketState.aiStopLoss = 0.50;
-                aiBrain.think(`[${symbol}] Emergency SL assigned: 0.50% (position had no stop loss)`, 'safety');
-            }
-            if (marketState.aiTakeProfit == null) {
-                marketState.aiTakeProfit = 0.30;
-                aiBrain.think(`[${symbol}] Emergency TP assigned: 0.30% (position had no take profit)`, 'safety');
+            if (marketState.aiStopLoss == null || marketState.aiTakeProfit == null) {
+                const emergInd = marketState.indicators1m || {};
+                const emergATR = (emergInd.atr != null && price > 0) ? (emergInd.atr / price) * 100 : null;
+                const emergRec = tpSlOptimizer.getRecommendedTPSL(emergATR, symbol);
+                if (marketState.aiStopLoss == null) {
+                    marketState.aiStopLoss = emergRec.sl;
+                    aiBrain.think(`[${symbol}] Emergency SL assigned: ${emergRec.sl.toFixed(2)}% [${emergRec.mode}]`, 'safety');
+                }
+                if (marketState.aiTakeProfit == null) {
+                    marketState.aiTakeProfit = emergRec.tp;
+                    aiBrain.think(`[${symbol}] Emergency TP assigned: ${emergRec.tp.toFixed(2)}% [${emergRec.mode}]`, 'safety');
+                }
             }
             if (marketState.aiMaxHoldMinutes == null) {
                 marketState.aiMaxHoldMinutes = 30;
@@ -803,8 +820,13 @@ async function processMarket(symbol) {
                 return;
             }
 
-            marketState.aiStopLoss = 0.50;
-            marketState.aiTakeProfit = 0.30;
+            const ind1mForTPSL = marketState.indicators1m || {};
+            const atrPct = (ind1mForTPSL.atr != null && marketState.lastPrice > 0) ? (ind1mForTPSL.atr / marketState.lastPrice) * 100 : null;
+            const tpSlRec = tpSlOptimizer.getRecommendedTPSL(atrPct, symbol);
+            marketState.aiStopLoss = tpSlRec.sl;
+            marketState.aiTakeProfit = tpSlRec.tp;
+            marketState.tpSlMode = tpSlRec.mode;
+            marketState.tpSlBase = { tp: tpSlRec.baseTP, sl: tpSlRec.baseSL };
             marketState.aiMaxHoldMinutes = 30;
             marketState.aiReason = signal.reason;
             marketState.triggerSignals = Object.entries(signal.signals)
@@ -813,7 +835,7 @@ async function processMarket(symbol) {
             marketState.entryFingerprint = signal.fingerprint;
             marketState.entryMode = signal.entryMode;
 
-            aiBrain.think(`[${symbol}] ENTRY ${signal.action} [${signal.entryMode}] | Score: ${Math.max(signal.longScore, signal.shortScore)}/${signal.totalSignals} | SL: 0.50% | TP: 0.30% | ${signal.reason}`, 'entry');
+            aiBrain.think(`[${symbol}] ENTRY ${signal.action} [${signal.entryMode}] | Score: ${Math.max(signal.longScore, signal.shortScore)}/${signal.totalSignals} | SL: ${tpSlRec.sl.toFixed(2)}% | TP: ${tpSlRec.tp.toFixed(2)}% [${tpSlRec.mode}] | ${signal.reason}`, 'entry');
             await openPosition(signal.action, marketState, marketConfig, symbol);
         }
     } catch (error) {
@@ -853,7 +875,7 @@ async function tradingLoop() {
     }
 }
 
-function generateDashboardHTML() {
+function generateDashboardData() {
     const stats = tradeMemory.sessionStats;
     const recentTrades = tradeMemory.trades.slice(-50).reverse();
     const winRate = stats.totalTrades > 0 ? (stats.wins / stats.totalTrades * 100).toFixed(1) : '0.0';
@@ -863,6 +885,8 @@ function generateDashboardHTML() {
     const brainLog = aiBrain.getThinkingLog();
     const pmStats = patternMemory.getStats();
     const recentPatterns = patternMemory.getRecentPatterns(10);
+    const tpSlStats = tpSlOptimizer.getOptimizerStats();
+    const topCombos = tpSlOptimizer.getTopCombos(15);
 
     const anyRpcConnected = ACTIVE_MARKETS.some(s => botStatus.markets[s]?.rpcConnected);
     const anyDlobConnected = ACTIVE_MARKETS.some(s => botStatus.markets[s]?.dlobConnected);
@@ -871,18 +895,154 @@ function generateDashboardHTML() {
     const bestTrade = allTrades.length > 0 ? allTrades.reduce((best, t) => (!best || (t.profitPercent || 0) > (best.profitPercent || 0)) ? t : best, null) : null;
     const worstTrade = allTrades.length > 0 ? allTrades.reduce((worst, t) => (!worst || (t.profitPercent || 0) < (worst.profitPercent || 0)) ? t : worst, null) : null;
 
-    const categoryColors = {
-        entry: '#00ff88', exit: '#ff4444', monitor: '#00d4ff', ai_brain: '#ff00ff',
-        scan: '#555', skip: '#888', safety: '#ff6600', trade_win: '#3fb950',
-        trade_loss: '#f85149', error: '#ff0000', general: '#888'
-    };
+    const marketsData = {};
+    for (const symbol of ACTIVE_MARKETS) {
+        const m = botStatus.markets[symbol] || {};
+        const ms = marketStates[symbol] || {};
+        const pos = m.position;
+        let pnlVal = 0;
+        if (pos && ms.entryPrice > 0 && m.price > 0) {
+            const pm = pos === 'LONG' 
+                ? ((m.price - ms.entryPrice) / ms.entryPrice * 100)
+                : ((ms.entryPrice - m.price) / ms.entryPrice * 100);
+            pnlVal = pm * CONFIG.LEVERAGE;
+            if (Math.abs(pnlVal) > 1000) pnlVal = 0;
+        }
+        const holdMin = pos && ms.entryTime ? ((Date.now() - ms.entryTime) / 60000).toFixed(0) + 'm' : '-';
+        const lastSig = ms.lastSignalResult;
+        marketsData[symbol] = {
+            price: m.price || 0,
+            trend: m.trend || 'BUILDING',
+            score: m.directionalScore || 0,
+            phase: m.momentumPhase || 'N/A',
+            imbalance: m.imbalance || 0,
+            volatility: m.volatility || 0,
+            dataPoints: ms.prices ? ms.prices.length : 0,
+            position: pos || null,
+            entryPrice: ms.entryPrice || 0,
+            pnl: pnlVal,
+            sl: ms.aiStopLoss,
+            tp: ms.aiTakeProfit,
+            tpSlMode: ms.tpSlMode || null,
+            holdMin,
+            entryMode: ms.entryMode || null,
+            lastSignal: lastSig ? {
+                action: lastSig.action,
+                longScore: lastSig.longScore,
+                shortScore: lastSig.shortScore
+            } : null,
+            indicators: {}
+        };
+        for (const tf of ['1m', '5m', '15m']) {
+            const ind = tf === '1m' ? ms.indicators1m : tf === '5m' ? ms.indicators5m : ms.indicators15m;
+            if (!ind || !ind.ready) {
+                marketsData[symbol].indicators[tf] = null;
+                continue;
+            }
+            const price = ms.lastPrice || 1;
+            let bbPos = null;
+            if (ind.bollinger) {
+                const r = ind.bollinger.upper - ind.bollinger.lower;
+                bbPos = r > 0 ? ((price - ind.bollinger.lower) / r * 100) : null;
+            }
+            marketsData[symbol].indicators[tf] = {
+                rsi: ind.rsi,
+                ema9: ind.ema9, ema21: ind.ema21, ema50: ind.ema50,
+                macdHist: ind.macd ? ind.macd.histogram : null,
+                bbPos, bbWidth: ind.bollinger ? ind.bollinger.bandwidth : null,
+                atr: ind.atr, atrPct: ind.atr != null ? (ind.atr / price) * 100 : null,
+                stochK: ind.stochRSI ? ind.stochRSI.k : null,
+                stochD: ind.stochRSI ? ind.stochRSI.d : null,
+                adx: ind.adx ? ind.adx.adx : null,
+                plusDI: ind.adx ? ind.adx.plusDI : null,
+                minusDI: ind.adx ? ind.adx.minusDI : null,
+                cci: ind.cci, willR: ind.willR, roc: ind.roc,
+                available: ind.indicatorsAvailable || 0,
+                total: ind.indicatorsTotal || 12
+            };
+        }
+        const sr = ms.supportResistance;
+        marketsData[symbol].supports = sr && sr.supports ? sr.supports : [];
+        marketsData[symbol].resistances = sr && sr.resistances ? sr.resistances : [];
+        marketsData[symbol].candlePatterns = ms.candlePatterns;
+    }
 
+    const comboMap = {};
+    const allTradesForCombos = tradeMemory.trades || [];
+    for (const t of allTradesForCombos) {
+        if (!t.triggerSignals || t.triggerSignals.length === 0) continue;
+        const key = t.triggerSignals.slice().sort().join(' + ');
+        if (!comboMap[key]) comboMap[key] = { wins: 0, losses: 0, signals: t.triggerSignals };
+        if (t.result === 'WIN') comboMap[key].wins++;
+        else comboMap[key].losses++;
+    }
+    const combos = Object.entries(comboMap).map(([k, v]) => ({ key: k, ...v, total: v.wins + v.losses }));
+    combos.sort((a, b) => b.total - a.total);
+
+    return {
+        version: 'v18',
+        simulation: CONFIG.SIMULATION_MODE,
+        leverage: CONFIG.LEVERAGE,
+        uptime,
+        heartbeatAgo,
+        running: botStatus.running,
+        driftConnected: botStatus.driftConnected,
+        rpcConnected: anyRpcConnected,
+        dlobConnected: anyDlobConnected,
+        paused: safetyStatus.paused,
+        pauseReason: safetyStatus.pauseReason,
+        stats: {
+            totalTrades: stats.totalTrades,
+            wins: stats.wins,
+            losses: stats.losses,
+            winRate,
+            totalProfit: stats.totalProfitPercent,
+            bestTrade: bestTrade ? { profit: bestTrade.profitPercent, dir: bestTrade.direction, symbol: bestTrade.symbol } : null,
+            worstTrade: worstTrade ? { profit: worstTrade.profitPercent, dir: worstTrade.direction, symbol: worstTrade.symbol } : null
+        },
+        safety: {
+            dailyProfit: safetyStatus.dailyPnl || 0,
+            dailyLimit: safetyStatus.dailyLossLimit || -10,
+            consecutiveLosses: safetyStatus.consecutiveLosses || 0,
+            maxConsecutive: safetyStatus.maxConsecutiveLosses || 4,
+            tradesToday: safetyStatus.dailyTrades || 0
+        },
+        pmStats,
+        tpSlStats,
+        topCombos,
+        markets: marketsData,
+        activeMarkets: ACTIVE_MARKETS,
+        signalStats: tradeMemory.signalStats || {},
+        signalDefs: signalEngine.getSignalDefinitions(),
+        signalCombos: combos.slice(0, 20),
+        recentPatterns,
+        recentTrades: recentTrades.map(t => ({
+            timestamp: t.timestamp,
+            symbol: t.symbol,
+            direction: t.direction,
+            entryPrice: t.entryPrice,
+            exitPrice: t.exitPrice,
+            profitPercent: t.profitPercent,
+            result: t.result,
+            exitReason: t.exitReason,
+            holdTimeMin: t.holdTimeMin,
+            entryMode: t.entryMode || t.aiReason || '-',
+            tpSlMode: t.tpSlMode || null,
+            sl: t.aiStopLoss,
+            tp: t.aiTakeProfit,
+            simulated: t.simulated,
+            triggerSignals: t.triggerSignals || []
+        })),
+        brainLog: brainLog.slice(0, 60).map(t => ({ time: t.time, category: t.category, message: t.message }))
+    };
+}
+
+function generateDashboardShell() {
     return `<!DOCTYPE html>
 <html>
 <head>
-    <title>v17 Self-Learning Bot - Pattern Memory</title>
+    <title>v18 Self-Learning Bot - Dynamic TP/SL</title>
     <meta charset="UTF-8">
-    <meta http-equiv="refresh" content="5">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0d1117; color: #e6edf3; padding: 10px; font-size: 13px; }
@@ -925,439 +1085,390 @@ function generateDashboardHTML() {
         .btn-status { font-size: 0.75em; color: #8b949e; text-align: center; min-height: 16px; margin-top: 3px; }
         .tag { background: #21262d; padding: 1px 5px; border-radius: 3px; margin: 1px; display: inline-block; font-size: 0.78em; }
         .fp-val { font-family: monospace; font-size: 0.78em; }
+        .update-flash { transition: background-color 0.3s; }
+        .update-flash.updated { background-color: rgba(88, 166, 255, 0.05); }
+        #lastUpdate { color: #484f58; font-size: 0.7em; position: fixed; bottom: 5px; right: 10px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Self-Learning Bot <span style="color: #8957e5; font-size: 0.5em; vertical-align: middle;">v17 Pattern Memory</span></h1>
-        <div class="subtitle">Drift Protocol | ${CONFIG.LEVERAGE}x | TP: 0.30% SL: 0.50% | Fee: 0.07% | Learns from every trade | ${pmStats.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | ${pmStats.totalStored} patterns stored</div>
-        
-        <div class="grid">
-            <div class="card">
-                <h2>System Health</h2>
-                <div class="stat-row"><span class="stat-label">Uptime</span><span class="stat-value">${uptime}</span></div>
-                <div class="stat-row"><span class="stat-label">Heartbeat</span><span class="stat-value ${heartbeatAgo > 60 ? 'negative' : 'positive'}">${heartbeatAgo}s ago</span></div>
-                <div class="stat-row"><span class="stat-label"><span class="health-dot ${anyRpcConnected ? 'health-green' : 'health-red'}"></span>RPC</span><span class="stat-value">${anyRpcConnected ? 'OK' : 'DOWN'}</span></div>
-                <div class="stat-row"><span class="stat-label"><span class="health-dot ${botStatus.driftConnected ? 'health-green' : 'health-red'}"></span>Drift</span><span class="stat-value">${botStatus.driftConnected ? 'OK' : 'DOWN'}</span></div>
-                <div class="stat-row"><span class="stat-label"><span class="health-dot ${anyDlobConnected ? 'health-green' : 'health-red'}"></span>DLOB</span><span class="stat-value">${anyDlobConnected ? 'OK' : 'DOWN'}</span></div>
-                <div class="stat-row"><span class="stat-label">Mode</span><span>${CONFIG.SIMULATION_MODE ? '<span class="sim-mode">SIMULATION</span>' : '<span class="live-mode">LIVE</span>'} ${safetyStatus.paused ? '<span class="paused-badge">PAUSED</span>' : ''}</span></div>
-                <div class="stat-row"><span class="stat-label">Engine</span><span class="stat-value" style="color: #8957e5;">v17 Pattern Memory</span></div>
-                <div class="stat-row"><span class="stat-label">Check Interval</span><span class="stat-value">${CONFIG.AI_INTERVAL_MS / 1000}s</span></div>
-                <div class="stat-row"><span class="stat-label">Min Signals</span><span class="stat-value">3+ agreeing</span></div>
-                <div class="stat-row"><span class="stat-label">TP / SL</span><span class="stat-value" style="color: #3fb950;">0.30% / 0.50%</span></div>
-                <div class="stat-row"><span class="stat-label">Fee</span><span class="stat-value">0.07%</span></div>
-                <div class="stat-row"><span class="stat-label">SL Cooldown</span><span class="stat-value">60s</span></div>
-                <div class="stat-row"><span class="stat-label">Stagnation</span><span class="stat-value">10min</span></div>
-                <div class="stat-row"><span class="stat-label">Max Hold</span><span class="stat-value">30min</span></div>
-            </div>
-
-            <div class="card">
-                <h2>Learning Engine</h2>
-                <div class="stat-row"><span class="stat-label">Phase</span><span>${pmStats.isLearning ? '<span class="learning-badge">LEARNING</span>' : '<span class="exploit-badge">EXPLOITATION</span>'}</span></div>
-                <div class="stat-row"><span class="stat-label">Patterns Stored</span><span class="stat-value" style="color: #8957e5;">${pmStats.totalStored}</span></div>
-                <div style="margin: 8px 0;">
-                    <div style="color: #8b949e; font-size: 0.8em; margin-bottom: 3px;">Learning Progress (${pmStats.learningProgress}%)</div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" style="width: ${pmStats.learningProgress}%; background: ${pmStats.isLearning ? '#8957e5' : '#238636'};"></div>
-                        <span class="progress-text">${pmStats.totalStored} / ${patternMemory.MIN_TRADES_FOR_LEARNING}</span>
-                    </div>
-                </div>
-                <div class="stat-row"><span class="stat-label">Overall Win Rate</span><span class="stat-value ${pmStats.overallWinRate >= 50 ? 'positive' : 'negative'}">${pmStats.overallWinRate}%</span></div>
-                <div class="stat-row"><span class="stat-label">Pattern Match Entries</span><span class="stat-value">${pmStats.patternMatchEntries}</span></div>
-                <div class="stat-row"><span class="stat-label">Pattern Match WR</span><span class="stat-value ${pmStats.patternMatchWinRate >= 50 ? 'positive' : pmStats.patternMatchEntries > 0 ? 'negative' : ''}">${pmStats.patternMatchEntries > 0 ? pmStats.patternMatchWinRate + '%' : 'N/A'}</span></div>
-                <div class="stat-row"><span class="stat-label">Exploration Entries</span><span class="stat-value">${pmStats.explorationEntries}</span></div>
-                <div class="stat-row"><span class="stat-label">Exploration WR</span><span class="stat-value ${pmStats.explorationWinRate >= 50 ? 'positive' : pmStats.explorationEntries > 0 ? 'negative' : ''}">${pmStats.explorationEntries > 0 ? pmStats.explorationWinRate + '%' : 'N/A'}</span></div>
-                <div class="stat-row"><span class="stat-label">Win Rate Threshold</span><span class="stat-value">${(patternMemory.WIN_RATE_THRESHOLD * 100).toFixed(0)}%</span></div>
-            </div>
-
-            <div class="card">
-                <h2>Controls</h2>
-                ${safetyStatus.paused 
-                    ? '<button class="btn btn-green" onclick="botAction(\'unpause\')">Resume Trading</button>'
-                    : '<button class="btn btn-orange" onclick="botAction(\'pause\')">Pause Trading</button>'
-                }
-                <button class="btn btn-red" onclick="if(confirm('Close ALL positions?')) botAction('close-all')">Close All Positions</button>
-                <button class="btn btn-gray" onclick="if(confirm('Reset session stats?')) botAction('reset-stats')">Reset Session Stats</button>
-                <div class="btn-status" id="btnStatus"></div>
-                <div style="margin-top: 10px;">
-                    <h2>Session Stats</h2>
-                    <div class="stat-row"><span class="stat-label">Total Trades</span><span class="stat-value">${stats.totalTrades}</span></div>
-                    <div class="stat-row"><span class="stat-label">W / L</span><span class="stat-value"><span class="positive">${stats.wins}</span> / <span class="negative">${stats.losses}</span></span></div>
-                    <div class="stat-row"><span class="stat-label">Win Rate</span><span class="stat-value ${parseFloat(winRate) >= 50 ? 'positive' : 'negative'}">${winRate}%</span></div>
-                    <div class="stat-row"><span class="stat-label">Total P&L</span><span class="stat-value ${stats.totalProfitPercent >= 0 ? 'positive' : 'negative'}">${stats.totalProfitPercent.toFixed(2)}%</span></div>
-                </div>
-            </div>
-
-            <div class="card">
-                <h2>Safety + Best/Worst</h2>
-                <div class="stat-row"><span class="stat-label">Daily P&L</span><span class="stat-value ${safetyStatus.dailyPnl >= 0 ? 'positive' : 'negative'}">${safetyStatus.dailyPnl.toFixed(2)}%</span></div>
-                <div class="stat-row"><span class="stat-label">Daily Limit</span><span class="stat-value">-${safetyStatus.dailyLossLimit}%</span></div>
-                <div class="stat-row"><span class="stat-label">Daily Trades</span><span class="stat-value">${safetyStatus.dailyTrades}</span></div>
-                <div class="stat-row"><span class="stat-label">Consec Loss</span><span class="stat-value ${safetyStatus.consecutiveLosses >= 4 ? 'negative' : ''}">${safetyStatus.consecutiveLosses} / ${safetyStatus.maxConsecutiveLosses}</span></div>
-                <div class="stat-row"><span class="stat-label">Status</span><span class="${safetyStatus.paused ? 'negative' : 'positive'}">${safetyStatus.paused ? 'PAUSED' : 'ACTIVE'}</span></div>
-                <div style="display:flex; gap:8px; margin-top:10px;">
-                    <div style="flex:1; padding:8px; border-radius:6px; background:#0d1117;">
-                        <div style="color: #3fb950; font-weight: bold; font-size: 0.8em;">Best</div>
-                        ${bestTrade ? `<div style="font-size:1.1em;color:#3fb950;">+${(bestTrade.profitPercent||0).toFixed(2)}%</div><div style="font-size:0.75em;color:#8b949e;">${bestTrade.direction} ${bestTrade.symbol||''}</div>` : '<div style="color:#484f58;font-size:0.8em;">None</div>'}
-                    </div>
-                    <div style="flex:1; padding:8px; border-radius:6px; background:#0d1117;">
-                        <div style="color: #f85149; font-weight: bold; font-size: 0.8em;">Worst</div>
-                        ${worstTrade ? `<div style="font-size:1.1em;color:#f85149;">${(worstTrade.profitPercent||0).toFixed(2)}%</div><div style="font-size:0.75em;color:#8b949e;">${worstTrade.direction} ${worstTrade.symbol||''}</div>` : '<div style="color:#484f58;font-size:0.8em;">None</div>'}
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="grid">
-            <div class="card full-width">
-                <h2>Markets Overview</h2>
-                <div style="overflow-x:auto;">
-                <table>
-                    <thead><tr><th>Market</th><th>Price</th><th>Trend</th><th>Score</th><th>Phase</th><th>Imbalance</th><th>Volatility</th><th>Data Pts</th><th>Position</th><th>Entry $</th><th>P&L</th><th>SL/TP</th><th>Hold</th><th>Entry Mode</th><th>Last Signal</th></tr></thead>
-                    <tbody>
-                        ${ACTIVE_MARKETS.map(symbol => {
-                            const m = botStatus.markets[symbol] || {};
-                            const ms = marketStates[symbol] || {};
-                            const pos = m.position;
-                            let pnlVal = 0;
-                            if (pos && ms.entryPrice > 0 && m.price > 0) {
-                                const pm = pos === 'LONG' 
-                                    ? ((m.price - ms.entryPrice) / ms.entryPrice * 100)
-                                    : ((ms.entryPrice - m.price) / ms.entryPrice * 100);
-                                pnlVal = pm * CONFIG.LEVERAGE;
-                                if (Math.abs(pnlVal) > 1000) pnlVal = 0;
-                            }
-                            const holdMin = pos && ms.entryTime ? ((Date.now() - ms.entryTime) / 60000).toFixed(0) + 'm' : '-';
-                            const scoreVal = m.directionalScore || 0;
-                            const scoreClass = scoreVal > 8 ? 'positive' : scoreVal < -8 ? 'negative' : 'neutral';
-                            const lastSig = ms.lastSignalResult;
-                            const lastSigText = lastSig ? (lastSig.action !== 'WAIT' ? lastSig.action + ' L:' + lastSig.longScore + ' S:' + lastSig.shortScore : 'WAIT L:' + lastSig.longScore + ' S:' + lastSig.shortScore) : '-';
-                            const lastSigClass = lastSig && lastSig.action !== 'WAIT' ? 'positive' : '';
-                            return `<tr>
-                                <td><strong>${symbol}</strong></td>
-                                <td>$${(m.price || 0).toFixed(2)}</td>
-                                <td class="${(m.trend||'').includes('UP') ? 'positive' : (m.trend||'').includes('DOWN') ? 'negative' : 'neutral'}">${m.trend || 'BUILDING'}</td>
-                                <td class="${scoreClass}"><strong>${scoreVal}</strong></td>
-                                <td>${m.momentumPhase || 'N/A'}</td>
-                                <td class="${(m.imbalance || 0) > 0 ? 'positive' : 'negative'}">${((m.imbalance || 0) * 100).toFixed(1)}%</td>
-                                <td>${(m.volatility || 0).toFixed(3)}%</td>
-                                <td style="color:#8b949e;">${ms.prices ? ms.prices.length : 0}</td>
-                                <td class="${pos === 'LONG' ? 'positive' : pos === 'SHORT' ? 'negative' : ''}" style="font-weight:bold;">${pos || 'NONE'}</td>
-                                <td>${pos ? '$' + (ms.entryPrice || 0).toFixed(2) : '-'}</td>
-                                <td class="${pnlVal >= 0 ? 'positive' : 'negative'}" style="font-weight:bold;">${pos ? pnlVal.toFixed(2) + '%' : '-'}</td>
-                                <td>${pos && ms.aiStopLoss != null ? ms.aiStopLoss.toFixed(2) + ' / ' + (ms.aiTakeProfit != null ? ms.aiTakeProfit.toFixed(2) : '?') : '-'}</td>
-                                <td>${holdMin}</td>
-                                <td>${pos && ms.entryMode ? '<span class="tag">' + ms.entryMode + '</span>' : '-'}</td>
-                                <td class="${lastSigClass}" style="font-size:0.78em;">${lastSigText}</td>
-                            </tr>`;
-                        }).join('')}
-                    </tbody>
-                </table>
-                </div>
-            </div>
-        </div>
-
-        <div class="grid">
-            <div class="card full-width">
-                <h2>All Technical Indicators (12 per timeframe)</h2>
-                <div style="overflow-x:auto;">
-                <table>
-                    <thead><tr><th>Market</th><th>TF</th><th>RSI</th><th>EMA 9/21</th><th>EMA50</th><th>MACD Hist</th><th>BB Pos</th><th>BB Width</th><th>ATR</th><th>ATR%</th><th>StochRSI K/D</th><th>ADX</th><th>+DI/-DI</th><th>CCI</th><th>Will%R</th><th>ROC</th><th>Ready</th></tr></thead>
-                    <tbody>
-                        ${ACTIVE_MARKETS.map(symbol => {
-                            const ms = marketStates[symbol] || {};
-                            const price = ms.lastPrice || 1;
-                            return ['1m', '5m', '15m'].map(tf => {
-                                const ind = tf === '1m' ? ms.indicators1m : tf === '5m' ? ms.indicators5m : ms.indicators15m;
-                                if (!ind || !ind.ready) return '<tr><td>' + (tf==='1m' ? '<strong>'+symbol+'</strong>' : '') + '</td><td>' + tf + '</td><td colspan="15" style="color:#484f58;">Building data...</td></tr>';
-                                const rsiV = ind.rsi != null ? ind.rsi.toFixed(1) : '-';
-                                const rsiC = ind.rsi > 70 ? 'negative' : ind.rsi < 30 ? 'positive' : '';
-                                const emaT = ind.ema9 != null && ind.ema21 != null ? (ind.ema9 > ind.ema21 ? 'BULL' : 'BEAR') : '-';
-                                const emaC = emaT === 'BULL' ? 'positive' : emaT === 'BEAR' ? 'negative' : '';
-                                const ema50T = ind.ema50 != null ? '$' + ind.ema50.toFixed(2) : '-';
-                                const macdH = ind.macd ? (ind.macd.histogram > 0 ? '+' : '') + ind.macd.histogram.toFixed(4) : '-';
-                                const macdC = ind.macd ? (ind.macd.histogram > 0 ? 'positive' : 'negative') : '';
-                                let bbPos = '-';
-                                if (ind.bollinger) {
-                                    const r = ind.bollinger.upper - ind.bollinger.lower;
-                                    bbPos = r > 0 ? ((price - ind.bollinger.lower) / r * 100).toFixed(0) + '%' : '-';
-                                }
-                                const bbW = ind.bollinger ? ind.bollinger.bandwidth.toFixed(2) : '-';
-                                const atrV = ind.atr != null ? ind.atr.toFixed(4) : '-';
-                                const atrP = ind.atr != null ? ((ind.atr/price)*100).toFixed(3) + '%' : '-';
-                                const stK = ind.stochRSI ? ind.stochRSI.k.toFixed(0) : '-';
-                                const stD = ind.stochRSI ? ind.stochRSI.d.toFixed(0) : '-';
-                                const stC = ind.stochRSI ? (ind.stochRSI.k > 80 ? 'negative' : ind.stochRSI.k < 20 ? 'positive' : '') : '';
-                                const adxV = ind.adx ? ind.adx.adx.toFixed(1) : '-';
-                                const adxC = ind.adx ? (ind.adx.adx > 25 ? 'positive' : 'neutral') : '';
-                                const diV = ind.adx ? '+' + ind.adx.plusDI.toFixed(0) + '/-' + ind.adx.minusDI.toFixed(0) : '-';
-                                const cciV = ind.cci != null ? ind.cci.toFixed(0) : '-';
-                                const cciC = ind.cci != null ? (ind.cci > 100 ? 'negative' : ind.cci < -100 ? 'positive' : '') : '';
-                                const wrV = ind.willR != null ? ind.willR.toFixed(0) : '-';
-                                const wrC = ind.willR != null ? (ind.willR < -80 ? 'positive' : ind.willR > -20 ? 'negative' : '') : '';
-                                const rocV = ind.roc != null ? ind.roc.toFixed(3) + '%' : '-';
-                                const rocC = ind.roc != null ? (ind.roc > 0.15 ? 'positive' : ind.roc < -0.15 ? 'negative' : '') : '';
-                                return '<tr>' +
-                                    '<td>' + (tf==='1m' ? '<strong>'+symbol+'</strong>' : '') + '</td>' +
-                                    '<td>' + tf + '</td>' +
-                                    '<td class="' + rsiC + '">' + rsiV + '</td>' +
-                                    '<td class="' + emaC + '">' + emaT + '</td>' +
-                                    '<td style="font-size:0.78em;">' + ema50T + '</td>' +
-                                    '<td class="' + macdC + '">' + macdH + '</td>' +
-                                    '<td>' + bbPos + '</td>' +
-                                    '<td>' + bbW + '</td>' +
-                                    '<td style="font-size:0.78em;">' + atrV + '</td>' +
-                                    '<td>' + atrP + '</td>' +
-                                    '<td class="' + stC + '">' + stK + '/' + stD + '</td>' +
-                                    '<td class="' + adxC + '">' + adxV + '</td>' +
-                                    '<td style="font-size:0.78em;">' + diV + '</td>' +
-                                    '<td class="' + cciC + '">' + cciV + '</td>' +
-                                    '<td class="' + wrC + '">' + wrV + '</td>' +
-                                    '<td class="' + rocC + '">' + rocV + '</td>' +
-                                    '<td style="color:#484f58;">' + (ind.indicatorsAvailable||0) + '/' + (ind.indicatorsTotal||12) + '</td></tr>';
-                            }).join('');
-                        }).join('')}
-                    </tbody>
-                </table>
-                </div>
-            </div>
-        </div>
-
-        <div class="grid">
-            <div class="card full-width">
-                <h2>Support / Resistance & Candle Patterns</h2>
-                <table>
-                    <thead><tr><th>Market</th><th>Supports</th><th>Resistances</th><th>Candle Patterns (5m)</th></tr></thead>
-                    <tbody>
-                        ${ACTIVE_MARKETS.map(symbol => {
-                            const ms = marketStates[symbol] || {};
-                            const sr = ms.supportResistance;
-                            const cp = ms.candlePatterns;
-                            const supText = sr && sr.supports && sr.supports.length > 0
-                                ? sr.supports.map(s => '$' + s.price.toFixed(2) + ' [' + s.strength + '] ' + Math.abs(s.distancePercent).toFixed(2) + '%').join('<br>')
-                                : '<span style="color:#484f58;">Building...</span>';
-                            const resText = sr && sr.resistances && sr.resistances.length > 0
-                                ? sr.resistances.map(r => '$' + r.price.toFixed(2) + ' [' + r.strength + '] ' + r.distancePercent.toFixed(2) + '%').join('<br>')
-                                : '<span style="color:#484f58;">Building...</span>';
-                            const cpText = cp && cp.patterns && cp.patterns.length > 0
-                                ? cp.patterns.slice(-3).map(p => '<span class="' + (p.signal.includes('BULLISH') ? 'positive' : p.signal.includes('BEARISH') ? 'negative' : 'neutral') + '">' + p.type + '</span>').join(', ')
-                                : '<span style="color:#484f58;">' + (cp ? cp.summary : 'Building...') + '</span>';
-                            return '<tr><td><strong>' + symbol + '</strong></td><td>' + supText + '</td><td>' + resText + '</td><td>' + cpText + '</td></tr>';
-                        }).join('')}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <div class="grid">
-            <div class="card full-width">
-                <h2>Pattern Memory - Learning Stats by Market & Direction</h2>
-                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;">
-                    ${Object.entries(pmStats.byMarket || {}).map(([mkt, d]) => {
-                        const t = d.wins + d.losses;
-                        const wr = t > 0 ? (d.wins / t * 100).toFixed(0) : 0;
-                        return '<div style="background:#0d1117;padding:10px;border-radius:6px;">' +
-                            '<div style="font-weight:bold;color:#58a6ff;margin-bottom:4px;">' + mkt + '</div>' +
-                            '<div style="font-size:0.85em;">W: <span class="positive">' + d.wins + '</span> L: <span class="negative">' + d.losses + '</span> WR: <span class="' + (wr >= 50 ? 'positive' : 'negative') + '">' + wr + '%</span></div>' +
-                            '</div>';
-                    }).join('') || '<div style="color:#484f58;padding:10px;">No market data yet</div>'}
-                    ${Object.entries(pmStats.byDirection || {}).map(([dir, d]) => {
-                        const t = d.wins + d.losses;
-                        const wr = t > 0 ? (d.wins / t * 100).toFixed(0) : 0;
-                        return '<div style="background:#0d1117;padding:10px;border-radius:6px;">' +
-                            '<div style="font-weight:bold;color:' + (dir === 'LONG' ? '#3fb950' : '#f85149') + ';margin-bottom:4px;">' + dir + '</div>' +
-                            '<div style="font-size:0.85em;">W: <span class="positive">' + d.wins + '</span> L: <span class="negative">' + d.losses + '</span> WR: <span class="' + (wr >= 50 ? 'positive' : 'negative') + '">' + wr + '%</span></div>' +
-                            '</div>';
-                    }).join('')}
-                </div>
-                ${Object.keys(pmStats.byHour || {}).length > 0 ? '<div style="margin-top:10px;"><div style="color:#58a6ff;font-weight:600;margin-bottom:6px;">Win Rate by Hour (UTC)</div><div style="display:flex;flex-wrap:wrap;gap:4px;">' + 
-                    Array.from({length: 24}, (_, h) => {
-                        const hd = (pmStats.byHour || {})[h.toString()] || {wins:0,losses:0};
-                        const ht = hd.wins + hd.losses;
-                        const hwr = ht > 0 ? Math.round(hd.wins / ht * 100) : -1;
-                        const bg = hwr < 0 ? '#21262d' : hwr >= 60 ? '#238636' : hwr >= 40 ? '#d29922' : '#da3633';
-                        return '<div style="width:30px;height:30px;background:' + bg + ';border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.7em;" title="' + h + ':00 UTC - ' + (ht > 0 ? hwr + '% (' + ht + ' trades)' : 'no trades') + '">' + h + '</div>';
-                    }).join('') + '</div></div>' : ''}
-            </div>
-        </div>
-
-        <div class="grid">
-            <div class="card full-width">
-                <h2>Live Decisions & Pattern Matching</h2>
-                <div style="max-height: 350px; overflow-y: auto;">
-                    ${brainLog.slice(0, 60).map(t => {
-                        const color = categoryColors[t.category] || '#888';
-                        return '<div class="thinking-entry" style="border-left-color: ' + color + ';"><span class="thinking-time">' + new Date(t.time).toLocaleTimeString() + '</span><span style="color:' + color + ';font-weight:600;text-transform:uppercase;font-size:0.72em;">[' + t.category + ']</span> ' + t.message + '</div>';
-                    }).join('') || '<div style="color: #484f58; padding: 20px; text-align: center;">Waiting for decisions...</div>'}
-                </div>
-            </div>
-        </div>
-
-        <div class="grid">
-            <div class="card full-width">
-                <h2>Signal Performance Tracker (25 signals)</h2>
-                <div style="overflow-x:auto;">
-                <table>
-                    <thead><tr><th style="min-width:130px;">Signal</th><th>Wins</th><th>Losses</th><th>Total</th><th>Win Rate</th><th style="min-width:150px;">Performance</th></tr></thead>
-                    <tbody>
-                        ${(() => {
-                            const sigStats = tradeMemory.signalStats || {};
-                            const defs = signalEngine.getSignalDefinitions();
-                            return defs.map(def => {
-                                const s = sigStats[def.id] || { wins: 0, losses: 0 };
-                                const total = s.wins + s.losses;
-                                const wr = total > 0 ? (s.wins / total * 100).toFixed(0) : '-';
-                                const wrClass = total > 0 ? (s.wins / total >= 0.5 ? 'positive' : 'negative') : '';
-                                const winPct = total > 0 ? (s.wins / total * 100) : 0;
-                                return '<tr><td style="font-weight:600;">' + def.name + '</td>' +
-                                    '<td class="positive">' + s.wins + '</td><td class="negative">' + s.losses + '</td><td>' + total + '</td>' +
-                                    '<td class="' + wrClass + '" style="font-weight:bold;">' + (total > 0 ? wr + '%' : '-') + '</td>' +
-                                    '<td><div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#21262d;">' +
-                                        (total > 0 ? '<div style="width:' + winPct + '%;background:#238636;"></div><div style="width:' + (100-winPct) + '%;background:#da3633;"></div>' : '') +
-                                    '</div></td></tr>';
-                            }).join('');
-                        })()}
-                    </tbody>
-                </table>
-                </div>
-            </div>
-        </div>
-
-        <div class="grid">
-            <div class="card full-width">
-                <h2>Signal Combo Tracker — Which Combinations Win?</h2>
-                <p style="color: #8b949e; font-size: 0.8em; margin-bottom: 10px;">Every trade uses multiple signals. This shows which combos actually worked.</p>
-                <div style="overflow-x:auto;">
-                <table>
-                    <thead><tr><th>Combo (Signals Used Together)</th><th>Times</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th style="min-width:120px;">Performance</th></tr></thead>
-                    <tbody>
-                        ${(() => {
-                            const comboMap = {};
-                            const allT = tradeMemory.trades || [];
-                            for (const t of allT) {
-                                if (!t.triggerSignals || t.triggerSignals.length === 0) continue;
-                                const key = t.triggerSignals.slice().sort().join(' + ');
-                                if (!comboMap[key]) comboMap[key] = { wins: 0, losses: 0, signals: t.triggerSignals };
-                                if (t.result === 'WIN') comboMap[key].wins++;
-                                else comboMap[key].losses++;
-                            }
-                            const combos = Object.entries(comboMap).map(([k, v]) => ({
-                                key: k, ...v, total: v.wins + v.losses
-                            }));
-                            combos.sort((a, b) => b.total - a.total);
-                            if (combos.length === 0) return '<tr><td colspan="6" style="color:#484f58;text-align:center;padding:15px;">No combo data yet — trades will show combos after bot starts trading</td></tr>';
-                            return combos.slice(0, 20).map(c => {
-                                const wr = (c.wins / c.total * 100).toFixed(0);
-                                const wrClass = c.wins / c.total >= 0.5 ? 'positive' : 'negative';
-                                const winPct = c.wins / c.total * 100;
-                                const sigLabels = c.signals.map(s => {
-                                    const def = signalEngine.SIGNAL_DEFINITIONS.find(d => d.id === s);
-                                    return def ? def.name : s;
-                                });
-                                return '<tr>' +
-                                    '<td>' + sigLabels.map(n => '<span class="tag">' + n + '</span>').join(' ') + '</td>' +
-                                    '<td>' + c.total + '</td>' +
-                                    '<td class="positive">' + c.wins + '</td>' +
-                                    '<td class="negative">' + c.losses + '</td>' +
-                                    '<td class="' + wrClass + '" style="font-weight:bold;">' + wr + '%</td>' +
-                                    '<td><div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#21262d;">' +
-                                        '<div style="width:' + winPct + '%;background:#238636;"></div><div style="width:' + (100-winPct) + '%;background:#da3633;"></div>' +
-                                    '</div></td></tr>';
-                            }).join('');
-                        })()}
-                    </tbody>
-                </table>
-                </div>
-            </div>
-        </div>
-
-        <div class="grid">
-            <div class="card full-width">
-                <h2>Stored Pattern History (Last 10)</h2>
-                <div style="overflow-x:auto;">
-                <table>
-                    <thead><tr><th>Time</th><th>Market</th><th>Dir</th><th>Result</th><th>P&L</th><th>Exit</th><th>Hold</th><th>Mode</th><th>RSI 1m</th><th>StochK</th><th>BB Pos</th><th>CCI</th><th>Will%R</th><th>ADX</th><th>Imb</th><th>Trend</th><th>Triggers</th></tr></thead>
-                    <tbody>
-                        ${recentPatterns.map(p => {
-                            const fp = p.fingerprint || {};
-                            return '<tr>' +
-                                '<td style="font-size:0.75em;">' + new Date(p.timestamp).toLocaleTimeString() + '</td>' +
-                                '<td>' + (p.symbol || '-') + '</td>' +
-                                '<td class="' + (p.direction === 'LONG' ? 'positive' : 'negative') + '">' + (p.direction || '-') + '</td>' +
-                                '<td class="' + (p.result === 'WIN' ? 'positive' : 'negative') + '" style="font-weight:bold;">' + (p.result || '-') + '</td>' +
-                                '<td class="' + ((p.profitPercent||0) >= 0 ? 'positive' : 'negative') + '">' + ((p.profitPercent||0) >= 0 ? '+' : '') + (p.profitPercent||0).toFixed(2) + '%</td>' +
-                                '<td>' + (p.exitReason || '-') + '</td>' +
-                                '<td>' + (p.holdTimeMin||0).toFixed(0) + 'm</td>' +
-                                '<td><span class="tag">' + (p.entryMode || '-') + '</span></td>' +
-                                '<td class="fp-val">' + (fp.rsi_1m != null ? fp.rsi_1m.toFixed(1) : '-') + '</td>' +
-                                '<td class="fp-val">' + (fp.stoch_k_1m != null ? fp.stoch_k_1m.toFixed(0) : '-') + '</td>' +
-                                '<td class="fp-val">' + (fp.bb_position_1m != null ? (fp.bb_position_1m * 100).toFixed(0) + '%' : '-') + '</td>' +
-                                '<td class="fp-val">' + (fp.cci_1m != null ? fp.cci_1m.toFixed(0) : '-') + '</td>' +
-                                '<td class="fp-val">' + (fp.willr_1m != null ? fp.willr_1m.toFixed(0) : '-') + '</td>' +
-                                '<td class="fp-val">' + (fp.adx_1m != null ? fp.adx_1m.toFixed(0) : '-') + '</td>' +
-                                '<td class="fp-val">' + (fp.imbalance != null ? (fp.imbalance * 100).toFixed(0) + '%' : '-') + '</td>' +
-                                '<td>' + (fp.trend === 1 ? '<span class="positive">UP</span>' : fp.trend === -1 ? '<span class="negative">DN</span>' : 'RNG') + '</td>' +
-                                '<td>' + ((p.triggerSignals || []).slice(0, 4).map(s => '<span class="tag">' + s + '</span>').join(' ') || '-') + '</td>' +
-                            '</tr>';
-                        }).join('') || '<tr><td colspan="17" style="color: #484f58; text-align: center; padding: 15px;">No patterns stored yet — bot will learn as it trades...</td></tr>'}
-                    </tbody>
-                </table>
-                </div>
-            </div>
-        </div>
-
-        <div class="grid">
-            <div class="card full-width">
-                <h2>Complete Trade History (Last 50)</h2>
-                <div style="overflow-x:auto;">
-                <table>
-                    <thead><tr><th>Time</th><th>Market</th><th>Dir</th><th>Entry $</th><th>Exit $</th><th>P&L %</th><th>Result</th><th>Exit Reason</th><th>Hold</th><th>Mode</th><th>Sim</th><th style="min-width:220px;">Trigger Signals</th></tr></thead>
-                    <tbody>
-                    ${recentTrades.map(t => {
-                        const sigNames = (t.triggerSignals || []).map(sig => {
-                            const def = signalEngine.SIGNAL_DEFINITIONS.find(d => d.id === sig);
-                            return def ? def.name : sig;
-                        });
-                        const sigDisplay = sigNames.length > 0
-                            ? sigNames.map(n => '<span class="tag">' + n + '</span>').join(' ')
-                            : '<span style="color:#484f58;font-size:0.75em;">no data</span>';
-                        return '<tr>' +
-                            '<td style="font-size:0.75em;">' + new Date(t.timestamp).toLocaleTimeString() + '<br>' + new Date(t.timestamp).toLocaleDateString() + '</td>' +
-                            '<td>' + (t.symbol || '-') + '</td>' +
-                            '<td class="' + (t.direction === 'LONG' ? 'positive' : 'negative') + '">' + t.direction + '</td>' +
-                            '<td>$' + (t.entryPrice || 0).toFixed(2) + '</td>' +
-                            '<td>$' + (t.exitPrice || 0).toFixed(2) + '</td>' +
-                            '<td class="' + (t.profitPercent >= 0 ? 'positive' : 'negative') + '" style="font-weight:bold;">' + (t.profitPercent >= 0 ? '+' : '') + t.profitPercent.toFixed(2) + '%</td>' +
-                            '<td class="' + (t.result === 'WIN' ? 'positive' : 'negative') + '" style="font-weight:bold;">' + t.result + '</td>' +
-                            '<td>' + t.exitReason + '</td>' +
-                            '<td>' + (t.holdTimeMin || '?') + 'm</td>' +
-                            '<td><span class="tag">' + (t.entryMode || t.aiReason || '-') + '</span></td>' +
-                            '<td>' + (t.simulated ? 'SIM' : 'LIVE') + '</td>' +
-                            '<td>' + sigDisplay + '</td></tr>';
-                    }).join('') || '<tr><td colspan="12" style="color: #484f58; text-align: center; padding: 20px;">No trades yet — engine scanning markets...</td></tr>'}
-                    </tbody>
-                </table>
-                </div>
-            </div>
-        </div>
+        <h1>Self-Learning Bot <span style="color: #8957e5; font-size: 0.5em; vertical-align: middle;">v18 Dynamic TP/SL</span></h1>
+        <div class="subtitle" id="subtitle">Loading...</div>
+        <div id="dashboard">Loading dashboard data...</div>
     </div>
+    <div id="lastUpdate"></div>
     <script>
-        function botAction(action) {
-            var s = document.getElementById('btnStatus');
-            s.textContent = 'Processing...';
-            s.style.color = '#d29922';
-            fetch('/api/' + action, { method: 'POST' })
-                .then(function(r) { return r.json(); })
-                .then(function(d) {
-                    s.textContent = d.message || 'Done';
-                    s.style.color = '#3fb950';
-                    setTimeout(function() { location.reload(); }, 1000);
-                })
-                .catch(function(e) {
-                    s.textContent = 'Error: ' + e.message;
-                    s.style.color = '#f85149';
-                });
+    var categoryColors = {
+        entry: '#00ff88', exit: '#ff4444', monitor: '#00d4ff', ai_brain: '#ff00ff',
+        scan: '#555', skip: '#888', safety: '#ff6600', trade_win: '#3fb950',
+        trade_loss: '#f85149', error: '#ff0000', general: '#888'
+    };
+
+    function cls(val, posThreshold, negThreshold) {
+        if (val == null) return '';
+        if (typeof posThreshold === 'string') return val.toString().includes(posThreshold) ? 'positive' : val.toString().includes(negThreshold) ? 'negative' : '';
+        return val > posThreshold ? 'positive' : val < negThreshold ? 'negative' : '';
+    }
+
+    function esc(s) { return s == null ? '-' : String(s).replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function tag(s) { return '<span class="tag">' + esc(s) + '</span>'; }
+    function pct(v, d) { return v != null ? v.toFixed(d || 2) + '%' : '-'; }
+    function usd(v) { return v != null ? '$' + v.toFixed(2) : '-'; }
+
+    function renderDashboard(d) {
+        document.getElementById('subtitle').innerHTML =
+            'Drift Protocol | ' + d.leverage + 'x | ' +
+            (d.tpSlStats.bestCombo ? 'Best TP/SL: ' + d.tpSlStats.bestCombo.tp.toFixed(2) + '/' + d.tpSlStats.bestCombo.sl.toFixed(2) + '%' : 'TP/SL: Learning...') +
+            ' | Fee: 0.07% | ' +
+            (d.pmStats.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE') +
+            ' | ' + d.pmStats.totalStored + ' patterns | ' +
+            (d.tpSlStats.isExploiting ? 'TP/SL OPTIMIZING' : 'TP/SL LEARNING (' + d.tpSlStats.learningProgress + '%)');
+
+        var html = '';
+
+        // Row 1: System Health + Learning Engine + Controls + Session Stats + Safety
+        html += '<div class="grid">';
+
+        // System Health
+        html += '<div class="card"><h2>System Health</h2>';
+        var dot = function(ok) { return '<span class="health-dot ' + (ok ? 'health-green' : 'health-red') + '"></span>'; };
+        html += '<div class="stat-row"><span class="stat-label">Status</span><span class="stat-value">' + (d.running ? dot(true) + 'Running' : dot(false) + 'Stopped') + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Mode</span><span class="stat-value">' + (d.simulation ? '<span class="sim-mode">SIMULATION</span>' : '<span class="live-mode">LIVE</span>') + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Drift</span><span class="stat-value">' + dot(d.driftConnected) + (d.driftConnected ? 'Connected' : 'Disconnected') + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">RPC</span><span class="stat-value">' + dot(d.rpcConnected) + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">DLOB</span><span class="stat-value">' + dot(d.dlobConnected) + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Uptime</span><span class="stat-value">' + d.uptime + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Heartbeat</span><span class="stat-value">' + d.heartbeatAgo + 's ago</span></div>';
+        html += '</div>';
+
+        // Learning Engine
+        html += '<div class="card"><h2>Learning Engine</h2>';
+        html += '<div class="stat-row"><span class="stat-label">Phase</span><span class="stat-value">' + (d.pmStats.isLearning ? '<span class="learning-badge">LEARNING</span>' : '<span class="exploit-badge">EXPLOITATION</span>') + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Patterns Stored</span><span class="stat-value" style="color:#58a6ff;">' + d.pmStats.totalStored + '</span></div>';
+        var prog = d.pmStats.learningProgress;
+        html += '<div style="margin:6px 0;"><div class="progress-bar"><div class="progress-fill" style="width:' + prog + '%;background:' + (prog >= 100 ? '#238636' : '#8957e5') + ';"></div><div class="progress-text">' + prog + '% — ' + d.pmStats.totalStored + '/' + 30 + '</div></div></div>';
+        var pmWR = d.pmStats.patternMatchWinRate;
+        var exWR = d.pmStats.explorationWinRate;
+        html += '<div class="stat-row"><span class="stat-label">Pattern Match WR</span><span class="stat-value ' + (pmWR >= 50 ? 'positive' : pmWR > 0 ? 'negative' : '') + '">' + (pmWR > 0 ? pmWR.toFixed(0) + '%' : '-') + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Exploration WR</span><span class="stat-value ' + (exWR >= 50 ? 'positive' : exWR > 0 ? 'negative' : '') + '">' + (exWR > 0 ? exWR.toFixed(0) + '%' : '-') + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">WR Threshold</span><span class="stat-value">55%</span></div>';
+        html += '</div>';
+
+        // TP/SL Optimizer Status
+        html += '<div class="card"><h2>TP/SL Optimizer</h2>';
+        html += '<div class="stat-row"><span class="stat-label">Phase</span><span class="stat-value">' + (d.tpSlStats.isExploiting ? '<span class="exploit-badge">OPTIMIZING</span>' : '<span class="learning-badge">LEARNING</span>') + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Combos Tested</span><span class="stat-value" style="color:#58a6ff;">' + d.tpSlStats.totalCombos + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Combos With Data</span><span class="stat-value">' + d.tpSlStats.combosWithData + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Total TP/SL Trades</span><span class="stat-value">' + d.tpSlStats.totalTrades + '</span></div>';
+        var tpProg = d.tpSlStats.learningProgress;
+        html += '<div style="margin:6px 0;"><div class="progress-bar"><div class="progress-fill" style="width:' + tpProg + '%;background:' + (tpProg >= 100 ? '#238636' : '#d29922') + ';"></div><div class="progress-text">TP/SL ' + tpProg + '% — ' + d.tpSlStats.totalTrades + '/20</div></div></div>';
+        if (d.tpSlStats.bestCombo) {
+            var bc = d.tpSlStats.bestCombo;
+            html += '<div class="stat-row"><span class="stat-label">Best Combo</span><span class="stat-value positive">TP ' + bc.tp.toFixed(2) + '% / SL ' + bc.sl.toFixed(2) + '%</span></div>';
+            html += '<div class="stat-row"><span class="stat-label">Best WR / Avg P&L</span><span class="stat-value">' + bc.winRate + '% / ' + (bc.avgProfit >= 0 ? '+' : '') + bc.avgProfit.toFixed(2) + '%</span></div>';
+        } else {
+            html += '<div class="stat-row"><span class="stat-label">Best Combo</span><span class="stat-value" style="color:#484f58;">Collecting data...</span></div>';
         }
+        html += '<div class="stat-row"><span class="stat-label">Explore Rate</span><span class="stat-value">' + d.tpSlStats.explorationRate + '%</span></div>';
+        html += '</div>';
+
+        // Controls
+        html += '<div class="card"><h2>Controls</h2>';
+        if (d.paused) {
+            html += '<div style="margin-bottom:8px;"><span class="paused-badge">PAUSED</span> <span style="color:#8b949e;font-size:0.8em;">' + esc(d.pauseReason) + '</span></div>';
+            html += '<button class="btn btn-green" onclick="botAction(\\'unpause\\')">Resume Bot</button>';
+        } else {
+            html += '<button class="btn btn-orange" onclick="botAction(\\'pause\\')">Pause Bot</button>';
+        }
+        html += '<button class="btn btn-red" onclick="if(confirm(\\'Close all positions?\\'))botAction(\\'close-all\\')">Close All Positions</button>';
+        html += '<button class="btn btn-gray" onclick="if(confirm(\\'Reset session stats?\\'))botAction(\\'reset-stats\\')">Reset Stats</button>';
+        html += '<div class="btn-status" id="btnStatus"></div>';
+        html += '</div>';
+
+        // Session Stats
+        html += '<div class="card"><h2>Session Stats</h2>';
+        html += '<div class="stat-row"><span class="stat-label">Trades</span><span class="stat-value">' + d.stats.totalTrades + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Win / Loss</span><span class="stat-value"><span class="positive">' + d.stats.wins + 'W</span> / <span class="negative">' + d.stats.losses + 'L</span></span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Win Rate</span><span class="stat-value ' + (parseFloat(d.stats.winRate) >= 50 ? 'positive' : parseFloat(d.stats.winRate) > 0 ? 'negative' : '') + '">' + d.stats.winRate + '%</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Total P&L</span><span class="stat-value ' + (d.stats.totalProfit >= 0 ? 'positive' : 'negative') + '">' + (d.stats.totalProfit >= 0 ? '+' : '') + d.stats.totalProfit.toFixed(2) + '%</span></div>';
+        html += '<div style="display:flex;gap:8px;margin-top:8px;">';
+        if (d.stats.bestTrade) html += '<div style="flex:1;padding:8px;border-radius:6px;background:#0d1117;"><div style="color:#3fb950;font-weight:bold;font-size:0.8em;">Best</div><div style="font-size:1.1em;color:#3fb950;">+' + d.stats.bestTrade.profit.toFixed(2) + '%</div><div style="font-size:0.75em;color:#8b949e;">' + d.stats.bestTrade.dir + ' ' + (d.stats.bestTrade.symbol||'') + '</div></div>';
+        else html += '<div style="flex:1;padding:8px;border-radius:6px;background:#0d1117;"><div style="color:#3fb950;font-weight:bold;font-size:0.8em;">Best</div><div style="color:#484f58;font-size:0.8em;">None</div></div>';
+        if (d.stats.worstTrade) html += '<div style="flex:1;padding:8px;border-radius:6px;background:#0d1117;"><div style="color:#f85149;font-weight:bold;font-size:0.8em;">Worst</div><div style="font-size:1.1em;color:#f85149;">' + d.stats.worstTrade.profit.toFixed(2) + '%</div><div style="font-size:0.75em;color:#8b949e;">' + d.stats.worstTrade.dir + ' ' + (d.stats.worstTrade.symbol||'') + '</div></div>';
+        else html += '<div style="flex:1;padding:8px;border-radius:6px;background:#0d1117;"><div style="color:#f85149;font-weight:bold;font-size:0.8em;">Worst</div><div style="color:#484f58;font-size:0.8em;">None</div></div>';
+        html += '</div>';
+        html += '</div>';
+
+        // Safety
+        html += '<div class="card"><h2>Safety Layer</h2>';
+        html += '<div class="stat-row"><span class="stat-label">Daily P&L</span><span class="stat-value ' + (d.safety.dailyProfit >= 0 ? 'positive' : 'negative') + '">' + (d.safety.dailyProfit >= 0 ? '+' : '') + d.safety.dailyProfit.toFixed(2) + '%</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Daily Limit</span><span class="stat-value">' + d.safety.dailyLimit + '%</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Consec Losses</span><span class="stat-value ' + (d.safety.consecutiveLosses >= 3 ? 'negative' : '') + '">' + d.safety.consecutiveLosses + ' / ' + d.safety.maxConsecutive + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Trades Today</span><span class="stat-value">' + d.safety.tradesToday + '</span></div>';
+        html += '</div>';
+
+        html += '</div>'; // end grid row 1
+
+        // Markets Overview
+        html += '<div class="grid"><div class="card full-width"><h2>Markets Overview</h2><div style="overflow-x:auto;"><table>';
+        html += '<thead><tr><th>Market</th><th>Price</th><th>Trend</th><th>Score</th><th>Phase</th><th>Imbalance</th><th>Volatility</th><th>Data Pts</th><th>Position</th><th>Entry $</th><th>P&L</th><th>SL/TP</th><th>TP/SL Mode</th><th>Hold</th><th>Entry Mode</th><th>Last Signal</th></tr></thead><tbody>';
+        for (var i = 0; i < d.activeMarkets.length; i++) {
+            var sym = d.activeMarkets[i];
+            var m = d.markets[sym] || {};
+            var scoreC = m.score > 8 ? 'positive' : m.score < -8 ? 'negative' : 'neutral';
+            var trendC = (m.trend||'').indexOf('UP') >= 0 ? 'positive' : (m.trend||'').indexOf('DOWN') >= 0 ? 'negative' : 'neutral';
+            var posC = m.position === 'LONG' ? 'positive' : m.position === 'SHORT' ? 'negative' : '';
+            var pnlC = m.pnl >= 0 ? 'positive' : 'negative';
+            var lastSigText = m.lastSignal ? (m.lastSignal.action !== 'WAIT' ? m.lastSignal.action : 'WAIT') + ' L:' + m.lastSignal.longScore + ' S:' + m.lastSignal.shortScore : '-';
+            var lastSigC = m.lastSignal && m.lastSignal.action !== 'WAIT' ? 'positive' : '';
+            html += '<tr><td><strong>' + sym + '</strong></td>';
+            html += '<td>' + usd(m.price) + '</td>';
+            html += '<td class="' + trendC + '">' + m.trend + '</td>';
+            html += '<td class="' + scoreC + '"><strong>' + m.score + '</strong></td>';
+            html += '<td>' + m.phase + '</td>';
+            html += '<td class="' + (m.imbalance > 0 ? 'positive' : 'negative') + '">' + (m.imbalance * 100).toFixed(1) + '%</td>';
+            html += '<td>' + (m.volatility).toFixed(3) + '%</td>';
+            html += '<td style="color:#8b949e;">' + m.dataPoints + '</td>';
+            html += '<td class="' + posC + '" style="font-weight:bold;">' + (m.position || 'NONE') + '</td>';
+            html += '<td>' + (m.position ? usd(m.entryPrice) : '-') + '</td>';
+            html += '<td class="' + pnlC + '" style="font-weight:bold;">' + (m.position ? m.pnl.toFixed(2) + '%' : '-') + '</td>';
+            html += '<td>' + (m.position && m.sl != null ? m.sl.toFixed(2) + ' / ' + (m.tp != null ? m.tp.toFixed(2) : '?') : '-') + '</td>';
+            html += '<td>' + (m.position && m.tpSlMode ? tag(m.tpSlMode) : '-') + '</td>';
+            html += '<td>' + m.holdMin + '</td>';
+            html += '<td>' + (m.position && m.entryMode ? tag(m.entryMode) : '-') + '</td>';
+            html += '<td class="' + lastSigC + '" style="font-size:0.78em;">' + lastSigText + '</td></tr>';
+        }
+        html += '</tbody></table></div></div></div>';
+
+        // All Technical Indicators
+        html += '<div class="grid"><div class="card full-width"><h2>All Technical Indicators (12 per timeframe)</h2><div style="overflow-x:auto;"><table>';
+        html += '<thead><tr><th>Market</th><th>TF</th><th>RSI</th><th>EMA 9/21</th><th>EMA50</th><th>MACD Hist</th><th>BB Pos</th><th>BB Width</th><th>ATR</th><th>ATR%</th><th>StochRSI K/D</th><th>ADX</th><th>+DI/-DI</th><th>CCI</th><th>Will%R</th><th>ROC</th><th>Ready</th></tr></thead><tbody>';
+        for (var i = 0; i < d.activeMarkets.length; i++) {
+            var sym = d.activeMarkets[i];
+            var m = d.markets[sym];
+            var tfs = ['1m','5m','15m'];
+            for (var j = 0; j < tfs.length; j++) {
+                var tf = tfs[j];
+                var ind = m.indicators[tf];
+                if (!ind) {
+                    html += '<tr><td>' + (tf === '1m' ? '<strong>'+sym+'</strong>' : '') + '</td><td>' + tf + '</td><td colspan="15" style="color:#484f58;">Building data...</td></tr>';
+                    continue;
+                }
+                var rsiV = ind.rsi != null ? ind.rsi.toFixed(1) : '-';
+                var rsiC = ind.rsi != null ? (ind.rsi > 70 ? 'negative' : ind.rsi < 30 ? 'positive' : '') : '';
+                var emaT = ind.ema9 != null && ind.ema21 != null ? (ind.ema9 > ind.ema21 ? 'BULL' : 'BEAR') : '-';
+                var emaC = emaT === 'BULL' ? 'positive' : emaT === 'BEAR' ? 'negative' : '';
+                var ema50T = ind.ema50 != null ? usd(ind.ema50) : '-';
+                var macdH = ind.macdHist != null ? (ind.macdHist > 0 ? '+' : '') + ind.macdHist.toFixed(4) : '-';
+                var macdC = ind.macdHist != null ? (ind.macdHist > 0 ? 'positive' : 'negative') : '';
+                var bbP = ind.bbPos != null ? ind.bbPos.toFixed(0) + '%' : '-';
+                var bbW = ind.bbWidth != null ? ind.bbWidth.toFixed(2) : '-';
+                var atrV = ind.atr != null ? ind.atr.toFixed(4) : '-';
+                var atrP = ind.atrPct != null ? ind.atrPct.toFixed(3) + '%' : '-';
+                var stK = ind.stochK != null ? ind.stochK.toFixed(0) : '-';
+                var stD = ind.stochD != null ? ind.stochD.toFixed(0) : '-';
+                var stC = ind.stochK != null ? (ind.stochK > 80 ? 'negative' : ind.stochK < 20 ? 'positive' : '') : '';
+                var adxV = ind.adx != null ? ind.adx.toFixed(1) : '-';
+                var adxC = ind.adx != null ? (ind.adx > 25 ? 'positive' : 'neutral') : '';
+                var diV = ind.plusDI != null ? '+' + ind.plusDI.toFixed(0) + '/-' + ind.minusDI.toFixed(0) : '-';
+                var cciV = ind.cci != null ? ind.cci.toFixed(0) : '-';
+                var cciC = ind.cci != null ? (ind.cci > 100 ? 'negative' : ind.cci < -100 ? 'positive' : '') : '';
+                var wrV = ind.willR != null ? ind.willR.toFixed(0) : '-';
+                var wrC = ind.willR != null ? (ind.willR < -80 ? 'positive' : ind.willR > -20 ? 'negative' : '') : '';
+                var rocV = ind.roc != null ? ind.roc.toFixed(3) + '%' : '-';
+                var rocC = ind.roc != null ? (ind.roc > 0.15 ? 'positive' : ind.roc < -0.15 ? 'negative' : '') : '';
+                html += '<tr><td>' + (tf === '1m' ? '<strong>'+sym+'</strong>' : '') + '</td><td>' + tf + '</td>';
+                html += '<td class="' + rsiC + '">' + rsiV + '</td><td class="' + emaC + '">' + emaT + '</td><td style="font-size:0.78em;">' + ema50T + '</td>';
+                html += '<td class="' + macdC + '">' + macdH + '</td><td>' + bbP + '</td><td>' + bbW + '</td>';
+                html += '<td style="font-size:0.78em;">' + atrV + '</td><td>' + atrP + '</td><td class="' + stC + '">' + stK + '/' + stD + '</td>';
+                html += '<td class="' + adxC + '">' + adxV + '</td><td style="font-size:0.78em;">' + diV + '</td>';
+                html += '<td class="' + cciC + '">' + cciV + '</td><td class="' + wrC + '">' + wrV + '</td><td class="' + rocC + '">' + rocV + '</td>';
+                html += '<td style="color:#484f58;">' + ind.available + '/' + ind.total + '</td></tr>';
+            }
+        }
+        html += '</tbody></table></div></div></div>';
+
+        // S/R + Candle Patterns
+        html += '<div class="grid"><div class="card full-width"><h2>Support / Resistance & Candle Patterns</h2><table>';
+        html += '<thead><tr><th>Market</th><th>Supports</th><th>Resistances</th><th>Candle Patterns (5m)</th></tr></thead><tbody>';
+        for (var i = 0; i < d.activeMarkets.length; i++) {
+            var sym = d.activeMarkets[i];
+            var m = d.markets[sym];
+            var supText = m.supports && m.supports.length > 0 ? m.supports.map(function(s){return usd(s.price)+' ['+s.strength+'] '+Math.abs(s.distancePercent).toFixed(2)+'%';}).join('<br>') : '<span style="color:#484f58;">Building...</span>';
+            var resText = m.resistances && m.resistances.length > 0 ? m.resistances.map(function(r){return usd(r.price)+' ['+r.strength+'] '+r.distancePercent.toFixed(2)+'%';}).join('<br>') : '<span style="color:#484f58;">Building...</span>';
+            var cp = m.candlePatterns;
+            var cpText = cp && cp.patterns && cp.patterns.length > 0 ? cp.patterns.slice(-3).map(function(p){var c=p.signal.indexOf('BULLISH')>=0?'positive':p.signal.indexOf('BEARISH')>=0?'negative':'neutral';return '<span class="'+c+'">'+p.type+'</span>';}).join(', ') : '<span style="color:#484f58;">' + (cp?cp.summary:'Building...') + '</span>';
+            html += '<tr><td><strong>' + sym + '</strong></td><td>' + supText + '</td><td>' + resText + '</td><td>' + cpText + '</td></tr>';
+        }
+        html += '</tbody></table></div></div>';
+
+        // Pattern Memory Stats
+        html += '<div class="grid"><div class="card full-width"><h2>Pattern Memory - Learning Stats by Market & Direction</h2>';
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">';
+        var byM = d.pmStats.byMarket || {};
+        var mktKeys = Object.keys(byM);
+        if (mktKeys.length === 0) html += '<div style="color:#484f58;padding:10px;">No market data yet</div>';
+        for (var k = 0; k < mktKeys.length; k++) {
+            var mk = mktKeys[k]; var md = byM[mk]; var mt = md.wins + md.losses; var mwr = mt > 0 ? (md.wins/mt*100).toFixed(0) : 0;
+            html += '<div style="background:#0d1117;padding:10px;border-radius:6px;"><div style="font-weight:bold;color:#58a6ff;margin-bottom:4px;">' + mk + '</div><div style="font-size:0.85em;">W: <span class="positive">' + md.wins + '</span> L: <span class="negative">' + md.losses + '</span> WR: <span class="' + (mwr>=50?'positive':'negative') + '">' + mwr + '%</span></div></div>';
+        }
+        var byD = d.pmStats.byDirection || {};
+        var dKeys = Object.keys(byD);
+        for (var k = 0; k < dKeys.length; k++) {
+            var dk = dKeys[k]; var dd = byD[dk]; var dt = dd.wins + dd.losses; var dwr = dt > 0 ? (dd.wins/dt*100).toFixed(0) : 0;
+            html += '<div style="background:#0d1117;padding:10px;border-radius:6px;"><div style="font-weight:bold;color:' + (dk==='LONG'?'#3fb950':'#f85149') + ';margin-bottom:4px;">' + dk + '</div><div style="font-size:0.85em;">W: <span class="positive">' + dd.wins + '</span> L: <span class="negative">' + dd.losses + '</span> WR: <span class="' + (dwr>=50?'positive':'negative') + '">' + dwr + '%</span></div></div>';
+        }
+        html += '</div>';
+        // Hourly heatmap
+        var byH = d.pmStats.byHour || {};
+        if (Object.keys(byH).length > 0) {
+            html += '<div style="margin-top:10px;"><div style="color:#58a6ff;font-weight:600;margin-bottom:6px;">Win Rate by Hour (UTC)</div><div style="display:flex;flex-wrap:wrap;gap:4px;">';
+            for (var h = 0; h < 24; h++) {
+                var hd = byH[h.toString()] || {wins:0,losses:0}; var ht = hd.wins+hd.losses; var hwr = ht > 0 ? Math.round(hd.wins/ht*100) : -1;
+                var bg = hwr < 0 ? '#21262d' : hwr >= 60 ? '#238636' : hwr >= 40 ? '#d29922' : '#da3633';
+                html += '<div style="width:30px;height:30px;background:'+bg+';border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.7em;" title="'+h+':00 UTC - '+(ht>0?hwr+'% ('+ht+' trades)':'no trades')+'">'+h+'</div>';
+            }
+            html += '</div></div>';
+        }
+        html += '</div></div>';
+
+        // Live Decisions
+        html += '<div class="grid"><div class="card full-width"><h2>Live Decisions & Pattern Matching</h2><div style="max-height:350px;overflow-y:auto;">';
+        if (d.brainLog.length === 0) html += '<div style="color:#484f58;padding:20px;text-align:center;">Waiting for decisions...</div>';
+        for (var i = 0; i < d.brainLog.length; i++) {
+            var t = d.brainLog[i]; var col = categoryColors[t.category] || '#888';
+            html += '<div class="thinking-entry" style="border-left-color:'+col+';"><span class="thinking-time">'+new Date(t.time).toLocaleTimeString()+'</span><span style="color:'+col+';font-weight:600;text-transform:uppercase;font-size:0.72em;">['+t.category+']</span> '+esc(t.message)+'</div>';
+        }
+        html += '</div></div></div>';
+
+        // Signal Performance
+        html += '<div class="grid"><div class="card full-width"><h2>Signal Performance Tracker (25 signals)</h2><div style="overflow-x:auto;"><table>';
+        html += '<thead><tr><th style="min-width:130px;">Signal</th><th>Wins</th><th>Losses</th><th>Total</th><th>Win Rate</th><th style="min-width:150px;">Performance</th></tr></thead><tbody>';
+        for (var i = 0; i < d.signalDefs.length; i++) {
+            var def = d.signalDefs[i]; var s = d.signalStats[def.id] || {wins:0,losses:0}; var total = s.wins+s.losses;
+            var wr = total > 0 ? (s.wins/total*100).toFixed(0) : '-'; var wrC2 = total > 0 ? (s.wins/total >= 0.5 ? 'positive' : 'negative') : '';
+            var winPct2 = total > 0 ? (s.wins/total*100) : 0;
+            html += '<tr><td style="font-weight:600;">'+def.name+'</td><td class="positive">'+s.wins+'</td><td class="negative">'+s.losses+'</td><td>'+total+'</td>';
+            html += '<td class="'+wrC2+'" style="font-weight:bold;">'+(total>0?wr+'%':'-')+'</td>';
+            html += '<td><div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#21262d;">'+(total>0?'<div style="width:'+winPct2+'%;background:#238636;"></div><div style="width:'+(100-winPct2)+'%;background:#da3633;"></div>':'')+'</div></td></tr>';
+        }
+        html += '</tbody></table></div></div></div>';
+
+        // Signal Combo Tracker
+        html += '<div class="grid"><div class="card full-width"><h2>Signal Combo Tracker - Which Combinations Win?</h2><p style="color:#8b949e;font-size:0.8em;margin-bottom:10px;">Every trade uses multiple signals. This shows which combos actually worked.</p><div style="overflow-x:auto;"><table>';
+        html += '<thead><tr><th>Combo (Signals Used Together)</th><th>Times</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th style="min-width:120px;">Performance</th></tr></thead><tbody>';
+        if (d.signalCombos.length === 0) html += '<tr><td colspan="6" style="color:#484f58;text-align:center;padding:15px;">No combo data yet</td></tr>';
+        for (var i = 0; i < d.signalCombos.length; i++) {
+            var c = d.signalCombos[i]; var cwr = (c.wins/c.total*100).toFixed(0); var cwrC = c.wins/c.total >= 0.5 ? 'positive' : 'negative'; var cwP = c.wins/c.total*100;
+            var sigLabels = c.signals.map(function(s2){var df=d.signalDefs.find(function(dd){return dd.id===s2;});return df?df.name:s2;});
+            html += '<tr><td>'+sigLabels.map(function(n){return tag(n);}).join(' ')+'</td><td>'+c.total+'</td><td class="positive">'+c.wins+'</td><td class="negative">'+c.losses+'</td>';
+            html += '<td class="'+cwrC+'" style="font-weight:bold;">'+cwr+'%</td>';
+            html += '<td><div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#21262d;"><div style="width:'+cwP+'%;background:#238636;"></div><div style="width:'+(100-cwP)+'%;background:#da3633;"></div></div></td></tr>';
+        }
+        html += '</tbody></table></div></div></div>';
+
+        // TP/SL Combo Performance
+        html += '<div class="grid"><div class="card full-width"><h2>TP/SL Combo Performance - Which TP/SL Settings Work Best?</h2><p style="color:#8b949e;font-size:0.8em;margin-bottom:10px;">Bot tests different TP/SL combos and learns which produce best results. ATR adjusts values for volatility.</p><div style="overflow-x:auto;"><table>';
+        html += '<thead><tr><th>TP %</th><th>SL %</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Avg P&L</th><th>Total P&L</th><th>Best</th><th>Worst</th><th>Score</th><th style="min-width:100px;">Performance</th></tr></thead><tbody>';
+        if (d.topCombos.length === 0) html += '<tr><td colspan="12" style="color:#484f58;text-align:center;padding:15px;">No TP/SL data yet - bot will test combos as it trades</td></tr>';
+        for (var i = 0; i < d.topCombos.length; i++) {
+            var tc = d.topCombos[i]; var tcWrC = tc.winRate >= 50 ? 'positive' : 'negative'; var tcPct = tc.total > 0 ? tc.winRate : 0;
+            html += '<tr><td style="font-weight:600;color:#58a6ff;">' + tc.tp.toFixed(2) + '%</td><td style="font-weight:600;color:#d29922;">' + tc.sl.toFixed(2) + '%</td>';
+            html += '<td>' + tc.total + '</td><td class="positive">' + tc.wins + '</td><td class="negative">' + tc.losses + '</td>';
+            html += '<td class="' + tcWrC + '" style="font-weight:bold;">' + tc.winRate.toFixed(1) + '%</td>';
+            html += '<td class="' + (tc.avgProfit >= 0 ? 'positive' : 'negative') + '">' + (tc.avgProfit >= 0 ? '+' : '') + tc.avgProfit.toFixed(2) + '%</td>';
+            html += '<td class="' + (tc.totalProfit >= 0 ? 'positive' : 'negative') + '">' + (tc.totalProfit >= 0 ? '+' : '') + tc.totalProfit.toFixed(2) + '%</td>';
+            html += '<td class="positive">' + (tc.bestProfit >= 0 ? '+' : '') + tc.bestProfit.toFixed(2) + '%</td>';
+            html += '<td class="negative">' + tc.worstProfit.toFixed(2) + '%</td>';
+            html += '<td>' + (tc.score != null ? tc.score.toFixed(3) : '-') + '</td>';
+            html += '<td><div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#21262d;">' + (tc.total > 0 ? '<div style="width:'+tcPct+'%;background:#238636;"></div><div style="width:'+(100-tcPct)+'%;background:#da3633;"></div>' : '') + '</div></td></tr>';
+        }
+        html += '</tbody></table></div></div></div>';
+
+        // Stored Pattern History
+        html += '<div class="grid"><div class="card full-width"><h2>Stored Pattern History (Last 10)</h2><div style="overflow-x:auto;"><table>';
+        html += '<thead><tr><th>Time</th><th>Market</th><th>Dir</th><th>Result</th><th>P&L</th><th>Exit</th><th>Hold</th><th>Mode</th><th>RSI 1m</th><th>StochK</th><th>BB Pos</th><th>CCI</th><th>Will%R</th><th>ADX</th><th>Imb</th><th>Trend</th><th>Triggers</th></tr></thead><tbody>';
+        if (d.recentPatterns.length === 0) html += '<tr><td colspan="17" style="color:#484f58;text-align:center;padding:15px;">No patterns stored yet</td></tr>';
+        for (var i = 0; i < d.recentPatterns.length; i++) {
+            var p = d.recentPatterns[i]; var fp = p.fingerprint || {};
+            html += '<tr><td style="font-size:0.75em;">' + new Date(p.timestamp).toLocaleTimeString() + '</td>';
+            html += '<td>' + (p.symbol||'-') + '</td>';
+            html += '<td class="' + (p.direction==='LONG'?'positive':'negative') + '">' + (p.direction||'-') + '</td>';
+            html += '<td class="' + (p.result==='WIN'?'positive':'negative') + '" style="font-weight:bold;">' + (p.result||'-') + '</td>';
+            html += '<td class="' + ((p.profitPercent||0)>=0?'positive':'negative') + '">' + ((p.profitPercent||0)>=0?'+':'') + (p.profitPercent||0).toFixed(2) + '%</td>';
+            html += '<td>' + (p.exitReason||'-') + '</td>';
+            html += '<td>' + (p.holdTimeMin||0).toFixed(0) + 'm</td>';
+            html += '<td>' + tag(p.entryMode||'-') + '</td>';
+            html += '<td class="fp-val">' + (fp.rsi_1m!=null?fp.rsi_1m.toFixed(1):'-') + '</td>';
+            html += '<td class="fp-val">' + (fp.stoch_k_1m!=null?fp.stoch_k_1m.toFixed(0):'-') + '</td>';
+            html += '<td class="fp-val">' + (fp.bb_position_1m!=null?(fp.bb_position_1m*100).toFixed(0)+'%':'-') + '</td>';
+            html += '<td class="fp-val">' + (fp.cci_1m!=null?fp.cci_1m.toFixed(0):'-') + '</td>';
+            html += '<td class="fp-val">' + (fp.willr_1m!=null?fp.willr_1m.toFixed(0):'-') + '</td>';
+            html += '<td class="fp-val">' + (fp.adx_1m!=null?fp.adx_1m.toFixed(0):'-') + '</td>';
+            html += '<td class="fp-val">' + (fp.imbalance!=null?(fp.imbalance*100).toFixed(0)+'%':'-') + '</td>';
+            html += '<td>' + (fp.trend===1?'<span class="positive">UP</span>':fp.trend===-1?'<span class="negative">DN</span>':'RNG') + '</td>';
+            html += '<td>' + ((p.triggerSignals||[]).slice(0,4).map(function(s3){return tag(s3);}).join(' ')||'-') + '</td></tr>';
+        }
+        html += '</tbody></table></div></div></div>';
+
+        // Trade History
+        html += '<div class="grid"><div class="card full-width"><h2>Complete Trade History (Last 50)</h2><div style="overflow-x:auto;"><table>';
+        html += '<thead><tr><th>Time</th><th>Market</th><th>Dir</th><th>Entry $</th><th>Exit $</th><th>P&L %</th><th>Result</th><th>Exit Reason</th><th>TP/SL Used</th><th>TP/SL Mode</th><th>Hold</th><th>Entry Mode</th><th>Sim</th><th style="min-width:220px;">Trigger Signals</th></tr></thead><tbody>';
+        if (d.recentTrades.length === 0) html += '<tr><td colspan="14" style="color:#484f58;text-align:center;padding:20px;">No trades yet</td></tr>';
+        for (var i = 0; i < d.recentTrades.length; i++) {
+            var t2 = d.recentTrades[i];
+            var sigDisp = t2.triggerSignals.length > 0 ? t2.triggerSignals.map(function(sig2){var df2=d.signalDefs.find(function(dd2){return dd2.id===sig2;});return tag(df2?df2.name:sig2);}).join(' ') : '<span style="color:#484f58;font-size:0.75em;">no data</span>';
+            html += '<tr><td style="font-size:0.75em;">' + new Date(t2.timestamp).toLocaleTimeString() + '<br>' + new Date(t2.timestamp).toLocaleDateString() + '</td>';
+            html += '<td>' + (t2.symbol||'-') + '</td>';
+            html += '<td class="' + (t2.direction==='LONG'?'positive':'negative') + '">' + t2.direction + '</td>';
+            html += '<td>' + usd(t2.entryPrice) + '</td>';
+            html += '<td>' + usd(t2.exitPrice) + '</td>';
+            html += '<td class="' + (t2.profitPercent>=0?'positive':'negative') + '" style="font-weight:bold;">' + (t2.profitPercent>=0?'+':'') + t2.profitPercent.toFixed(2) + '%</td>';
+            html += '<td class="' + (t2.result==='WIN'?'positive':'negative') + '" style="font-weight:bold;">' + t2.result + '</td>';
+            html += '<td>' + t2.exitReason + '</td>';
+            html += '<td style="font-size:0.78em;">' + (t2.tp!=null?'TP:'+t2.tp.toFixed(2)+' SL:'+t2.sl.toFixed(2):'-') + '</td>';
+            html += '<td>' + (t2.tpSlMode ? tag(t2.tpSlMode) : '-') + '</td>';
+            html += '<td>' + (t2.holdTimeMin||'?') + 'm</td>';
+            html += '<td>' + tag(t2.entryMode) + '</td>';
+            html += '<td>' + (t2.simulated?'SIM':'LIVE') + '</td>';
+            html += '<td>' + sigDisp + '</td></tr>';
+        }
+        html += '</tbody></table></div></div></div>';
+
+        document.getElementById('dashboard').innerHTML = html;
+    }
+
+    function botAction(action) {
+        var s = document.getElementById('btnStatus');
+        if (s) { s.textContent = 'Processing...'; s.style.color = '#d29922'; }
+        fetch('/api/' + action, { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function(dd) {
+                if (s) { s.textContent = dd.message || 'Done'; s.style.color = '#3fb950'; }
+                setTimeout(fetchData, 500);
+            })
+            .catch(function(e) {
+                if (s) { s.textContent = 'Error: ' + e.message; s.style.color = '#f85149'; }
+            });
+    }
+
+    var fetchErrors = 0;
+    function fetchData() {
+        fetch('/api/data')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                fetchErrors = 0;
+                renderDashboard(data);
+                document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+            })
+            .catch(function(e) {
+                fetchErrors++;
+                document.getElementById('lastUpdate').textContent = 'Update failed (' + fetchErrors + '): ' + e.message;
+            });
+    }
+
+    fetchData();
+    setInterval(fetchData, 5000);
     </script>
 </body>
 </html>`;
@@ -1370,7 +1481,9 @@ function startDashboard() {
             res.end(JSON.stringify(data));
         };
 
-        if (req.url === '/api/status') {
+        if (req.url === '/api/data') {
+            sendJson(generateDashboardData());
+        } else if (req.url === '/api/status') {
             sendJson({ status: botStatus, safety: safety.getStatus(), stats: tradeMemory.sessionStats });
         } else if (req.url === '/api/unpause' && req.method === 'POST') {
             safety.unpause();
@@ -1407,7 +1520,7 @@ function startDashboard() {
             sendJson({ ok: true, message: 'Stats reset' });
         } else {
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
-            res.end(generateDashboardHTML());
+            res.end(generateDashboardShell());
         }
     });
 
@@ -1416,9 +1529,10 @@ function startDashboard() {
     });
 }
 
+
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   SELF-LEARNING BOT v17 - Pattern Memory Engine');
+    log('   SELF-LEARNING BOT v18 - Dynamic TP/SL Learning');
     log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Pattern Matching`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);
@@ -1451,10 +1565,11 @@ async function main() {
     loadPriceHistory();
     safety.loadConfig();
     patternMemory.load();
+    tpSlOptimizer.load();
     startDashboard();
 
     const pmS = patternMemory.getStats();
-    aiBrain.think(`Bot v17 starting — Pattern Memory Engine | ${pmS.totalStored} patterns stored | ${pmS.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | 12 indicators per TF`, 'ai_brain');
+    aiBrain.think(`Bot v18 starting — Dynamic TP/SL Learning + Pattern Memory | ${pmS.totalStored} patterns stored | ${pmS.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | 12 indicators per TF`, 'ai_brain');
 
     try {
         const connection = new Connection(CONFIG.RPC_URL, { commitment: 'confirmed' });
@@ -1558,6 +1673,7 @@ async function main() {
             saveMemory();
             savePriceHistory();
             patternMemory.save();
+            tpSlOptimizer.save();
             const openPositions = ACTIVE_MARKETS.filter(s => {
                 const ms = marketStates[s];
                 return ms && (CONFIG.SIMULATION_MODE ? ms.simulatedPosition : ms.currentPosition);
