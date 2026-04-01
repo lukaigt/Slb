@@ -11,7 +11,7 @@ const SL_OPTIONS = [0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.75, 1.00, 1.25, 
 
 const MIN_TRADES_FOR_EXPLOIT = 30;
 const EXPLORATION_RATE = 0.20;
-const MIN_COMBO_TRADES = 10;
+const MIN_COMBO_TRADES = 30;
 
 let stats = {
     version: 1,
@@ -204,7 +204,12 @@ function getTopCombos(limit) {
             byMarket: combo.byMarket || {}
         };
     });
-    scored.sort((a, b) => (b.total - a.total));
+    scored.sort((a, b) => {
+        if (a.score != null && b.score != null) return b.score - a.score;
+        if (a.score != null) return -1;
+        if (b.score != null) return 1;
+        return b.total - a.total;
+    });
     return scored.slice(0, limit);
 }
 
