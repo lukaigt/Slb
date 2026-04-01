@@ -11,7 +11,7 @@ const SL_OPTIONS = [0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.75, 1.00, 1.25, 
 
 const MIN_TRADES_FOR_EXPLOIT = 30;
 const EXPLORATION_RATE = 0.20;
-const MIN_COMBO_TRADES = 5;
+const MIN_COMBO_TRADES = 10;
 
 let stats = {
     version: 1,
@@ -115,7 +115,9 @@ function selectBestCombo() {
 }
 
 function getRecommendedTPSL(atrPercent, symbol) {
-    const isExploiting = stats.totalTrades >= MIN_TRADES_FOR_EXPLOIT;
+    const globalReady = stats.totalTrades >= MIN_TRADES_FOR_EXPLOIT;
+    const best = globalReady ? selectBestCombo() : null;
+    const isExploiting = globalReady && best !== null;
     const shouldExplore = !isExploiting || Math.random() < EXPLORATION_RATE;
 
     let baseTP, baseSL, mode;
@@ -127,17 +129,10 @@ function getRecommendedTPSL(atrPercent, symbol) {
         baseSL = SL_OPTIONS[slIdx];
         mode = isExploiting ? 'TP_SL_EXPLORE' : 'TP_SL_LEARNING';
     } else {
-        const best = selectBestCombo();
-        if (best) {
-            const parsed = parseComboKey(best.key);
-            baseTP = parsed.tp;
-            baseSL = parsed.sl;
-            mode = 'TP_SL_OPTIMIZED';
-        } else {
-            baseTP = 0.40;
-            baseSL = 0.40;
-            mode = 'TP_SL_DEFAULT';
-        }
+        const parsed = parseComboKey(best.key);
+        baseTP = parsed.tp;
+        baseSL = parsed.sl;
+        mode = 'TP_SL_OPTIMIZED';
     }
 
     const adjusted = adjustForATR(baseTP, baseSL, atrPercent);
@@ -219,12 +214,15 @@ function getOptimizerStats() {
     const combosWithData = Object.values(stats.combos).filter(c => c.total >= MIN_COMBO_TRADES).length;
     const totalCombos = Object.keys(stats.combos).length;
 
+    const hasMatureCombos = combosWithData > 0;
+
     return {
         totalTrades: stats.totalTrades,
         totalCombos,
         combosWithData,
-        isExploiting,
-        explorationRate: isExploiting ? Math.round(EXPLORATION_RATE * 100) : 100,
+        minComboTrades: MIN_COMBO_TRADES,
+        isExploiting: isExploiting && hasMatureCombos,
+        explorationRate: (isExploiting && hasMatureCombos) ? Math.round(EXPLORATION_RATE * 100) : 100,
         learningProgress: Math.min(100, Math.round((stats.totalTrades / MIN_TRADES_FOR_EXPLOIT) * 100)),
         bestCombo: best ? {
             tp: parseComboKey(best.key).tp,

@@ -1162,7 +1162,7 @@ function generateDashboardShell() {
         html += '<div class="card"><h2>TP/SL Optimizer</h2>';
         html += '<div class="stat-row"><span class="stat-label">Phase</span><span class="stat-value">' + (d.tpSlStats.isExploiting ? '<span class="exploit-badge">OPTIMIZING</span>' : '<span class="learning-badge">LEARNING</span>') + '</span></div>';
         html += '<div class="stat-row"><span class="stat-label">Combos Tested</span><span class="stat-value" style="color:#58a6ff;">' + d.tpSlStats.totalCombos + '</span></div>';
-        html += '<div class="stat-row"><span class="stat-label">Combos With Data</span><span class="stat-value">' + d.tpSlStats.combosWithData + '</span></div>';
+        html += '<div class="stat-row"><span class="stat-label">Mature Combos (' + (d.tpSlStats.minComboTrades||10) + '+ trades)</span><span class="stat-value">' + d.tpSlStats.combosWithData + '</span></div>';
         html += '<div class="stat-row"><span class="stat-label">Total TP/SL Trades</span><span class="stat-value">' + d.tpSlStats.totalTrades + '</span></div>';
         var tpProg = d.tpSlStats.learningProgress;
         html += '<div style="margin:6px 0;"><div class="progress-bar"><div class="progress-fill" style="width:' + tpProg + '%;background:' + (tpProg >= 100 ? '#238636' : '#d29922') + ';"></div><div class="progress-text">TP/SL ' + tpProg + '% — ' + d.tpSlStats.totalTrades + '/30</div></div></div>';
