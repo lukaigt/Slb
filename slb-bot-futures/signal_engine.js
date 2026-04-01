@@ -77,12 +77,15 @@ function evaluateSignals(marketState) {
     if (sr && price) {
         let nearestSupport = null;
         let nearestResistance = null;
+        let supportDist = Infinity;
+        let resistanceDist = Infinity;
         if (sr.supports) {
             for (const s of sr.supports) {
                 const dist = Math.abs(s.distancePercent);
                 if (dist < 0.30 && (s.strength === 'STRONG' || s.strength === 'MODERATE')) {
-                    if (!nearestSupport || dist < Math.abs(nearestSupport.distancePercent)) {
+                    if (dist < supportDist) {
                         nearestSupport = s;
+                        supportDist = dist;
                     }
                 }
             }
@@ -91,13 +94,22 @@ function evaluateSignals(marketState) {
             for (const r of sr.resistances) {
                 const dist = Math.abs(r.distancePercent);
                 if (dist < 0.30 && (r.strength === 'STRONG' || r.strength === 'MODERATE')) {
-                    if (!nearestResistance || dist < Math.abs(nearestResistance.distancePercent)) {
+                    if (dist < resistanceDist) {
                         nearestResistance = r;
+                        resistanceDist = dist;
                     }
                 }
             }
         }
-        if (nearestSupport) {
+        if (nearestSupport && nearestResistance) {
+            if (supportDist <= resistanceDist) {
+                result.signals.sr_proximity = 'LONG';
+                result.longScore++;
+            } else {
+                result.signals.sr_proximity = 'SHORT';
+                result.shortScore++;
+            }
+        } else if (nearestSupport) {
             result.signals.sr_proximity = 'LONG';
             result.longScore++;
         } else if (nearestResistance) {
