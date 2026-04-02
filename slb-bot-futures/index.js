@@ -21,6 +21,7 @@ const indicators = require('./indicators');
 const signalEngine = require('./signal_engine');
 const patternMemory = require('./pattern_memory');
 const tpSlOptimizer = require('./tp_sl_optimizer');
+const { KrakenFeed } = require('./kraken_feed');
 
 dotenv.config();
 
@@ -33,6 +34,7 @@ const CONFIG = {
     // COOLDOWN REMOVED - AI and safety layer handle trade frequency
     AI_INTERVAL_MS: parseInt(process.env.AI_INTERVAL_MS) || 15000,
     CHECK_INTERVAL_MS: parseInt(process.env.CHECK_INTERVAL_MS) || 15000,
+    DATA_SOURCE: (process.env.DATA_SOURCE || 'kraken').toLowerCase() === 'drift' ? 'drift' : 'kraken',
     DLOB_URL: 'https://dlob.drift.trade',
     DASHBOARD_PORT: parseInt(process.env.DASHBOARD_PORT) || 3000,
     MEMORY_FILE: path.join(__dirname, 'trade_memory.json'),
@@ -96,6 +98,7 @@ for (const symbol of ACTIVE_MARKETS) {
 }
 
 let driftClient = null;
+let krakenFeed = null;
 let tradeMemory = { 
     trades: [], 
     sessionStats: {
@@ -233,6 +236,12 @@ function recalculateAllIndicators() {
 }
 
 async function fetchOrderBook(symbol) {
+    if (CONFIG.DATA_SOURCE === 'kraken' && krakenFeed) {
+        const book = krakenFeed.getOrderBook(symbol);
+        if (book && book.bids.length > 0 && book.asks.length > 0) return book;
+        const restBook = await krakenFeed.fetchOrderBookREST(symbol);
+        return restBook;
+    }
     try {
         const response = await fetch(`${CONFIG.DLOB_URL}/l2?marketName=${symbol}&depth=20`);
         if (!response.ok) return null;
@@ -245,13 +254,18 @@ async function fetchOrderBook(symbol) {
 }
 
 async function fetchPriceForMarket(symbol) {
+    if (CONFIG.DATA_SOURCE === 'kraken' && krakenFeed) {
+        const price = krakenFeed.getPrice(symbol);
+        if (price && price > 0 && !krakenFeed.isPriceStale(symbol)) return price;
+    }
     try {
         const orderBook = await fetchOrderBook(symbol);
         if (!orderBook || !orderBook.bids || !orderBook.asks) return null;
         if (orderBook.bids.length === 0 || orderBook.asks.length === 0) return null;
         const bestBid = Array.isArray(orderBook.bids[0]) ? parseFloat(orderBook.bids[0][0]) : parseFloat(orderBook.bids[0].price);
         const bestAsk = Array.isArray(orderBook.asks[0]) ? parseFloat(orderBook.asks[0][0]) : parseFloat(orderBook.asks[0].price);
-        return (bestBid + bestAsk) / 2 / 1e6;
+        if (CONFIG.DATA_SOURCE === 'drift') return (bestBid + bestAsk) / 2 / 1e6;
+        return (bestBid + bestAsk) / 2;
     } catch (error) {
         return null;
     }
@@ -647,7 +661,9 @@ async function processMarket(symbol) {
         marketState.rpcConnected = !!price;
         if (!price) return;
 
-        try { await syncPositionFromChain(marketState, marketConfig, symbol); } catch (e) {}
+        if (CONFIG.DATA_SOURCE === 'drift' && driftClient) {
+            try { await syncPositionFromChain(marketState, marketConfig, symbol); } catch (e) {}
+        }
 
         const imbalance = calculateImbalance(orderBook);
 
@@ -990,7 +1006,9 @@ function generateDashboardData() {
         uptime,
         heartbeatAgo,
         running: botStatus.running,
+        dataSource: CONFIG.DATA_SOURCE,
         driftConnected: botStatus.driftConnected,
+        krakenConnected: krakenFeed ? krakenFeed.isConnected() : false,
         rpcConnected: anyRpcConnected,
         dlobConnected: anyDlobConnected,
         paused: safetyStatus.paused,
@@ -1106,7 +1124,7 @@ function generateDashboardHTML() {
 <body>
 <div class="container">
     <h1>Self-Learning Bot <span style="color: #8957e5; font-size: 0.5em; vertical-align: middle;">v18 Dynamic TP/SL</span></h1>
-    <div class="subtitle">Drift Protocol | ${d.leverage}x | ${d.tpSlStats.bestCombo ? 'Best TP/SL: ' + d.tpSlStats.bestCombo.tp.toFixed(2) + '/' + d.tpSlStats.bestCombo.sl.toFixed(2) + '%' : 'TP/SL: Learning...'} | Fee: 0.07% | ${d.pmStats.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | ${d.pmStats.totalStored} patterns | ${d.tpSlStats.isExploiting ? 'TP/SL OPTIMIZING' : 'TP/SL LEARNING (' + d.tpSlStats.learningProgress + '%)'}</div>
+    <div class="subtitle">${d.dataSource === 'kraken' ? 'Kraken Feed' : 'Drift Protocol'} | ${d.leverage}x | ${d.tpSlStats.bestCombo ? 'Best TP/SL: ' + d.tpSlStats.bestCombo.tp.toFixed(2) + '/' + d.tpSlStats.bestCombo.sl.toFixed(2) + '%' : 'TP/SL: Learning...'} | Fee: 0.07% | ${d.pmStats.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | ${d.pmStats.totalStored} patterns | ${d.tpSlStats.isExploiting ? 'TP/SL OPTIMIZING' : 'TP/SL LEARNING (' + d.tpSlStats.learningProgress + '%)'}</div>
 
     <div class="grid">`;
 
@@ -1115,9 +1133,11 @@ function generateDashboardHTML() {
     html += '<div class="card"><h2>System Health</h2>';
     html += '<div class="stat-row"><span class="stat-label">Status</span><span class="stat-value">' + (d.running ? dot(true) + 'Running' : dot(false) + 'Stopped') + '</span></div>';
     html += '<div class="stat-row"><span class="stat-label">Mode</span><span class="stat-value">' + (d.simulation ? '<span class="sim-mode">SIMULATION</span>' : '<span class="live-mode">LIVE</span>') + '</span></div>';
-    html += '<div class="stat-row"><span class="stat-label">Drift</span><span class="stat-value">' + dot(d.driftConnected) + (d.driftConnected ? 'Connected' : 'Disconnected') + '</span></div>';
-    html += '<div class="stat-row"><span class="stat-label">RPC</span><span class="stat-value">' + dot(d.rpcConnected) + '</span></div>';
-    html += '<div class="stat-row"><span class="stat-label">DLOB</span><span class="stat-value">' + dot(d.dlobConnected) + '</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Data Feed</span><span class="stat-value">' + (d.dataSource === 'kraken' ? '<span style="color:#7B68EE;font-weight:bold;">KRAKEN</span>' : '<span style="color:#58a6ff;font-weight:bold;">DRIFT</span>') + '</span></div>';
+    if (d.dataSource === 'kraken') {
+        html += '<div class="stat-row"><span class="stat-label">Kraken WS</span><span class="stat-value">' + dot(d.krakenConnected) + (d.krakenConnected ? 'Live' : 'Connecting...') + '</span></div>';
+    }
+    html += '<div class="stat-row"><span class="stat-label">Drift</span><span class="stat-value">' + dot(d.driftConnected) + (d.driftConnected ? 'Connected' : 'Offline') + '</span></div>';
     html += '<div class="stat-row"><span class="stat-label">Uptime</span><span class="stat-value">' + d.uptime + '</span></div>';
     html += '<div class="stat-row"><span class="stat-label">Heartbeat</span><span class="stat-value">' + d.heartbeatAgo + 's ago</span></div>';
     html += '</div>';
@@ -1486,9 +1506,10 @@ function startDashboard() {
 async function main() {
     log('═══════════════════════════════════════════════════════════');
     log('   SELF-LEARNING BOT v18 - Dynamic TP/SL Learning');
-    log(`   Drift Protocol | ${CONFIG.LEVERAGE}x Leverage | Pattern Matching`);
+    log(`   Data: ${CONFIG.DATA_SOURCE.toUpperCase()} | ${CONFIG.LEVERAGE}x Leverage | Pattern Matching`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);
+    log(`Data Source: ${CONFIG.DATA_SOURCE.toUpperCase()} (set DATA_SOURCE=drift to use Drift DLOB)`);
     log(`Leverage: ${CONFIG.LEVERAGE}x`);
     log(`Active Markets: ${ACTIVE_MARKETS.join(', ')}`);
     log(`Trade Size: ${CONFIG.TRADE_AMOUNT_USDC} USDC per market`);
@@ -1500,12 +1521,12 @@ async function main() {
     log(`Dashboard: http://0.0.0.0:${CONFIG.DASHBOARD_PORT}`);
     log('═══════════════════════════════════════════════════════════');
 
-    if (!CONFIG.RPC_URL) {
+    if (CONFIG.DATA_SOURCE === 'drift' && !CONFIG.RPC_URL) {
         log('ERROR: Missing SOLANA_RPC_URL in .env file');
         process.exit(1);
     }
 
-    if (!CONFIG.SIMULATION_MODE && !CONFIG.PRIVATE_KEY) {
+    if (!CONFIG.SIMULATION_MODE && !CONFIG.PRIVATE_KEY && CONFIG.DATA_SOURCE === 'drift') {
         log('ERROR: Missing PRIVATE_KEY in .env file (required for live trading)');
         process.exit(1);
     }
@@ -1522,72 +1543,118 @@ async function main() {
     startDashboard();
 
     const pmS = patternMemory.getStats();
-    aiBrain.think(`Bot v18 starting — Dynamic TP/SL Learning + Pattern Memory | ${pmS.totalStored} patterns stored | ${pmS.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | 12 indicators per TF`, 'ai_brain');
+    aiBrain.think(`Bot v18 starting — ${CONFIG.DATA_SOURCE.toUpperCase()} data feed | Dynamic TP/SL Learning + Pattern Memory | ${pmS.totalStored} patterns stored | ${pmS.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | 12 indicators per TF`, 'ai_brain');
 
     try {
-        const connection = new Connection(CONFIG.RPC_URL, { commitment: 'confirmed' });
-
-        let keypair;
-        if (CONFIG.SIMULATION_MODE && !CONFIG.PRIVATE_KEY) {
-            keypair = Keypair.generate();
-            log(`Simulation mode: Using temporary wallet ${keypair.publicKey.toBase58().slice(0, 8)}...`);
-        } else {
-            let privateKeyBytes;
-            const cleanKey = CONFIG.PRIVATE_KEY.trim().replace(/['"]/g, '');
-            try {
-                if (typeof bs58.decode === 'function') {
-                    privateKeyBytes = bs58.decode(cleanKey);
-                } else if (typeof bs58.default?.decode === 'function') {
-                    privateKeyBytes = bs58.default.decode(cleanKey);
-                } else {
-                    throw new Error('bs58 decode not found');
+        if (CONFIG.DATA_SOURCE === 'kraken') {
+            log('Starting Kraken live data feed...');
+            krakenFeed = new KrakenFeed(ACTIVE_MARKETS);
+            const history = await krakenFeed.bootstrapHistory();
+            for (const symbol of ACTIVE_MARKETS) {
+                if (history[symbol]) {
+                    const h = history[symbol];
+                    marketStates[symbol].prices = h.prices;
+                    marketStates[symbol].priceTimestamps = h.timestamps;
+                    marketStates[symbol].lastPrice = h.prices[h.prices.length - 1];
+                    log(`[${symbol}] Loaded ${h.prices.length} historical prices from Kraken REST`);
                 }
-            } catch (e) {
-                log(`Private key decode error: ${e.message}`);
-                process.exit(1);
             }
-            keypair = Keypair.fromSecretKey(privateKeyBytes);
-            log(`Wallet: ${keypair.publicKey.toBase58()}`);
+            krakenFeed.connect();
+            log('Kraken WebSocket feed started — real-time prices + orderbook');
         }
 
-        const wallet = new Wallet(keypair);
-        const sdkConfig = initialize({ env: 'mainnet-beta' });
+        let driftConnected = false;
+        if (CONFIG.RPC_URL) {
+            try {
+                const connection = new Connection(CONFIG.RPC_URL, { commitment: 'confirmed' });
 
-        driftClient = new DriftClient({
-            connection,
-            wallet,
-            programID: new PublicKey(sdkConfig.DRIFT_PROGRAM_ID),
-            accountSubscription: { 
-                type: 'websocket',
-                resubTimeoutMs: 30000,
-                resyncIntervalMs: 60000,
-            },
-        });
+                let keypair;
+                if (CONFIG.SIMULATION_MODE && !CONFIG.PRIVATE_KEY) {
+                    keypair = Keypair.generate();
+                    log(`Simulation mode: Using temporary wallet ${keypair.publicKey.toBase58().slice(0, 8)}...`);
+                } else if (CONFIG.PRIVATE_KEY) {
+                    let privateKeyBytes;
+                    const cleanKey = CONFIG.PRIVATE_KEY.trim().replace(/['"]/g, '');
+                    try {
+                        if (typeof bs58.decode === 'function') {
+                            privateKeyBytes = bs58.decode(cleanKey);
+                        } else if (typeof bs58.default?.decode === 'function') {
+                            privateKeyBytes = bs58.default.decode(cleanKey);
+                        } else {
+                            throw new Error('bs58 decode not found');
+                        }
+                    } catch (e) {
+                        log(`Private key decode error: ${e.message}`);
+                        if (CONFIG.DATA_SOURCE === 'drift') process.exit(1);
+                    }
+                    if (privateKeyBytes) {
+                        keypair = Keypair.fromSecretKey(privateKeyBytes);
+                        log(`Wallet: ${keypair.publicKey.toBase58()}`);
+                    }
+                }
 
-        log('Connecting to Drift Protocol...');
-        await driftClient.subscribe();
-        log('Connected to Drift Protocol!');
+                if (keypair) {
+                    const wallet = new Wallet(keypair);
+                    const sdkConfig = initialize({ env: 'mainnet-beta' });
 
-        if (!CONFIG.SIMULATION_MODE) {
-            const user = driftClient.getUser();
-            if (!user) {
-                log('ERROR: No Drift user account found.');
-                process.exit(1);
+                    driftClient = new DriftClient({
+                        connection,
+                        wallet,
+                        programID: new PublicKey(sdkConfig.DRIFT_PROGRAM_ID),
+                        accountSubscription: { 
+                            type: 'websocket',
+                            resubTimeoutMs: 30000,
+                            resyncIntervalMs: 60000,
+                        },
+                    });
+
+                    log('Connecting to Drift Protocol...');
+                    await driftClient.subscribe();
+                    log('Connected to Drift Protocol!');
+                    driftConnected = true;
+
+                    if (!CONFIG.SIMULATION_MODE) {
+                        const user = driftClient.getUser();
+                        if (!user) {
+                            log('WARNING: No Drift user account found.');
+                        }
+                    }
+                }
+            } catch (driftErr) {
+                log(`Drift connection failed: ${driftErr.message}`);
+                if (CONFIG.DATA_SOURCE === 'drift') {
+                    log('ERROR: Drift is required when DATA_SOURCE=drift. Exiting.');
+                    process.exit(1);
+                }
+                log('Continuing with Kraken data feed only (no trading until Drift reconnects)');
+                driftClient = null;
             }
+        } else {
+            log('No RPC URL configured — running with Kraken data only (learning mode)');
         }
 
-        log('Testing DLOB API...');
-        for (const symbol of ACTIVE_MARKETS) {
-            const testOrderBook = await fetchOrderBook(symbol);
-            log(`[${symbol}] DLOB: ${testOrderBook ? 'Connected' : 'Failed'}`);
+        if (CONFIG.DATA_SOURCE === 'drift' && driftConnected) {
+            log('Testing DLOB API...');
+            for (const symbol of ACTIVE_MARKETS) {
+                const testOrderBook = await fetchOrderBook(symbol);
+                log(`[${symbol}] DLOB: ${testOrderBook ? 'Connected' : 'Failed'}`);
+            }
+        } else if (CONFIG.DATA_SOURCE === 'kraken') {
+            log('Testing Kraken data feed...');
+            for (const symbol of ACTIVE_MARKETS) {
+                const price = krakenFeed.getPrice(symbol);
+                log(`[${symbol}] Kraken: ${price ? '$' + price.toFixed(2) : 'Waiting for data...'}`);
+            }
         }
 
         botStatus.running = true;
+        botStatus.driftConnected = driftConnected;
+        botStatus.dataSource = CONFIG.DATA_SOURCE;
         if (!tradeMemory.sessionStats.startTime) {
             tradeMemory.sessionStats.startTime = new Date().toISOString();
         }
 
-        log('Starting trading loop (mean reversion mode)...');
+        log(`Starting trading loop (data: ${CONFIG.DATA_SOURCE.toUpperCase()})...`);
         async function dynamicLoop() {
             await tradingLoop();
             const hasPos = ACTIVE_MARKETS.some(s => {
@@ -1601,24 +1668,58 @@ async function main() {
 
         setInterval(savePriceHistory, 300000);
 
-        setInterval(() => {
-            const timeSinceHeartbeat = Date.now() - lastHeartbeat;
-            const maxIdleTime = CONFIG.CHECK_INTERVAL_MS * 5;
-            if (timeSinceHeartbeat > maxIdleTime) {
-                log(`WATCHDOG: No heartbeat for ${Math.round(timeSinceHeartbeat / 1000)}s`);
+        if (driftClient) {
+            setInterval(() => {
+                const timeSinceHeartbeat = Date.now() - lastHeartbeat;
+                const maxIdleTime = CONFIG.CHECK_INTERVAL_MS * 5;
+                if (timeSinceHeartbeat > maxIdleTime) {
+                    log(`WATCHDOG: No heartbeat for ${Math.round(timeSinceHeartbeat / 1000)}s`);
+                    (async () => {
+                        try {
+                            await driftClient.unsubscribe();
+                            await driftClient.subscribe();
+                            log('Drift reconnection successful');
+                            lastHeartbeat = Date.now();
+                        } catch (err) {
+                            log(`Drift reconnection failed: ${err.message}`);
+                            if (CONFIG.DATA_SOURCE === 'drift') process.exit(1);
+                        }
+                    })();
+                }
+            }, 60000);
+        } else if (CONFIG.DATA_SOURCE === 'kraken' && CONFIG.RPC_URL && !CONFIG.SIMULATION_MODE) {
+            setInterval(() => {
+                if (driftClient) return;
+                log('Attempting Drift reconnection (trading will resume when connected)...');
                 (async () => {
                     try {
-                        await driftClient.unsubscribe();
-                        await driftClient.subscribe();
-                        log('Reconnection successful');
-                        lastHeartbeat = Date.now();
+                        const connection = new Connection(CONFIG.RPC_URL, { commitment: 'confirmed' });
+                        let privateKeyBytes;
+                        const cleanKey = CONFIG.PRIVATE_KEY.trim().replace(/['"]/g, '');
+                        if (typeof bs58.decode === 'function') {
+                            privateKeyBytes = bs58.decode(cleanKey);
+                        } else if (typeof bs58.default?.decode === 'function') {
+                            privateKeyBytes = bs58.default.decode(cleanKey);
+                        }
+                        if (!privateKeyBytes) return;
+                        const keypair = Keypair.fromSecretKey(privateKeyBytes);
+                        const wallet = new Wallet(keypair);
+                        const sdkConfig = initialize({ env: 'mainnet-beta' });
+                        const newClient = new DriftClient({
+                            connection, wallet,
+                            programID: new PublicKey(sdkConfig.DRIFT_PROGRAM_ID),
+                            accountSubscription: { type: 'websocket', resubTimeoutMs: 30000, resyncIntervalMs: 60000 },
+                        });
+                        await newClient.subscribe();
+                        driftClient = newClient;
+                        botStatus.driftConnected = true;
+                        log('Drift reconnected! Live trading can resume.');
                     } catch (err) {
-                        log(`Reconnection failed: ${err.message}`);
-                        process.exit(1);
+                        log(`Drift reconnection failed: ${err.message}`);
                     }
                 })();
-            }
-        }, 60000);
+            }, 300000);
+        }
 
         process.on('SIGINT', async () => {
             log('Shutting down...');
@@ -1627,6 +1728,7 @@ async function main() {
             savePriceHistory();
             patternMemory.save();
             tpSlOptimizer.save();
+            if (krakenFeed) krakenFeed.stop();
             const openPositions = ACTIVE_MARKETS.filter(s => {
                 const ms = marketStates[s];
                 return ms && (CONFIG.SIMULATION_MODE ? ms.simulatedPosition : ms.currentPosition);
@@ -1634,7 +1736,9 @@ async function main() {
             if (openPositions.length > 0) {
                 log(`WARNING: Open positions on: ${openPositions.join(', ')}`);
             }
-            await driftClient.unsubscribe();
+            if (driftClient) {
+                try { await driftClient.unsubscribe(); } catch (e) {}
+            }
             process.exit(0);
         });
 
