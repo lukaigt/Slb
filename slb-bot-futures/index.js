@@ -868,14 +868,15 @@ async function tradingLoop() {
     botStatus.lastUpdate = new Date().toISOString();
 
     try {
-        // Daily Hard Stop Check
-        const dailyStats = safety.getStats();
-        if (dailyStats && dailyStats.dailyProfitPercent <= -10) {
-            if (!safety.isPaused()) {
-                log('CRITICAL: Daily loss limit (-10%) reached. Hard stopping bot.');
-                safety.pause('daily_loss_limit');
+        if (!CONFIG.SIMULATION_MODE) {
+            const dailyStats = safety.getStats();
+            if (dailyStats && dailyStats.dailyProfitPercent <= -10) {
+                if (!safety.isPaused()) {
+                    log('CRITICAL: Daily loss limit (-10%) reached. Hard stopping bot.');
+                    safety.pause('daily_loss_limit');
+                }
+                return;
             }
-            return;
         }
 
         if (safety.isPaused()) {

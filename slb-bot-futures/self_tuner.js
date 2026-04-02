@@ -82,16 +82,19 @@ function recordTradeResult(profitPercent, isWin) {
         }
     }
 
-    if (config.dailyStats.totalPnl <= -config.dailyLossLimit) {
-        config.paused = true;
-        config.pauseReason = 'daily_loss_limit';
-        console.log(`[SAFETY] PAUSED: Daily loss limit reached (${config.dailyStats.totalPnl.toFixed(2)}% / -${config.dailyLossLimit}%)`);
-    }
+    const isSimulation = process.env.SIMULATION_MODE === 'true' || process.env.SIMULATION_MODE === '1';
+    if (!isSimulation) {
+        if (config.dailyStats.totalPnl <= -config.dailyLossLimit) {
+            config.paused = true;
+            config.pauseReason = 'daily_loss_limit';
+            console.log(`[SAFETY] PAUSED: Daily loss limit reached (${config.dailyStats.totalPnl.toFixed(2)}% / -${config.dailyLossLimit}%)`);
+        }
 
-    if (config.dailyStats.consecutiveLosses >= config.maxConsecutiveLosses) {
-        config.paused = true;
-        config.pauseReason = 'consecutive_losses';
-        console.log(`[SAFETY] PAUSED: ${config.dailyStats.consecutiveLosses} consecutive losses`);
+        if (config.dailyStats.consecutiveLosses >= config.maxConsecutiveLosses) {
+            config.paused = true;
+            config.pauseReason = 'consecutive_losses';
+            console.log(`[SAFETY] PAUSED: ${config.dailyStats.consecutiveLosses} consecutive losses`);
+        }
     }
 
     saveConfig();
