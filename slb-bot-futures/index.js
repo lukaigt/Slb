@@ -332,14 +332,20 @@ function calculateVolatility(prices) {
     return totalChange / (recent.length - 1);
 }
 
+function isSimulated(marketConfig) {
+    return CONFIG.SIMULATION_MODE || (marketConfig && marketConfig.marketIndex >= 100);
+}
+
+function getPosition(marketState, marketConfig) {
+    return isSimulated(marketConfig) ? marketState.simulatedPosition : marketState.currentPosition;
+}
+
 async function openPosition(direction, marketState, marketConfig, symbol) {
     const currentPrice = marketState.lastPrice;
 
-    if (CONFIG.SIMULATION_MODE) {
-        log(`[${symbol}] [SIM] Opening ${direction} at $${currentPrice.toFixed(4)}`);
-        marketState.simulatedPosition = direction;
-    } else if (marketConfig.marketIndex >= 100) {
-        log(`[${symbol}] [SIM] Opening ${direction} at $${currentPrice.toFixed(4)} (Kraken-only market)`);
+    if (isSimulated(marketConfig)) {
+        const label = marketConfig.marketIndex >= 100 ? 'SIM/Kraken' : 'SIM';
+        log(`[${symbol}] [${label}] Opening ${direction} at $${currentPrice.toFixed(4)}`);
         marketState.simulatedPosition = direction;
     } else {
         try {
@@ -382,13 +388,12 @@ async function openPosition(direction, marketState, marketConfig, symbol) {
 
 async function closePosition(exitReason, marketState, marketConfig, symbol) {
     const currentPrice = marketState.lastPrice;
-    const isSimOrKrakenOnly = CONFIG.SIMULATION_MODE || marketConfig.marketIndex >= 100;
-    const pos = isSimOrKrakenOnly ? marketState.simulatedPosition : marketState.currentPosition;
+    const pos = getPosition(marketState, marketConfig);
     if (!pos) return true;
 
     if (!marketState.entryPrice || marketState.entryPrice <= 0 || !currentPrice || currentPrice <= 0) {
         log(`[${symbol}] ERROR: Invalid prices. Entry: ${marketState.entryPrice}, Current: ${currentPrice}`);
-        resetPositionState(marketState);
+        resetPositionState(marketState, marketConfig);
         return true;
     }
 
@@ -409,7 +414,7 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
 
     const result = profitPercent > 0 ? 'WIN' : 'LOSS';
 
-    if (isSimOrKrakenOnly) {
+    if (isSimulated(marketConfig)) {
         log(`[${symbol}] [SIM] Closing ${pos}: ${result} ${profitPercent.toFixed(2)}%`);
         marketState.simulatedPosition = null;
     } else {
@@ -417,7 +422,7 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
             const user = driftClient.getUser();
             const perpPosition = user.getPerpPosition(marketConfig.marketIndex);
             if (!perpPosition || perpPosition.baseAssetAmount.eq(new BN(0))) {
-                resetPositionState(marketState);
+                resetPositionState(marketState, marketConfig);
                 return true;
             }
             const baseAssetAmount = perpPosition.baseAssetAmount.abs();
@@ -479,7 +484,7 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
         tpSlMode: marketState.tpSlMode || null,
         aiReason: marketState.aiReason,
         triggerSignals: marketState.triggerSignals || [],
-        simulated: CONFIG.SIMULATION_MODE,
+        simulated: isSimulated(marketConfig),
         entrySnapshot: marketState.entrySnapshot || null,
         exitSnapshot,
         lesson
@@ -528,7 +533,7 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
     aiBrain.recordTradeResult(symbol, pos, result, profitPercent, exitReason);
     safety.recordTradeResult(profitPercent, result === 'WIN');
 
-    resetPositionState(marketState);
+    resetPositionState(marketState, marketConfig);
 
     if (result === 'WIN') {
         marketState.lastAiCall = 0;
@@ -537,8 +542,8 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
     return true;
 }
 
-function resetPositionState(marketState) {
-    if (CONFIG.SIMULATION_MODE) {
+function resetPositionState(marketState, marketConfig) {
+    if (isSimulated(marketConfig)) {
         marketState.simulatedPosition = null;
     } else {
         marketState.currentPosition = null;
@@ -562,7 +567,7 @@ function resetPositionState(marketState) {
 }
 
 async function syncPositionFromChain(marketState, marketConfig, symbol) {
-    if (CONFIG.SIMULATION_MODE || marketConfig.marketIndex >= 100) return;
+    if (isSimulated(marketConfig)) return;
     try {
         const user = driftClient.getUser();
         const perpPosition = user.getPerpPosition(marketConfig.marketIndex);
@@ -605,15 +610,15 @@ async function syncPositionFromChain(marketState, marketConfig, symbol) {
                 }
             }
         } else if (marketState.currentPosition) {
-            resetPositionState(marketState);
+            resetPositionState(marketState, marketConfig);
         }
     } catch (error) {
         log(`[${symbol}] Error syncing position: ${error.message}`);
     }
 }
 
-function checkStopLoss(currentPrice, marketState, symbol) {
-    const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
+function checkStopLoss(currentPrice, marketState, marketConfig, symbol) {
+    const pos = getPosition(marketState, marketConfig);
     if (!pos || marketState.aiStopLoss === null || marketState.aiStopLoss === undefined) return false;
 
     const priceMovePercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
@@ -633,8 +638,8 @@ function checkStopLoss(currentPrice, marketState, symbol) {
     return false;
 }
 
-function checkTakeProfit(currentPrice, marketState, symbol) {
-    const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
+function checkTakeProfit(currentPrice, marketState, marketConfig, symbol) {
+    const pos = getPosition(marketState, marketConfig);
     if (!pos || !marketState.entryPrice || marketState.entryPrice <= 0) return false;
 
     const leverage = CONFIG.LEVERAGE;
@@ -659,8 +664,8 @@ function checkTakeProfit(currentPrice, marketState, symbol) {
     return false;
 }
 
-function checkMaxHoldTime(marketState, symbol) {
-    const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
+function checkMaxHoldTime(marketState, marketConfig, symbol) {
+    const pos = getPosition(marketState, marketConfig);
     if (!pos || !marketState.entryTime) return false;
 
     const maxHold = (marketState.aiMaxHoldMinutes || 30) * 60 * 1000;
@@ -742,8 +747,8 @@ async function processMarket(symbol) {
         );
         marketState.momentumPhase = marketState.directionalScore.momentumPhase;
 
-        const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
-        const modeStr = CONFIG.SIMULATION_MODE ? 'SIM' : 'LIVE';
+        const pos = getPosition(marketState, marketConfig);
+        const modeStr = isSimulated(marketConfig) ? 'SIM' : 'LIVE';
         const posStr = pos || 'NONE';
 
         const ind1m = marketState.indicators1m || {};
@@ -815,16 +820,16 @@ async function processMarket(symbol) {
             }
 
             // 4. Standard Stop Loss / Take Profit
-            if (checkStopLoss(price, marketState, symbol)) {
+            if (checkStopLoss(price, marketState, marketConfig, symbol)) {
                 marketState.lastStopLossTime = Date.now();
                 await closePosition('stop_loss', marketState, marketConfig, symbol);
                 return;
             }
-            if (checkTakeProfit(price, marketState, symbol)) {
+            if (checkTakeProfit(price, marketState, marketConfig, symbol)) {
                 await closePosition('take_profit', marketState, marketConfig, symbol);
                 return;
             }
-            if (checkMaxHoldTime(marketState, symbol)) {
+            if (checkMaxHoldTime(marketState, marketConfig, symbol)) {
                 await closePosition('max_hold_time', marketState, marketConfig, symbol);
                 return;
             }
@@ -1026,7 +1031,7 @@ function generateDashboardData() {
     combos.sort((a, b) => b.total - a.total);
 
     return {
-        version: 'v18',
+        version: 'v18.2',
         simulation: CONFIG.SIMULATION_MODE,
         leverage: CONFIG.LEVERAGE,
         uptime,
@@ -1498,9 +1503,9 @@ function startDashboard() {
             let closed = 0;
             for (const symbol of ACTIVE_MARKETS) {
                 const ms = marketStates[symbol];
-                const pos = CONFIG.SIMULATION_MODE ? ms.simulatedPosition : ms.currentPosition;
+                const mc = MARKETS[symbol];
+                const pos = getPosition(ms, mc);
                 if (pos) {
-                    const mc = MARKETS[symbol];
                     await closePosition('manual_close', ms, mc, symbol);
                     closed++;
                 }
@@ -1686,7 +1691,8 @@ async function main() {
             await tradingLoop();
             const hasPos = ACTIVE_MARKETS.some(s => {
                 const ms = marketStates[s];
-                return ms && (CONFIG.SIMULATION_MODE ? ms.simulatedPosition : ms.currentPosition);
+                const mc = MARKETS[s];
+                return ms && getPosition(ms, mc);
             });
             const interval = hasPos ? 2000 : CONFIG.CHECK_INTERVAL_MS;
             setTimeout(dynamicLoop, interval);
@@ -1758,7 +1764,8 @@ async function main() {
             if (krakenFeed) krakenFeed.stop();
             const openPositions = ACTIVE_MARKETS.filter(s => {
                 const ms = marketStates[s];
-                return ms && (CONFIG.SIMULATION_MODE ? ms.simulatedPosition : ms.currentPosition);
+                const mc = MARKETS[s];
+                return ms && getPosition(ms, mc);
             });
             if (openPositions.length > 0) {
                 log(`WARNING: Open positions on: ${openPositions.join(', ')}`);
