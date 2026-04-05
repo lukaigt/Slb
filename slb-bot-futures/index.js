@@ -1537,7 +1537,7 @@ function startDashboard() {
 
 async function main() {
     log('═══════════════════════════════════════════════════════════');
-    log('   SELF-LEARNING BOT v18 - Dynamic TP/SL Learning');
+    log('   SELF-LEARNING BOT v18.2 - Boosted Learning');
     log(`   Data: ${CONFIG.DATA_SOURCE.toUpperCase()} | ${CONFIG.LEVERAGE}x Leverage | Pattern Matching`);
     log('═══════════════════════════════════════════════════════════');
     log(`Mode: ${CONFIG.SIMULATION_MODE ? 'SIMULATION (Paper Trading)' : 'LIVE TRADING'}`);
@@ -1575,7 +1575,7 @@ async function main() {
     startDashboard();
 
     const pmS = patternMemory.getStats();
-    aiBrain.think(`Bot v18 starting — ${CONFIG.DATA_SOURCE.toUpperCase()} data feed | Dynamic TP/SL Learning + Pattern Memory | ${pmS.totalStored} patterns stored | ${pmS.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | 12 indicators per TF`, 'ai_brain');
+    aiBrain.think(`Bot v18.2 starting — ${CONFIG.DATA_SOURCE.toUpperCase()} data feed | Dynamic TP/SL Learning + Pattern Memory | ${pmS.totalStored} patterns stored | ${pmS.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | 12 indicators per TF`, 'ai_brain');
 
     try {
         if (CONFIG.DATA_SOURCE === 'kraken') {
