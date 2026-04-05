@@ -338,6 +338,9 @@ async function openPosition(direction, marketState, marketConfig, symbol) {
     if (CONFIG.SIMULATION_MODE) {
         log(`[${symbol}] [SIM] Opening ${direction} at $${currentPrice.toFixed(4)}`);
         marketState.simulatedPosition = direction;
+    } else if (marketConfig.marketIndex >= 100) {
+        log(`[${symbol}] [SIM] Opening ${direction} at $${currentPrice.toFixed(4)} (Kraken-only market)`);
+        marketState.simulatedPosition = direction;
     } else {
         try {
             const tradeAmount = CONFIG.TRADE_AMOUNT_USDC * marketConfig.positionMultiplier;
@@ -379,7 +382,8 @@ async function openPosition(direction, marketState, marketConfig, symbol) {
 
 async function closePosition(exitReason, marketState, marketConfig, symbol) {
     const currentPrice = marketState.lastPrice;
-    const pos = CONFIG.SIMULATION_MODE ? marketState.simulatedPosition : marketState.currentPosition;
+    const isSimOrKrakenOnly = CONFIG.SIMULATION_MODE || marketConfig.marketIndex >= 100;
+    const pos = isSimOrKrakenOnly ? marketState.simulatedPosition : marketState.currentPosition;
     if (!pos) return true;
 
     if (!marketState.entryPrice || marketState.entryPrice <= 0 || !currentPrice || currentPrice <= 0) {
@@ -405,7 +409,7 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
 
     const result = profitPercent > 0 ? 'WIN' : 'LOSS';
 
-    if (CONFIG.SIMULATION_MODE) {
+    if (isSimOrKrakenOnly) {
         log(`[${symbol}] [SIM] Closing ${pos}: ${result} ${profitPercent.toFixed(2)}%`);
         marketState.simulatedPosition = null;
     } else {
@@ -558,7 +562,7 @@ function resetPositionState(marketState) {
 }
 
 async function syncPositionFromChain(marketState, marketConfig, symbol) {
-    if (CONFIG.SIMULATION_MODE) return;
+    if (CONFIG.SIMULATION_MODE || marketConfig.marketIndex >= 100) return;
     try {
         const user = driftClient.getUser();
         const perpPosition = user.getPerpPosition(marketConfig.marketIndex);
@@ -1097,7 +1101,7 @@ function generateDashboardHTML() {
     let html = `<!DOCTYPE html>
 <html>
 <head>
-    <title>v18 Self-Learning Bot - Dynamic TP/SL</title>
+    <title>v18.2 Self-Learning Bot - Boosted Learning</title>
     <meta charset="UTF-8">
     
     <style>
@@ -1145,7 +1149,7 @@ function generateDashboardHTML() {
 </head>
 <body>
 <div class="container">
-    <h1>Self-Learning Bot <span style="color: #8957e5; font-size: 0.5em; vertical-align: middle;">v18 Dynamic TP/SL</span></h1>
+    <h1>Self-Learning Bot <span style="color: #8957e5; font-size: 0.5em; vertical-align: middle;">v18.2 Boosted Learning</span></h1>
     <div class="subtitle">${d.dataSource === 'kraken' ? 'Kraken Feed' : 'Drift Protocol'} | ${d.leverage}x | ${d.tpSlStats.bestCombo ? 'Best TP/SL: ' + d.tpSlStats.bestCombo.tp.toFixed(2) + '/' + d.tpSlStats.bestCombo.sl.toFixed(2) + '%' : 'TP/SL: Learning...'} | Fee: 0.07% | ${d.pmStats.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | ${d.pmStats.totalStored} patterns | ${d.tpSlStats.isExploiting ? 'TP/SL OPTIMIZING' : 'TP/SL LEARNING (' + d.tpSlStats.learningProgress + '%)'}</div>
 
     <div class="grid">`;
