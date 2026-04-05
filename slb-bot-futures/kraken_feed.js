@@ -7,13 +7,53 @@ const KRAKEN_REST_URL = 'https://api.kraken.com';
 const SYMBOL_MAP = {
     'SOL-PERP': 'SOL/USD',
     'BTC-PERP': 'XBT/USD',
-    'ETH-PERP': 'ETH/USD'
+    'ETH-PERP': 'ETH/USD',
+    'DOGE-PERP': 'XDG/USD',
+    'AVAX-PERP': 'AVAX/USD',
+    'LINK-PERP': 'LINK/USD',
+    'ADA-PERP': 'ADA/USD',
+    'DOT-PERP': 'DOT/USD',
+    'ATOM-PERP': 'ATOM/USD',
+    'NEAR-PERP': 'NEAR/USD',
+    'SUI-PERP': 'SUI/USD',
+    'LTC-PERP': 'LTC/USD',
+    'XMR-PERP': 'XMR/USD',
+    'ALGO-PERP': 'ALGO/USD',
+    'HBAR-PERP': 'HBAR/USD',
+    'TRX-PERP': 'TRX/USD',
+    'RENDER-PERP': 'RENDER/USD',
+    'APT-PERP': 'APT/USD',
+    'UNI-PERP': 'UNI/USD',
+    'ARB-PERP': 'ARB/USD',
+    'OP-PERP': 'OP/USD',
+    'FIL-PERP': 'FIL/USD',
+    'POL-PERP': 'POL/USD'
 };
 
 const REST_PAIR_MAP = {
     'SOL-PERP': 'SOLUSD',
     'BTC-PERP': 'XXBTZUSD',
-    'ETH-PERP': 'XETHZUSD'
+    'ETH-PERP': 'XETHZUSD',
+    'DOGE-PERP': 'XDGUSD',
+    'AVAX-PERP': 'AVAXUSD',
+    'LINK-PERP': 'LINKUSD',
+    'ADA-PERP': 'ADAUSD',
+    'DOT-PERP': 'DOTUSD',
+    'ATOM-PERP': 'ATOMUSD',
+    'NEAR-PERP': 'NEARUSD',
+    'SUI-PERP': 'SUIUSD',
+    'LTC-PERP': 'XLTCZUSD',
+    'XMR-PERP': 'XXMRZUSD',
+    'ALGO-PERP': 'ALGOUSD',
+    'HBAR-PERP': 'HBARUSD',
+    'TRX-PERP': 'TRXUSD',
+    'RENDER-PERP': 'RENDERUSD',
+    'APT-PERP': 'APTUSD',
+    'UNI-PERP': 'UNIUSD',
+    'ARB-PERP': 'ARBUSD',
+    'OP-PERP': 'OPUSD',
+    'FIL-PERP': 'FILUSD',
+    'POL-PERP': 'POLUSD'
 };
 
 class KrakenFeed {
@@ -117,7 +157,8 @@ class KrakenFeed {
 
     async bootstrapHistory() {
         const results = {};
-        for (const symbol of this.symbols) {
+        for (let i = 0; i < this.symbols.length; i++) {
+            const symbol = this.symbols[i];
             const candles = await this.fetchInitialCandles(symbol);
             if (candles.length > 0) {
                 const prices = [];
@@ -135,6 +176,10 @@ class KrakenFeed {
             const book = await this.fetchOrderBookREST(symbol);
             if (book) {
                 this.orderbooks[symbol] = book;
+            }
+
+            if (i < this.symbols.length - 1) {
+                await new Promise(r => setTimeout(r, 1200));
             }
         }
         return results;

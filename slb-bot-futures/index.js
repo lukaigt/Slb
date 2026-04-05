@@ -45,10 +45,31 @@ const CONFIG = {
 const MARKETS = {
     'SOL-PERP': { symbol: 'SOL-PERP', marketIndex: 0, positionMultiplier: 1.0 },
     'BTC-PERP': { symbol: 'BTC-PERP', marketIndex: 1, positionMultiplier: 1.2 },
-    'ETH-PERP': { symbol: 'ETH-PERP', marketIndex: 2, positionMultiplier: 1.0 }
+    'ETH-PERP': { symbol: 'ETH-PERP', marketIndex: 2, positionMultiplier: 1.0 },
+    'DOGE-PERP': { symbol: 'DOGE-PERP', marketIndex: 100, positionMultiplier: 1.0 },
+    'AVAX-PERP': { symbol: 'AVAX-PERP', marketIndex: 101, positionMultiplier: 1.0 },
+    'LINK-PERP': { symbol: 'LINK-PERP', marketIndex: 102, positionMultiplier: 1.0 },
+    'ADA-PERP': { symbol: 'ADA-PERP', marketIndex: 103, positionMultiplier: 1.0 },
+    'DOT-PERP': { symbol: 'DOT-PERP', marketIndex: 104, positionMultiplier: 1.0 },
+    'ATOM-PERP': { symbol: 'ATOM-PERP', marketIndex: 105, positionMultiplier: 1.0 },
+    'NEAR-PERP': { symbol: 'NEAR-PERP', marketIndex: 106, positionMultiplier: 1.0 },
+    'SUI-PERP': { symbol: 'SUI-PERP', marketIndex: 107, positionMultiplier: 1.0 },
+    'LTC-PERP': { symbol: 'LTC-PERP', marketIndex: 108, positionMultiplier: 1.0 },
+    'XMR-PERP': { symbol: 'XMR-PERP', marketIndex: 109, positionMultiplier: 1.0 },
+    'ALGO-PERP': { symbol: 'ALGO-PERP', marketIndex: 110, positionMultiplier: 1.0 },
+    'HBAR-PERP': { symbol: 'HBAR-PERP', marketIndex: 111, positionMultiplier: 1.0 },
+    'TRX-PERP': { symbol: 'TRX-PERP', marketIndex: 112, positionMultiplier: 1.0 },
+    'RENDER-PERP': { symbol: 'RENDER-PERP', marketIndex: 113, positionMultiplier: 1.0 },
+    'APT-PERP': { symbol: 'APT-PERP', marketIndex: 114, positionMultiplier: 1.0 },
+    'UNI-PERP': { symbol: 'UNI-PERP', marketIndex: 115, positionMultiplier: 1.0 },
+    'ARB-PERP': { symbol: 'ARB-PERP', marketIndex: 116, positionMultiplier: 1.0 },
+    'OP-PERP': { symbol: 'OP-PERP', marketIndex: 117, positionMultiplier: 1.0 },
+    'FIL-PERP': { symbol: 'FIL-PERP', marketIndex: 118, positionMultiplier: 1.0 },
+    'POL-PERP': { symbol: 'POL-PERP', marketIndex: 119, positionMultiplier: 1.0 }
 };
 
-const ACTIVE_MARKETS = (process.env.ACTIVE_MARKETS || 'SOL-PERP,BTC-PERP,ETH-PERP').split(',').map(s => s.trim());
+const ALL_MARKETS_DEFAULT = 'SOL-PERP,BTC-PERP,ETH-PERP,DOGE-PERP,AVAX-PERP,LINK-PERP,ADA-PERP,DOT-PERP,ATOM-PERP,NEAR-PERP,SUI-PERP,LTC-PERP,XMR-PERP,ALGO-PERP,HBAR-PERP,TRX-PERP,RENDER-PERP,APT-PERP,UNI-PERP,ARB-PERP,OP-PERP,FIL-PERP,POL-PERP';
+const ACTIVE_MARKETS = (process.env.ACTIVE_MARKETS || ALL_MARKETS_DEFAULT).split(',').map(s => s.trim());
 
 function createEmptyMarketState() {
     return {
@@ -1078,7 +1099,7 @@ function generateDashboardHTML() {
 <head>
     <title>v18 Self-Learning Bot - Dynamic TP/SL</title>
     <meta charset="UTF-8">
-    <meta http-equiv="refresh" content="6">
+    
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0d1117; color: #e6edf3; padding: 10px; font-size: 13px; }
@@ -1184,6 +1205,7 @@ function generateDashboardHTML() {
     }
     html += '<button class="btn btn-red" onclick="if(confirm(&#39;Close all positions?&#39;))botAction(&#39;close-all&#39;)">Close All Positions</button>';
     html += '<button class="btn btn-gray" onclick="if(confirm(&#39;Reset session stats?&#39;))botAction(&#39;reset-stats&#39;)">Reset Stats</button>';
+    html += '<button class="btn btn-gray" onclick="location.reload()" style="margin-top:4px;background:#1f6feb;">Refresh Dashboard</button>';
     html += '<div class="btn-status" id="btnStatus"></div>';
     html += '</div>';
 

@@ -134,8 +134,12 @@ function evaluateSignals(marketState) {
 
     const dominantScore = Math.max(result.longScore, result.shortScore);
 
-    if (dominantScore < 3) {
-        result.failReason = `Only ${dominantScore} signals for ${direction} (need 3+). L:${result.longScore} S:${result.shortScore}`;
+    const pmStats = patternMemory.getStats();
+    const isLearning = pmStats.isLearning;
+    const minSignals = isLearning ? 2 : 3;
+
+    if (dominantScore < minSignals) {
+        result.failReason = `Only ${dominantScore} signals for ${direction} (need ${minSignals}+). L:${result.longScore} S:${result.shortScore}`;
         return result;
     }
 
@@ -144,8 +148,9 @@ function evaluateSignals(marketState) {
         return result;
     }
     const atrPct = (ind1m.atr / price) * 100;
-    if (atrPct < 0.05) {
-        result.failReason = `ATR too low (${atrPct.toFixed(3)}%) — dead market`;
+    const minATR = isLearning ? 0.02 : 0.05;
+    if (atrPct < minATR) {
+        result.failReason = `ATR too low (${atrPct.toFixed(3)}%) — dead market (need ${minATR}%+)`;
         return result;
     }
 
