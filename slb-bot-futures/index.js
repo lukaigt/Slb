@@ -804,9 +804,9 @@ async function processMarket(symbol) {
             const holdMin = marketState.entryTime ? ((Date.now() - marketState.entryTime) / 60000) : 0;
             aiBrain.think(`[${symbol}] Monitoring ${pos} | P&L: ${pnl.toFixed(1)}% | Hold: ${holdMin.toFixed(0)}min | SL: ${marketState.aiStopLoss}% | TP: ${marketState.aiTakeProfit}%`, 'monitor');
 
-            // 1. Emergency Circuit Breaker (-20% P&L)
-            if (pnl <= -20) {
-                aiBrain.think(`[${symbol}] EMERGENCY CIRCUIT BREAKER: P&L at ${pnl.toFixed(1)}% exceeded -20% limit. Force closing.`, 'safety');
+            // 1. Emergency Circuit Breaker (-10% P&L)
+            if (pnl <= -10) {
+                aiBrain.think(`[${symbol}] EMERGENCY CIRCUIT BREAKER: P&L at ${pnl.toFixed(1)}% exceeded -10% limit. Force closing.`, 'safety');
                 await closePosition('circuit_breaker', marketState, marketConfig, symbol);
                 return;
             }
