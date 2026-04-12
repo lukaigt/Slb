@@ -132,6 +132,20 @@ function evaluateSignals(marketState) {
         return result;
     }
 
+    // Hard trend filter: block trades that fight the 15m EMA trend
+    const ind15m = marketState.indicators15m;
+    if (ind15m && ind15m.ema9 != null && ind15m.ema21 != null) {
+        const trend15m = ind15m.ema9 > ind15m.ema21 ? 'UP' : 'DOWN';
+        if (direction === 'SHORT' && trend15m === 'UP') {
+            result.failReason = `Trend filter blocked SHORT — 15m trend is UP (EMA9 ${ind15m.ema9.toFixed(4)} > EMA21 ${ind15m.ema21.toFixed(4)})`;
+            return result;
+        }
+        if (direction === 'LONG' && trend15m === 'DOWN') {
+            result.failReason = `Trend filter blocked LONG — 15m trend is DOWN (EMA9 ${ind15m.ema9.toFixed(4)} < EMA21 ${ind15m.ema21.toFixed(4)})`;
+            return result;
+        }
+    }
+
     const dominantScore = Math.max(result.longScore, result.shortScore);
 
     const pmStats = patternMemory.getStats();
