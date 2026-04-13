@@ -122,6 +122,25 @@ function evaluateSignals(marketState) {
         else if (ind1m.roc > 0.15) { result.signals.roc_overbought = 'SHORT'; result.shortScore++; }
     }
 
+    // Price position vs EMA50 — trend-following signal that fires in sustained moves
+    if (ind1m.ema50 != null && price) {
+        if (price > ind1m.ema50 * 1.001) { result.signals.price_above_ema50 = 'LONG';  result.longScore++;  }
+        else if (price < ind1m.ema50 * 0.999) { result.signals.price_below_ema50 = 'SHORT'; result.shortScore++; }
+    }
+
+    // 1m EMA9 vs EMA21 — short-term trend direction signal
+    if (ind1m.ema9 != null && ind1m.ema21 != null && ind1m.ema9 !== ind1m.ema21) {
+        if (ind1m.ema9 > ind1m.ema21) { result.signals.ema_trend_1m = 'LONG';  result.longScore++;  }
+        else                           { result.signals.ema_trend_1m = 'SHORT'; result.shortScore++; }
+    }
+
+    // 15m EMA alignment — strongest trend-following signal (higher timeframe bias)
+    const ind15m = marketState.indicators15m;
+    if (ind15m && ind15m.ema9 != null && ind15m.ema21 != null && ind15m.ema9 !== ind15m.ema21) {
+        if (ind15m.ema9 > ind15m.ema21) { result.signals.ema_align_15m = 'LONG';  result.longScore++;  }
+        else                             { result.signals.ema_align_15m = 'SHORT'; result.shortScore++; }
+    }
+
     result.totalSignals = Object.keys(result.signals).length;
 
     const direction = result.longScore > result.shortScore ? 'LONG'
@@ -133,7 +152,6 @@ function evaluateSignals(marketState) {
     }
 
     // Hard trend filter: block trades that fight the 15m EMA trend
-    const ind15m = marketState.indicators15m;
     if (ind15m && ind15m.ema9 != null && ind15m.ema21 != null) {
         const trend15m = ind15m.ema9 > ind15m.ema21 ? 'UP' : 'DOWN';
         if (direction === 'SHORT' && trend15m === 'UP') {
@@ -258,6 +276,10 @@ function getSignalDefinitions() {
         { id: 'price_at_high', name: 'Price At High' },
         { id: 'roc_oversold', name: 'ROC Oversold' },
         { id: 'roc_overbought', name: 'ROC Overbought' },
+        { id: 'price_above_ema50', name: 'Price Above EMA50' },
+        { id: 'price_below_ema50', name: 'Price Below EMA50' },
+        { id: 'ema_trend_1m', name: '1m EMA Trend' },
+        { id: 'ema_align_15m', name: '15m EMA Alignment' },
     ];
 }
 

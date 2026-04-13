@@ -319,6 +319,17 @@ function shouldEnter(fingerprint, direction, symbol) {
         };
     }
 
+    // Even in exploitation, allow 20% exploration so the bot never fully freezes.
+    // This lets it keep collecting new data points and adapt to changing markets.
+    if (Math.random() < 0.20) {
+        return {
+            enter: true,
+            mode: 'EXPLORATION',
+            reason: `Pattern below threshold (${(match.winRate * 100).toFixed(0)}% WR, ${match.wins}W/${match.losses}L) — exploring (20% rate) to keep learning.`,
+            matchData: match
+        };
+    }
+
     return {
         enter: false,
         mode: 'PATTERN_REJECT',

@@ -447,12 +447,9 @@ function processCoin(symbol, candles1m) {
         const dominantScore = Math.max(longScore, shortScore);
         if (dominantScore < MIN_SIGNALS) continue;
 
-        // Hard 15m trend filter (same as live bot)
-        if (ind15m.ema9 != null && ind15m.ema21 != null) {
-            const trend15m = ind15m.ema9 > ind15m.ema21 ? 'UP' : 'DOWN';
-            if (direction === 'SHORT' && trend15m === 'UP')   continue;
-            if (direction === 'LONG'  && trend15m === 'DOWN') continue;
-        }
+        // NOTE: No trend filter in backfill — we capture ALL patterns (LONG and SHORT)
+        // regardless of trend direction. The live bot applies the trend filter when trading.
+        // Including all patterns gives the k-NN more data to learn from.
 
         // Determine trend label for fingerprint
         let trend = 'RANGING';
