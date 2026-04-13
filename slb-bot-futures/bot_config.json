@@ -1,18 +1,18 @@
 {
   "version": 2,
-  "lastUpdated": "2026-04-13T20:40:06.220Z",
+  "lastUpdated": "2026-04-13T21:03:58.514Z",
   "dailyLossLimit": 10,
   "maxConsecutiveLosses": 4,
   "maxPositionRiskPercent": 3,
-  "paused": true,
-  "pauseReason": "daily_loss_limit",
+  "paused": false,
+  "pauseReason": null,
   "pausedUntil": null,
   "dailyStats": {
     "date": "2026-04-13",
-    "totalPnl": -10.89450884723972,
-    "trades": 4,
-    "wins": 2,
-    "losses": 2,
-    "consecutiveLosses": 2
+    "totalPnl": 0,
+    "trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "consecutiveLosses": 0
   }
 }
