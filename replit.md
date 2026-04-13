@@ -1,7 +1,7 @@
 # Solana Futures Trading Bot
 
 ## Overview
-This project is a self-learning perpetual futures scalping bot on Solana mainnet using Drift Protocol. The bot trades 23 coins simultaneously: SOL, BTC, ETH, DOGE, AVAX, LINK, ADA, DOT, ATOM, NEAR, SUI, LTC, XMR, ALGO, HBAR, TRX, RENDER, APT, UNI, ARB, OP, FIL, POL. v18.2: Boosted Learning — 20 new coins via Kraken, lowered signal threshold to 2 during learning phase, relaxed ATR gate to 0.02%, expanded TP/SL pool (TP up to 2.5%, SL up to 3.0%), removed auto-refresh. Pattern Memory Engine: 38-dim fingerprints, k-NN matching, persistent data/ storage. Dashboard is server-rendered HTML with manual refresh button. Data source switchable between Kraken (free real-time WebSocket) and Drift DLOB via `DATA_SOURCE` env var.
+This project is a self-learning perpetual futures scalping bot on Solana mainnet using Drift Protocol. The bot trades 23 coins simultaneously: SOL, BTC, ETH, DOGE, AVAX, LINK, ADA, DOT, ATOM, NEAR, SUI, LTC, XMR, ALGO, HBAR, TRX, RENDER, APT, UNI, ARB, OP, FIL, POL. v18.3: Added historical pattern backfill script (`backfill.js`) — downloads 30 days of Kraken OHLCV, replays exact signal engine + indicators, simulates TP/SL outcomes, seeds patterns.json with 10k-20k historical patterns. v18.2: Boosted Learning — 20 new coins via Kraken, lowered signal threshold to 2 during learning phase, relaxed ATR gate to 0.02%, expanded TP/SL pool (TP up to 2.5%, SL up to 3.0%), removed auto-refresh. Pattern Memory Engine: 38-dim fingerprints, k-NN matching, persistent data/ storage. Dashboard is server-rendered HTML with manual refresh button. Data source switchable between Kraken (free real-time WebSocket) and Drift DLOB via `DATA_SOURCE` env var.
 
 ## User Preferences
 - Always ask before modifying code
