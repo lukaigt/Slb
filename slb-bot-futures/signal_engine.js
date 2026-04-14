@@ -168,7 +168,7 @@ function evaluateSignals(marketState) {
 
     const pmStats = patternMemory.getStats();
     const isLearning = pmStats.isLearning;
-    const minSignals = isLearning ? 2 : 3;
+    const minSignals = isLearning ? 2 : 5;
 
     if (dominantScore < minSignals) {
         result.failReason = `Only ${dominantScore} signals for ${direction} (need ${minSignals}+). L:${result.longScore} S:${result.shortScore}`;

@@ -10,7 +10,7 @@ const STATS_FILE = path.join(DATA_DIR, 'learning_stats.json');
 const MIN_TRADES_FOR_LEARNING = 30;
 const SIMILARITY_NEIGHBORS = 10;
 const MIN_NEIGHBORS_FOR_DECISION = 5;
-const WIN_RATE_THRESHOLD = 0.55;
+const WIN_RATE_THRESHOLD = 0.65;
 
 let patterns = { version: 1, trades: [] };
 let learningStats = {
@@ -319,13 +319,13 @@ function shouldEnter(fingerprint, direction, symbol) {
         };
     }
 
-    // Even in exploitation, allow 20% exploration so the bot never fully freezes.
+    // Allow 5% exploration so the bot never fully freezes.
     // This lets it keep collecting new data points and adapt to changing markets.
-    if (Math.random() < 0.20) {
+    if (Math.random() < 0.05) {
         return {
             enter: true,
             mode: 'EXPLORATION',
-            reason: `Pattern below threshold (${(match.winRate * 100).toFixed(0)}% WR, ${match.wins}W/${match.losses}L) — exploring (20% rate) to keep learning.`,
+            reason: `Pattern below threshold (${(match.winRate * 100).toFixed(0)}% WR, ${match.wins}W/${match.losses}L) — exploring (5% rate) to keep learning.`,
             matchData: match
         };
     }
