@@ -106,13 +106,13 @@ function createFingerprint(marketState) {
     fp.rsi_5m = ind5m.rsi != null ? round(ind5m.rsi) : null;
     fp.rsi_15m = ind15m.rsi != null ? round(ind15m.rsi) : null;
 
-    if (ind1m.macd) {
-        fp.macd_hist_1m = round(ind1m.macd.histogram);
-        fp.macd_line_1m = round(ind1m.macd.macd);
-        fp.macd_signal_1m = round(ind1m.macd.signal);
+    if (ind1m.macd && price > 0) {
+        fp.macd_hist_1m = round((ind1m.macd.histogram / price) * 100);
+        fp.macd_line_1m = round((ind1m.macd.macd    / price) * 100);
+        fp.macd_signal_1m = round((ind1m.macd.signal  / price) * 100);
     }
-    if (ind5m.macd) {
-        fp.macd_hist_5m = round(ind5m.macd.histogram);
+    if (ind5m.macd && price > 0) {
+        fp.macd_hist_5m = round((ind5m.macd.histogram / price) * 100);
     }
 
     if (ind1m.ema9 != null && ind1m.ema21 != null && price > 0) {
@@ -208,8 +208,8 @@ function normalizeValue(key, val) {
     if (val == null) return null;
     const ranges = {
         rsi_1m: [0, 100], rsi_5m: [0, 100], rsi_15m: [0, 100],
-        macd_hist_1m: [-0.5, 0.5], macd_hist_5m: [-0.5, 0.5],
-        macd_line_1m: [-1, 1], macd_signal_1m: [-1, 1],
+        macd_hist_1m: [-0.3, 0.3], macd_hist_5m: [-0.3, 0.3],
+        macd_line_1m: [-0.5, 0.5], macd_signal_1m: [-0.5, 0.5],
         ema9_vs_21_1m: [-1, 1], ema9_vs_price_1m: [-1, 1],
         price_vs_ema50_1m: [-2, 2],
         ema9_vs_21_5m: [-1, 1], ema9_vs_21_15m: [-1, 1],
@@ -252,9 +252,36 @@ function calcSimilarity(fp1, fp2) {
 }
 
 function findSimilarTrades(fingerprint, direction, symbol) {
-    const candidates = patterns.trades.filter(t =>
-        t.direction === direction && t.result && t.fingerprint
+    const currentRegime = fingerprint.trend != null ? fingerprint.trend : null;
+
+    // Primary filter: same coin, same direction, same market regime
+    let candidates = patterns.trades.filter(t =>
+        t.direction === direction &&
+        t.symbol === symbol &&
+        t.result &&
+        t.fingerprint &&
+        (currentRegime == null || t.fingerprint.trend == null || t.fingerprint.trend === currentRegime)
     );
+
+    // Fallback 1: same coin + direction, relax regime filter if too few matches
+    if (candidates.length < MIN_NEIGHBORS_FOR_DECISION) {
+        candidates = patterns.trades.filter(t =>
+            t.direction === direction &&
+            t.symbol === symbol &&
+            t.result &&
+            t.fingerprint
+        );
+    }
+
+    // Fallback 2: cross-coin same direction + regime (last resort)
+    if (candidates.length < MIN_NEIGHBORS_FOR_DECISION) {
+        candidates = patterns.trades.filter(t =>
+            t.direction === direction &&
+            t.result &&
+            t.fingerprint &&
+            (currentRegime == null || t.fingerprint.trend == null || t.fingerprint.trend === currentRegime)
+        );
+    }
 
     if (candidates.length === 0) return { neighbors: [], winRate: 0, count: 0 };
 

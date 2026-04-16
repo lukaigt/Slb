@@ -217,8 +217,8 @@ function buildFingerprint(ind1m, ind5m, ind15m, price, prices, sr, trend, hourUT
     fp.rsi_1m  = ind1m.rsi  != null ? r4(ind1m.rsi)  : null;
     fp.rsi_5m  = ind5m.rsi  != null ? r4(ind5m.rsi)  : null;
     fp.rsi_15m = ind15m && ind15m.rsi != null ? r4(ind15m.rsi) : null;
-    if (ind1m.macd)  { fp.macd_hist_1m = r4(ind1m.macd.histogram); fp.macd_line_1m = r4(ind1m.macd.macd); fp.macd_signal_1m = r4(ind1m.macd.signal); }
-    if (ind5m.macd)  { fp.macd_hist_5m = r4(ind5m.macd.histogram); }
+    if (ind1m.macd && price > 0)  { fp.macd_hist_1m = r4((ind1m.macd.histogram / price) * 100); fp.macd_line_1m = r4((ind1m.macd.macd / price) * 100); fp.macd_signal_1m = r4((ind1m.macd.signal / price) * 100); }
+    if (ind5m.macd && price > 0)  { fp.macd_hist_5m = r4((ind5m.macd.histogram / price) * 100); }
     if (ind1m.ema9 != null && ind1m.ema21 != null && price > 0) {
         fp.ema9_vs_21_1m    = r4(((ind1m.ema9 - ind1m.ema21) / price) * 100);
         fp.ema9_vs_price_1m = r4(((ind1m.ema9 - price) / price) * 100);
