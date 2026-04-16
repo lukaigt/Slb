@@ -929,6 +929,8 @@ async function tradingLoop() {
 function generateDashboardData() {
     const stats = tradeMemory.sessionStats;
     const recentTrades = tradeMemory.trades.slice(-50).reverse();
+    const patternTrades = tradeMemory.trades.filter(t => t.entryMode === 'PATTERN_MATCH').slice(-40).reverse();
+    const explorationTrades = tradeMemory.trades.filter(t => t.entryMode === 'EXPLORATION').slice(-40).reverse();
     const winRate = stats.totalTrades > 0 ? (stats.wins / stats.totalTrades * 100).toFixed(1) : '0.0';
     const uptime = formatUptime(Date.now() - botStartTime);
     const heartbeatAgo = Math.round((Date.now() - lastHeartbeat) / 1000);
@@ -1085,6 +1087,20 @@ function generateDashboardData() {
             tp: t.aiTakeProfit,
             simulated: t.simulated,
             triggerSignals: t.triggerSignals || []
+        })),
+        patternTrades: patternTrades.map(t => ({
+            timestamp: t.timestamp, symbol: t.symbol, direction: t.direction,
+            entryPrice: t.entryPrice, exitPrice: t.exitPrice, profitPercent: t.profitPercent,
+            result: t.result, exitReason: t.exitReason, holdTimeMin: t.holdTimeMin,
+            tpSlMode: t.tpSlMode || null, sl: t.aiStopLoss, tp: t.aiTakeProfit,
+            simulated: t.simulated, triggerSignals: t.triggerSignals || []
+        })),
+        explorationTrades: explorationTrades.map(t => ({
+            timestamp: t.timestamp, symbol: t.symbol, direction: t.direction,
+            entryPrice: t.entryPrice, exitPrice: t.exitPrice, profitPercent: t.profitPercent,
+            result: t.result, exitReason: t.exitReason, holdTimeMin: t.holdTimeMin,
+            tpSlMode: t.tpSlMode || null, sl: t.aiStopLoss, tp: t.aiTakeProfit,
+            simulated: t.simulated, triggerSignals: t.triggerSignals || []
         })),
         brainLog: brainLog.slice(0, 60).map(t => ({ time: t.time, category: t.category, message: t.message }))
     };
@@ -1432,28 +1448,61 @@ function generateDashboardHTML() {
     }
     html += '</tbody></table></div></div></div>';
 
-    // Trade History
-    html += '<div class="grid"><div class="card full-width"><h2>Complete Trade History (Last 50)</h2><div style="overflow-x:auto;"><table>';
-    html += '<thead><tr><th>Time</th><th>Market</th><th>Dir</th><th>Entry $</th><th>Exit $</th><th>P&L %</th><th>Result</th><th>Exit Reason</th><th>TP/SL Used</th><th>TP/SL Mode</th><th>Hold</th><th>Entry Mode</th><th>Sim</th><th style="min-width:220px;">Trigger Signals</th></tr></thead><tbody>';
-    if (d.recentTrades.length === 0) html += '<tr><td colspan="14" style="color:#484f58;text-align:center;padding:20px;">No trades yet</td></tr>';
-    for (const t2 of d.recentTrades) {
-        const sigDisp = t2.triggerSignals.length > 0 ? t2.triggerSignals.map(sig2 => { const df2 = d.signalDefs.find(dd2 => dd2.id===sig2); return tag(df2?df2.name:sig2); }).join(' ') : '<span style="color:#484f58;font-size:0.75em;">no data</span>';
-        html += '<tr><td style="font-size:0.75em;">' + new Date(t2.timestamp).toLocaleTimeString() + '<br>' + new Date(t2.timestamp).toLocaleDateString() + '</td>';
-        html += '<td>' + (t2.symbol||'-') + '</td>';
-        html += '<td class="' + (t2.direction==='LONG'?'positive':'negative') + '">' + t2.direction + '</td>';
-        html += '<td>' + usd(t2.entryPrice) + '</td>';
-        html += '<td>' + usd(t2.exitPrice) + '</td>';
-        html += '<td class="' + (t2.profitPercent>=0?'positive':'negative') + '" style="font-weight:bold;">' + (t2.profitPercent>=0?'+':'') + t2.profitPercent.toFixed(2) + '%</td>';
-        html += '<td class="' + (t2.result==='WIN'?'positive':'negative') + '" style="font-weight:bold;">' + t2.result + '</td>';
-        html += '<td>' + t2.exitReason + '</td>';
-        html += '<td style="font-size:0.78em;">' + (t2.tp!=null?'TP:'+t2.tp.toFixed(2)+' SL:'+t2.sl.toFixed(2):'-') + '</td>';
-        html += '<td>' + (t2.tpSlMode ? tag(t2.tpSlMode) : '-') + '</td>';
-        html += '<td>' + (t2.holdTimeMin||'?') + 'm</td>';
-        html += '<td>' + tag(t2.entryMode) + '</td>';
-        html += '<td>' + (t2.simulated?'SIM':'LIVE') + '</td>';
-        html += '<td>' + sigDisp + '</td></tr>';
+    // Trade History — split into Pattern Match vs Exploration
+    function tradeTableRows(trades) {
+        if (trades.length === 0) return '<tr><td colspan="13" style="color:#484f58;text-align:center;padding:20px;">No trades yet</td></tr>';
+        let rows = '';
+        for (const t2 of trades) {
+            const sigDisp = t2.triggerSignals.length > 0 ? t2.triggerSignals.map(sig2 => { const df2 = d.signalDefs.find(dd2 => dd2.id===sig2); return tag(df2?df2.name:sig2); }).join(' ') : '<span style="color:#484f58;font-size:0.75em;">no data</span>';
+            rows += '<tr><td style="font-size:0.75em;">' + new Date(t2.timestamp).toLocaleTimeString() + '<br>' + new Date(t2.timestamp).toLocaleDateString() + '</td>';
+            rows += '<td>' + (t2.symbol||'-') + '</td>';
+            rows += '<td class="' + (t2.direction==='LONG'?'positive':'negative') + '">' + t2.direction + '</td>';
+            rows += '<td>' + usd(t2.entryPrice) + '</td>';
+            rows += '<td>' + usd(t2.exitPrice) + '</td>';
+            rows += '<td class="' + (t2.profitPercent>=0?'positive':'negative') + '" style="font-weight:bold;">' + (t2.profitPercent>=0?'+':'') + t2.profitPercent.toFixed(2) + '%</td>';
+            rows += '<td class="' + (t2.result==='WIN'?'positive':'negative') + '" style="font-weight:bold;">' + t2.result + '</td>';
+            rows += '<td>' + t2.exitReason + '</td>';
+            rows += '<td style="font-size:0.78em;">' + (t2.tp!=null?'TP:'+t2.tp.toFixed(2)+' SL:'+t2.sl.toFixed(2):'-') + '</td>';
+            rows += '<td>' + (t2.holdTimeMin||'?') + 'm</td>';
+            rows += '<td>' + (t2.simulated?'SIM':'LIVE') + '</td>';
+            rows += '<td>' + sigDisp + '</td></tr>';
+        }
+        return rows;
     }
-    html += '</tbody></table></div></div></div>';
+    function tradeSummary(trades) {
+        if (trades.length === 0) return '<p style="color:#484f58;font-size:0.85em;">No trades recorded yet.</p>';
+        const wins = trades.filter(t => t.result === 'WIN').length;
+        const losses = trades.filter(t => t.result === 'LOSS').length;
+        const total = wins + losses;
+        const wr = total > 0 ? (wins / total * 100).toFixed(1) : '0.0';
+        const avgPnl = total > 0 ? (trades.reduce((s, t) => s + (t.profitPercent||0), 0) / total).toFixed(2) : '0.00';
+        const wrColor = parseFloat(wr) >= 50 ? '#3fb950' : parseFloat(wr) >= 40 ? '#d29922' : '#f85149';
+        const pnlColor = parseFloat(avgPnl) >= 0 ? '#3fb950' : '#f85149';
+        return `<div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:10px;font-size:0.88em;">
+            <span>Wins: <strong class="positive">${wins}</strong></span>
+            <span>Losses: <strong class="negative">${losses}</strong></span>
+            <span>Win Rate: <strong style="color:${wrColor}">${wr}%</strong></span>
+            <span>Avg P&amp;L: <strong style="color:${pnlColor}">${parseFloat(avgPnl)>=0?'+':''}${avgPnl}%</strong></span>
+            <span style="color:#484f58">(last ${trades.length} shown)</span>
+        </div>`;
+    }
+    const tradeTableHeader = '<thead><tr><th>Time</th><th>Market</th><th>Dir</th><th>Entry $</th><th>Exit $</th><th>P&L %</th><th>Result</th><th>Exit Reason</th><th>TP/SL</th><th>Hold</th><th>Sim</th><th style="min-width:200px;">Signals</th></tr></thead>';
+
+    html += '<div class="grid">';
+    html += '<div class="card full-width" style="background:#0d1117;border:2px solid #238636;">';
+    html += '<h2 style="color:#3fb950;">Pattern Match Trades — Bot Used Learned Patterns</h2>';
+    html += '<p style="color:#8b949e;font-size:0.82em;margin-bottom:8px;">These trades were approved because similar past patterns showed a positive win rate. This is the bot\'s learning in action — pattern memory decided to enter.</p>';
+    html += tradeSummary(d.patternTrades);
+    html += '<div style="overflow-x:auto;"><table>' + tradeTableHeader + '<tbody>' + tradeTableRows(d.patternTrades) + '</tbody></table></div>';
+    html += '</div></div>';
+
+    html += '<div class="grid">';
+    html += '<div class="card full-width" style="background:#0d1117;border:2px solid #9e6a03;">';
+    html += '<h2 style="color:#d29922;">Exploration Trades — Collecting Data (No Pattern Filter)</h2>';
+    html += '<p style="color:#8b949e;font-size:0.82em;margin-bottom:8px;">These trades entered freely to collect data — pattern memory had no confirmed edge yet for this setup. Results here train the pattern engine but do not reflect learned behavior.</p>';
+    html += tradeSummary(d.explorationTrades);
+    html += '<div style="overflow-x:auto;"><table>' + tradeTableHeader + '<tbody>' + tradeTableRows(d.explorationTrades) + '</tbody></table></div>';
+    html += '</div></div>';
 
     // Button script
     html += `
