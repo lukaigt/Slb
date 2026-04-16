@@ -2,6 +2,48 @@
 
 const patternMemory = require('./pattern_memory');
 
+// Each category counts as ONE independent vote in the signal threshold check.
+// Prevents correlated oscillators (RSI/CCI/WilliamsR/BB all oversold at once)
+// from satisfying the threshold alone. Requires genuinely different market
+// forces to agree before a trade fires.
+const SIGNAL_CATEGORIES = {
+    // Oscillator — all measure "price has recently dropped/risen"
+    rsi_oversold_1m:     'oscillator',
+    rsi_overbought_1m:   'oscillator',
+    stoch_bounce_1m:     'oscillator',
+    stoch_drop_1m:       'oscillator',
+    bb_lower_1m:         'oscillator',
+    bb_upper_1m:         'oscillator',
+    cci_oversold_1m:     'oscillator',
+    cci_overbought_1m:   'oscillator',
+    willr_oversold_1m:   'oscillator',
+    willr_overbought_1m: 'oscillator',
+    roc_oversold:        'oscillator',
+    roc_overbought:      'oscillator',
+    price_at_low:        'oscillator',
+    price_at_high:       'oscillator',
+    // Momentum — longer timeframe or divergence-based
+    rsi_oversold_5m:     'momentum',
+    rsi_overbought_5m:   'momentum',
+    macd_bull_div:       'momentum',
+    macd_bear_div:       'momentum',
+    // Trend — EMA-based direction across timeframes
+    ema_trend_1m:        'trend',
+    ema_trend_5m:        'trend',
+    ema_align_15m:       'trend',
+    price_above_ema50:   'trend',
+    price_below_ema50:   'trend',
+    // Strength — trend momentum quality
+    adx_bull_1m:         'strength',
+    adx_bear_1m:         'strength',
+    // Structure — price near key S/R level
+    near_support:        'structure',
+    near_resistance:     'structure',
+    // Flow — orderbook pressure
+    orderbook_buy:       'flow',
+    orderbook_sell:      'flow',
+};
+
 function evaluateSignals(marketState) {
     const ind1m = marketState.indicators1m;
     const ind5m = marketState.indicators5m;
@@ -143,11 +185,28 @@ function evaluateSignals(marketState) {
 
     result.totalSignals = Object.keys(result.signals).length;
 
-    const direction = result.longScore > result.shortScore ? 'LONG'
-        : result.shortScore > result.longScore ? 'SHORT' : null;
+    // ── Category scoring ─────────────────────────────────────────────────────
+    // Each category counts as ONE independent vote regardless of how many
+    // individual signals fire within it. Prevents 7 correlated oscillators
+    // satisfying the threshold alone.
+    const longCats = new Set();
+    const shortCats = new Set();
+    for (const [sig, dir] of Object.entries(result.signals)) {
+        const cat = SIGNAL_CATEGORIES[sig];
+        if (!cat) continue;
+        if (dir === 'LONG') longCats.add(cat);
+        else if (dir === 'SHORT') shortCats.add(cat);
+    }
+    result.longCategoryScore  = longCats.size;
+    result.shortCategoryScore = shortCats.size;
+    result.longCategories     = [...longCats];
+    result.shortCategories    = [...shortCats];
+
+    const direction = result.longCategoryScore > result.shortCategoryScore ? 'LONG'
+        : result.shortCategoryScore > result.longCategoryScore ? 'SHORT' : null;
 
     if (!direction) {
-        result.failReason = `Signals split L:${result.longScore} S:${result.shortScore}`;
+        result.failReason = `Categories split L:${result.longCategoryScore} S:${result.shortCategoryScore}`;
         return result;
     }
 
@@ -164,14 +223,14 @@ function evaluateSignals(marketState) {
         }
     }
 
-    const dominantScore = Math.max(result.longScore, result.shortScore);
+    const dominantCatScore = direction === 'LONG' ? result.longCategoryScore : result.shortCategoryScore;
 
     const pmStats = patternMemory.getStats();
     const isLearning = pmStats.isLearning;
-    const minSignals = isLearning ? 2 : 5;
+    const minCategories = isLearning ? 2 : 4;
 
-    if (dominantScore < minSignals) {
-        result.failReason = `Only ${dominantScore} signals for ${direction} (need ${minSignals}+). L:${result.longScore} S:${result.shortScore}`;
+    if (dominantCatScore < minCategories) {
+        result.failReason = `Only ${dominantCatScore} independent signal categories for ${direction} (need ${minCategories}+). Categories: ${[...(direction === 'LONG' ? longCats : shortCats)].join(', ')}`;
         return result;
     }
 
@@ -203,13 +262,13 @@ function evaluateSignals(marketState) {
     result.direction = direction;
     result.entryMode = decision.mode;
     result.patternMatch = decision.matchData;
-    result.confidence = Math.min(0.95, 0.50 + (dominantScore * 0.05));
+    result.confidence = Math.min(0.95, 0.50 + (dominantCatScore * 0.10));
 
     const activeSignals = Object.entries(result.signals)
         .filter(([, dir]) => dir === direction)
         .map(([sig]) => sig);
 
-    result.reason = `${direction} | ${dominantScore} signals | ${decision.mode} | ${activeSignals.join(', ')}`;
+    result.reason = `${direction} | ${dominantCatScore} categories | ${decision.mode} | ${activeSignals.join(', ')}`;
 
     return result;
 }
@@ -289,5 +348,6 @@ module.exports = {
     evaluateSignals,
     getSignalDefinitions,
     SIGNAL_DEFINITIONS,
+    SIGNAL_CATEGORIES,
     buildSnapshot
 };
