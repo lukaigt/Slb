@@ -254,34 +254,16 @@ function calcSimilarity(fp1, fp2) {
 function findSimilarTrades(fingerprint, direction, symbol) {
     const currentRegime = fingerprint.trend != null ? fingerprint.trend : null;
 
-    // Primary filter: same coin, same direction, same market regime
-    let candidates = patterns.trades.filter(t =>
+    // Strict filter: same coin + same direction + same regime.
+    // If too few results, shouldEnter() falls through to exploration — intentional.
+    // We never cross coin boundaries or regime boundaries to pad the candidate pool.
+    const candidates = patterns.trades.filter(t =>
         t.direction === direction &&
         t.symbol === symbol &&
         t.result &&
         t.fingerprint &&
         (currentRegime == null || t.fingerprint.trend == null || t.fingerprint.trend === currentRegime)
     );
-
-    // Fallback 1: same coin + direction, relax regime filter if too few matches
-    if (candidates.length < MIN_NEIGHBORS_FOR_DECISION) {
-        candidates = patterns.trades.filter(t =>
-            t.direction === direction &&
-            t.symbol === symbol &&
-            t.result &&
-            t.fingerprint
-        );
-    }
-
-    // Fallback 2: cross-coin same direction + regime (last resort)
-    if (candidates.length < MIN_NEIGHBORS_FOR_DECISION) {
-        candidates = patterns.trades.filter(t =>
-            t.direction === direction &&
-            t.result &&
-            t.fingerprint &&
-            (currentRegime == null || t.fingerprint.trend == null || t.fingerprint.trend === currentRegime)
-        );
-    }
 
     if (candidates.length === 0) return { neighbors: [], winRate: 0, count: 0 };
 
