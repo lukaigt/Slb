@@ -26,6 +26,7 @@ const path  = require('path');
 const https = require('https');
 
 const { calculateAllIndicators, findSupportResistance } = require('./indicators');
+const { computeCategoryScores } = require('./signal_engine');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const TP_PCT           = 0.35;
@@ -124,89 +125,92 @@ function findCandleBefore(sorted, targetTime) {
 }
 
 // ── Signal Evaluator (mirrors signal_engine.js, no patternMemory dep) ─────────
+// Uses the same category-based deduplication: correlated oscillators that all
+// fire together (rsi, cci, willr, bb, stoch, roc, price_at_low) count as ONE
+// confirmation (oscillator_1m), not as five separate votes.
 function evaluateSignals(ind1m, ind5m, ind15m, prices, sr, price) {
     if (!ind1m || !ind1m.ready || !ind5m || !ind5m.ready) return null;
 
-    let longScore = 0, shortScore = 0;
     const signals = {};
 
     if (ind1m.rsi != null) {
-        if (ind1m.rsi <= 30)      { signals.rsi_oversold_1m   = 'LONG';  longScore++;  }
-        else if (ind1m.rsi >= 70) { signals.rsi_overbought_1m = 'SHORT'; shortScore++; }
+        if (ind1m.rsi <= 30)      signals.rsi_oversold_1m   = 'LONG';
+        else if (ind1m.rsi >= 70) signals.rsi_overbought_1m = 'SHORT';
     }
     if (ind5m.rsi != null) {
-        if (ind5m.rsi <= 35)      { signals.rsi_oversold_5m   = 'LONG';  longScore++;  }
-        else if (ind5m.rsi >= 65) { signals.rsi_overbought_5m = 'SHORT'; shortScore++; }
+        if (ind5m.rsi <= 35)      signals.rsi_oversold_5m   = 'LONG';
+        else if (ind5m.rsi >= 65) signals.rsi_overbought_5m = 'SHORT';
     }
     if (ind1m.stochRSI) {
         const { k, d } = ind1m.stochRSI;
-        if (k < 20 && k > d)      { signals.stoch_bounce_1m = 'LONG';  longScore++;  }
-        else if (k > 80 && k < d) { signals.stoch_drop_1m   = 'SHORT'; shortScore++; }
+        if (k < 20 && k > d)      signals.stoch_bounce_1m = 'LONG';
+        else if (k > 80 && k < d) signals.stoch_drop_1m   = 'SHORT';
     }
     if (ind1m.bollinger && price) {
         const rng = ind1m.bollinger.upper - ind1m.bollinger.lower;
         if (rng > 0) {
             const pos = (price - ind1m.bollinger.lower) / rng;
-            if (pos <= 0.05)      { signals.bb_lower_1m = 'LONG';  longScore++;  }
-            else if (pos >= 0.95) { signals.bb_upper_1m = 'SHORT'; shortScore++; }
+            if (pos <= 0.05)      signals.bb_lower_1m = 'LONG';
+            else if (pos >= 0.95) signals.bb_upper_1m = 'SHORT';
         }
     }
     if (ind1m.cci != null) {
-        if (ind1m.cci <= -100)     { signals.cci_oversold_1m   = 'LONG';  longScore++;  }
-        else if (ind1m.cci >= 100) { signals.cci_overbought_1m = 'SHORT'; shortScore++; }
+        if (ind1m.cci <= -100)     signals.cci_oversold_1m   = 'LONG';
+        else if (ind1m.cci >= 100) signals.cci_overbought_1m = 'SHORT';
     }
     if (ind1m.willR != null) {
-        if (ind1m.willR <= -80)      { signals.willr_oversold_1m   = 'LONG';  longScore++;  }
-        else if (ind1m.willR >= -20) { signals.willr_overbought_1m = 'SHORT'; shortScore++; }
+        if (ind1m.willR <= -80)      signals.willr_oversold_1m   = 'LONG';
+        else if (ind1m.willR >= -20) signals.willr_overbought_1m = 'SHORT';
     }
     if (ind1m.macd && prices.length >= 8) {
         const pt   = prices[prices.length - 1] - prices[prices.length - 8];
         const hist = ind1m.macd.histogram;
-        if (pt < 0 && hist > 0)      { signals.macd_bull_div = 'LONG';  longScore++;  }
-        else if (pt > 0 && hist < 0) { signals.macd_bear_div = 'SHORT'; shortScore++; }
+        if (pt < 0 && hist > 0)      signals.macd_bull_div = 'LONG';
+        else if (pt > 0 && hist < 0) signals.macd_bear_div = 'SHORT';
     }
     if (ind5m.ema9 != null && ind5m.ema21 != null && ind5m.ema9 !== ind5m.ema21) {
-        if (ind5m.ema9 > ind5m.ema21) { signals.ema_trend_5m = 'LONG';  longScore++;  }
-        else                           { signals.ema_trend_5m = 'SHORT'; shortScore++; }
+        if (ind5m.ema9 > ind5m.ema21) signals.ema_trend_5m = 'LONG';
+        else                           signals.ema_trend_5m = 'SHORT';
     }
     if (ind1m.adx && ind1m.adx.adx > 20) {
-        if (ind1m.adx.plusDI > ind1m.adx.minusDI)      { signals.adx_bull_1m = 'LONG';  longScore++;  }
-        else if (ind1m.adx.minusDI > ind1m.adx.plusDI) { signals.adx_bear_1m = 'SHORT'; shortScore++; }
+        if (ind1m.adx.plusDI > ind1m.adx.minusDI)      signals.adx_bull_1m = 'LONG';
+        else if (ind1m.adx.minusDI > ind1m.adx.plusDI) signals.adx_bear_1m = 'SHORT';
     }
     if (sr && price) {
         let sd = Infinity, rd = Infinity;
         if (sr.supports)    for (const s of sr.supports)    { const d = Math.abs(s.distancePercent); if (d < 0.30 && s.strength !== 'WEAK' && d < sd) sd = d; }
         if (sr.resistances) for (const r of sr.resistances) { const d = Math.abs(r.distancePercent); if (d < 0.30 && r.strength !== 'WEAK' && d < rd) rd = d; }
-        if (sd < rd && sd < Infinity)      { signals.near_support    = 'LONG';  longScore++;  }
-        else if (rd < sd && rd < Infinity) { signals.near_resistance = 'SHORT'; shortScore++; }
+        if (sd < rd && sd < Infinity)      signals.near_support    = 'LONG';
+        else if (rd < sd && rd < Infinity) signals.near_resistance = 'SHORT';
     }
     if (prices.length >= 8) {
         const lb = prices.slice(-8);
         const mx = Math.max(...lb), mn = Math.min(...lb), rng = mx - mn;
         if (rng > 0) {
             const pos = (price - mn) / rng;
-            if (pos <= 0.10)      { signals.price_at_low  = 'LONG';  longScore++;  }
-            else if (pos >= 0.90) { signals.price_at_high = 'SHORT'; shortScore++; }
+            if (pos <= 0.10)      signals.price_at_low  = 'LONG';
+            else if (pos >= 0.90) signals.price_at_high = 'SHORT';
         }
     }
     if (ind1m.roc != null) {
-        if (ind1m.roc < -0.15)      { signals.roc_oversold   = 'LONG';  longScore++;  }
-        else if (ind1m.roc > 0.15)  { signals.roc_overbought = 'SHORT'; shortScore++; }
+        if (ind1m.roc < -0.15)     signals.roc_oversold   = 'LONG';
+        else if (ind1m.roc > 0.15) signals.roc_overbought = 'SHORT';
     }
-    // Trend-following signals (from updated signal_engine.js)
     if (ind1m.ema50 != null && price) {
-        if (price > ind1m.ema50 * 1.001)       { signals.price_above_ema50 = 'LONG';  longScore++;  }
-        else if (price < ind1m.ema50 * 0.999)  { signals.price_below_ema50 = 'SHORT'; shortScore++; }
+        if (price > ind1m.ema50 * 1.001)      signals.price_above_ema50 = 'LONG';
+        else if (price < ind1m.ema50 * 0.999) signals.price_below_ema50 = 'SHORT';
     }
     if (ind1m.ema9 != null && ind1m.ema21 != null && ind1m.ema9 !== ind1m.ema21) {
-        if (ind1m.ema9 > ind1m.ema21) { signals.ema_trend_1m = 'LONG';  longScore++;  }
-        else                           { signals.ema_trend_1m = 'SHORT'; shortScore++; }
+        if (ind1m.ema9 > ind1m.ema21) signals.ema_trend_1m = 'LONG';
+        else                           signals.ema_trend_1m = 'SHORT';
     }
     if (ind15m && ind15m.ema9 != null && ind15m.ema21 != null && ind15m.ema9 !== ind15m.ema21) {
-        if (ind15m.ema9 > ind15m.ema21) { signals.ema_align_15m = 'LONG';  longScore++;  }
-        else                             { signals.ema_align_15m = 'SHORT'; shortScore++; }
+        if (ind15m.ema9 > ind15m.ema21) signals.ema_align_15m = 'LONG';
+        else                             signals.ema_align_15m = 'SHORT';
     }
 
+    // Deduplicate by category: correlated signals count as one.
+    const { longScore, shortScore } = computeCategoryScores(signals);
     const direction = longScore > shortScore ? 'LONG' : shortScore > longScore ? 'SHORT' : null;
     return { direction, longScore, shortScore, signals };
 }

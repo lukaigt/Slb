@@ -2,47 +2,89 @@
 
 const patternMemory = require('./pattern_memory');
 
-// Each category counts as ONE independent vote in the signal threshold check.
-// Prevents correlated oscillators (RSI/CCI/WilliamsR/BB all oversold at once)
-// from satisfying the threshold alone. Requires genuinely different market
-// forces to agree before a trade fires.
+// Signal categories: signals within the same category are correlated and
+// should count as only ONE confirmation, regardless of how many fire.
+// This prevents 7 oscillators all screaming "oversold" from satisfying
+// the 5-signal threshold on their own.
 const SIGNAL_CATEGORIES = {
-    // Oscillator — all measure "price has recently dropped/risen"
-    rsi_oversold_1m:     'oscillator',
-    rsi_overbought_1m:   'oscillator',
-    stoch_bounce_1m:     'oscillator',
-    stoch_drop_1m:       'oscillator',
-    bb_lower_1m:         'oscillator',
-    bb_upper_1m:         'oscillator',
-    cci_oversold_1m:     'oscillator',
-    cci_overbought_1m:   'oscillator',
-    willr_oversold_1m:   'oscillator',
-    willr_overbought_1m: 'oscillator',
-    roc_oversold:        'oscillator',
-    roc_overbought:      'oscillator',
-    price_at_low:        'oscillator',
-    price_at_high:       'oscillator',
-    // Momentum — longer timeframe or divergence-based
-    rsi_oversold_5m:     'momentum',
-    rsi_overbought_5m:   'momentum',
-    macd_bull_div:       'momentum',
-    macd_bear_div:       'momentum',
-    // Trend — EMA-based direction across timeframes
-    ema_trend_1m:        'trend',
-    ema_trend_5m:        'trend',
-    ema_align_15m:       'trend',
-    price_above_ema50:   'trend',
-    price_below_ema50:   'trend',
-    // Strength — trend momentum quality
-    adx_bull_1m:         'strength',
-    adx_bear_1m:         'strength',
-    // Structure — price near key S/R level
-    near_support:        'structure',
-    near_resistance:     'structure',
-    // Flow — orderbook pressure
-    orderbook_buy:       'flow',
-    orderbook_sell:      'flow',
+    // All 1m oscillators measure "price dropped/rose recently" — highly correlated
+    oscillator_1m: [
+        'rsi_oversold_1m', 'rsi_overbought_1m',
+        'stoch_bounce_1m', 'stoch_drop_1m',
+        'cci_oversold_1m', 'cci_overbought_1m',
+        'willr_oversold_1m', 'willr_overbought_1m',
+        'bb_lower_1m', 'bb_upper_1m',
+        'price_at_low', 'price_at_high',
+        'roc_oversold', 'roc_overbought',
+    ],
+    // 5m timeframe momentum (independent timeframe)
+    oscillator_5m: [
+        'rsi_oversold_5m', 'rsi_overbought_5m',
+    ],
+    // Short-term trend: 1m EMA crossover
+    trend_1m: [
+        'ema_trend_1m',
+    ],
+    // Medium-term trend: 5m EMA crossover
+    trend_5m: [
+        'ema_trend_5m',
+    ],
+    // Price position vs longer-term EMA
+    price_vs_ema50: [
+        'price_above_ema50', 'price_below_ema50',
+    ],
+    // MACD divergence — momentum vs price
+    macd_divergence: [
+        'macd_bull_div', 'macd_bear_div',
+    ],
+    // ADX directional strength
+    adx_strength: [
+        'adx_bull_1m', 'adx_bear_1m',
+    ],
+    // Orderbook imbalance — supply/demand
+    orderbook: [
+        'orderbook_buy', 'orderbook_sell',
+    ],
+    // Support/resistance proximity — structure
+    support_resistance: [
+        'near_support', 'near_resistance',
+    ],
+    // Higher timeframe trend alignment
+    trend_15m: [
+        'ema_align_15m',
+    ],
 };
+
+// Reverse map: signal name -> category name (built once at startup)
+const SIGNAL_TO_CATEGORY = {};
+for (const [cat, sigs] of Object.entries(SIGNAL_CATEGORIES)) {
+    for (const sig of sigs) SIGNAL_TO_CATEGORY[sig] = cat;
+}
+
+// Given the raw signals map, compute scores by counting at most ONE vote per
+// category. Returns { longScore, shortScore, activeCategories }.
+function computeCategoryScores(signals) {
+    const categoryVotes = {};
+
+    for (const [sigName, dir] of Object.entries(signals)) {
+        if (dir === 'NEUTRAL') continue;
+        const cat = SIGNAL_TO_CATEGORY[sigName] || sigName; // uncategorized → its own category
+        if (!categoryVotes[cat]) categoryVotes[cat] = { LONG: 0, SHORT: 0 };
+        if (dir === 'LONG') categoryVotes[cat].LONG++;
+        else if (dir === 'SHORT') categoryVotes[cat].SHORT++;
+    }
+
+    let longScore = 0, shortScore = 0;
+    const activeCategories = {};
+
+    for (const [cat, votes] of Object.entries(categoryVotes)) {
+        if (votes.LONG > votes.SHORT) { longScore++; activeCategories[cat] = 'LONG'; }
+        else if (votes.SHORT > votes.LONG) { shortScore++; activeCategories[cat] = 'SHORT'; }
+        // Tie within a category counts as nothing
+    }
+
+    return { longScore, shortScore, activeCategories };
+}
 
 function evaluateSignals(marketState) {
     const ind1m = marketState.indicators1m;
@@ -60,6 +102,7 @@ function evaluateSignals(marketState) {
         longScore: 0,
         shortScore: 0,
         totalSignals: 0,
+        activeCategories: {},
         reason: '',
         failReason: '',
         confidence: 0,
@@ -74,64 +117,68 @@ function evaluateSignals(marketState) {
         return result;
     }
 
+    // ── Raw signal computation ─────────────────────────────────────────────
+    // All signals are computed as before. Scores are NOT incremented here —
+    // scoring happens after deduplication by category below.
+
     if (ind1m.rsi != null) {
-        if (ind1m.rsi <= 30) { result.signals.rsi_oversold_1m = 'LONG'; result.longScore++; }
-        else if (ind1m.rsi >= 70) { result.signals.rsi_overbought_1m = 'SHORT'; result.shortScore++; }
-        if (ind1m.rsi >= 40 && ind1m.rsi <= 60) { result.signals.rsi_neutral_1m = 'NEUTRAL'; }
+        if (ind1m.rsi <= 30) result.signals.rsi_oversold_1m = 'LONG';
+        else if (ind1m.rsi >= 70) result.signals.rsi_overbought_1m = 'SHORT';
+        if (ind1m.rsi >= 40 && ind1m.rsi <= 60) result.signals.rsi_neutral_1m = 'NEUTRAL';
     }
 
     if (ind5m.rsi != null) {
-        if (ind5m.rsi <= 35) { result.signals.rsi_oversold_5m = 'LONG'; result.longScore++; }
-        else if (ind5m.rsi >= 65) { result.signals.rsi_overbought_5m = 'SHORT'; result.shortScore++; }
+        if (ind5m.rsi <= 35) result.signals.rsi_oversold_5m = 'LONG';
+        else if (ind5m.rsi >= 65) result.signals.rsi_overbought_5m = 'SHORT';
     }
 
     if (ind1m.stochRSI) {
         const k = ind1m.stochRSI.k, d = ind1m.stochRSI.d;
-        if (k < 20 && k > d) { result.signals.stoch_bounce_1m = 'LONG'; result.longScore++; }
-        else if (k > 80 && k < d) { result.signals.stoch_drop_1m = 'SHORT'; result.shortScore++; }
+        if (k < 20 && k > d) result.signals.stoch_bounce_1m = 'LONG';
+        else if (k > 80 && k < d) result.signals.stoch_drop_1m = 'SHORT';
     }
 
     if (ind1m.bollinger && price) {
         const range = ind1m.bollinger.upper - ind1m.bollinger.lower;
         if (range > 0) {
             const pos = (price - ind1m.bollinger.lower) / range;
-            if (pos <= 0.05) { result.signals.bb_lower_1m = 'LONG'; result.longScore++; }
-            else if (pos >= 0.95) { result.signals.bb_upper_1m = 'SHORT'; result.shortScore++; }
+            if (pos <= 0.05) result.signals.bb_lower_1m = 'LONG';
+            else if (pos >= 0.95) result.signals.bb_upper_1m = 'SHORT';
         }
     }
 
     if (ind1m.cci != null) {
-        if (ind1m.cci <= -100) { result.signals.cci_oversold_1m = 'LONG'; result.longScore++; }
-        else if (ind1m.cci >= 100) { result.signals.cci_overbought_1m = 'SHORT'; result.shortScore++; }
+        if (ind1m.cci <= -100) result.signals.cci_oversold_1m = 'LONG';
+        else if (ind1m.cci >= 100) result.signals.cci_overbought_1m = 'SHORT';
     }
 
     if (ind1m.willR != null) {
-        if (ind1m.willR <= -80) { result.signals.willr_oversold_1m = 'LONG'; result.longScore++; }
-        else if (ind1m.willR >= -20) { result.signals.willr_overbought_1m = 'SHORT'; result.shortScore++; }
+        if (ind1m.willR <= -80) result.signals.willr_oversold_1m = 'LONG';
+        else if (ind1m.willR >= -20) result.signals.willr_overbought_1m = 'SHORT';
     }
 
     if (ind1m.macd && prices.length >= 8) {
         const priceTrend = prices[prices.length - 1] - prices[prices.length - 8];
         const hist = ind1m.macd.histogram;
-        if (priceTrend < 0 && hist > 0) { result.signals.macd_bull_div = 'LONG'; result.longScore++; }
-        else if (priceTrend > 0 && hist < 0) { result.signals.macd_bear_div = 'SHORT'; result.shortScore++; }
+        if (priceTrend < 0 && hist > 0) result.signals.macd_bull_div = 'LONG';
+        else if (priceTrend > 0 && hist < 0) result.signals.macd_bear_div = 'SHORT';
     }
 
     if (ind5m.ema9 != null && ind5m.ema21 != null && ind5m.ema9 !== ind5m.ema21) {
-        if (ind5m.ema9 > ind5m.ema21) { result.signals.ema_trend_5m = 'LONG'; result.longScore++; }
-        else { result.signals.ema_trend_5m = 'SHORT'; result.shortScore++; }
+        if (ind5m.ema9 > ind5m.ema21) result.signals.ema_trend_5m = 'LONG';
+        else result.signals.ema_trend_5m = 'SHORT';
     }
 
     if (ind1m.adx) {
         if (ind1m.adx.adx > 20) {
-            if (ind1m.adx.plusDI > ind1m.adx.minusDI) { result.signals.adx_bull_1m = 'LONG'; result.longScore++; }
-            else if (ind1m.adx.minusDI > ind1m.adx.plusDI) { result.signals.adx_bear_1m = 'SHORT'; result.shortScore++; }
+            if (ind1m.adx.plusDI > ind1m.adx.minusDI) result.signals.adx_bull_1m = 'LONG';
+            else if (ind1m.adx.minusDI > ind1m.adx.plusDI) result.signals.adx_bear_1m = 'SHORT';
         }
     }
 
     if (Math.abs(imbalance) > 0.15) {
-        if (imbalance > 0) { result.signals.orderbook_buy = 'LONG'; result.longScore++; }
-        else { result.signals.orderbook_sell = 'SHORT'; result.shortScore++; }
+        if (imbalance > 0) result.signals.orderbook_buy = 'LONG';
+        else result.signals.orderbook_sell = 'SHORT';
     }
 
     if (sr && price) {
@@ -144,8 +191,8 @@ function evaluateSignals(marketState) {
             const d = Math.abs(r.distancePercent);
             if (d < 0.30 && (r.strength !== 'WEAK') && d < rDist) rDist = d;
         }
-        if (sDist < rDist && sDist < Infinity) { result.signals.near_support = 'LONG'; result.longScore++; }
-        else if (rDist < sDist && rDist < Infinity) { result.signals.near_resistance = 'SHORT'; result.shortScore++; }
+        if (sDist < rDist && sDist < Infinity) result.signals.near_support = 'LONG';
+        else if (rDist < sDist && rDist < Infinity) result.signals.near_resistance = 'SHORT';
     }
 
     if (prices.length >= 8) {
@@ -154,59 +201,46 @@ function evaluateSignals(marketState) {
         const range = maxP - minP;
         if (range > 0) {
             const pos = (price - minP) / range;
-            if (pos <= 0.10) { result.signals.price_at_low = 'LONG'; result.longScore++; }
-            else if (pos >= 0.90) { result.signals.price_at_high = 'SHORT'; result.shortScore++; }
+            if (pos <= 0.10) result.signals.price_at_low = 'LONG';
+            else if (pos >= 0.90) result.signals.price_at_high = 'SHORT';
         }
     }
 
     if (ind1m.roc != null) {
-        if (ind1m.roc < -0.15) { result.signals.roc_oversold = 'LONG'; result.longScore++; }
-        else if (ind1m.roc > 0.15) { result.signals.roc_overbought = 'SHORT'; result.shortScore++; }
+        if (ind1m.roc < -0.15) result.signals.roc_oversold = 'LONG';
+        else if (ind1m.roc > 0.15) result.signals.roc_overbought = 'SHORT';
     }
 
-    // Price position vs EMA50 — trend-following signal that fires in sustained moves
     if (ind1m.ema50 != null && price) {
-        if (price > ind1m.ema50 * 1.001) { result.signals.price_above_ema50 = 'LONG';  result.longScore++;  }
-        else if (price < ind1m.ema50 * 0.999) { result.signals.price_below_ema50 = 'SHORT'; result.shortScore++; }
+        if (price > ind1m.ema50 * 1.001) result.signals.price_above_ema50 = 'LONG';
+        else if (price < ind1m.ema50 * 0.999) result.signals.price_below_ema50 = 'SHORT';
     }
 
-    // 1m EMA9 vs EMA21 — short-term trend direction signal
     if (ind1m.ema9 != null && ind1m.ema21 != null && ind1m.ema9 !== ind1m.ema21) {
-        if (ind1m.ema9 > ind1m.ema21) { result.signals.ema_trend_1m = 'LONG';  result.longScore++;  }
-        else                           { result.signals.ema_trend_1m = 'SHORT'; result.shortScore++; }
+        if (ind1m.ema9 > ind1m.ema21) result.signals.ema_trend_1m = 'LONG';
+        else result.signals.ema_trend_1m = 'SHORT';
     }
 
-    // 15m EMA alignment — strongest trend-following signal (higher timeframe bias)
     const ind15m = marketState.indicators15m;
     if (ind15m && ind15m.ema9 != null && ind15m.ema21 != null && ind15m.ema9 !== ind15m.ema21) {
-        if (ind15m.ema9 > ind15m.ema21) { result.signals.ema_align_15m = 'LONG';  result.longScore++;  }
-        else                             { result.signals.ema_align_15m = 'SHORT'; result.shortScore++; }
+        if (ind15m.ema9 > ind15m.ema21) result.signals.ema_align_15m = 'LONG';
+        else result.signals.ema_align_15m = 'SHORT';
     }
 
+    // ── Category-deduplicated scoring ──────────────────────────────────────
+    // Each independent category can contribute at most 1 point in one direction.
+    // This prevents correlated oscillators from inflating the count.
+    const catScores = computeCategoryScores(result.signals);
+    result.longScore = catScores.longScore;
+    result.shortScore = catScores.shortScore;
+    result.activeCategories = catScores.activeCategories;
     result.totalSignals = Object.keys(result.signals).length;
 
-    // ── Category scoring ─────────────────────────────────────────────────────
-    // Each category counts as ONE independent vote regardless of how many
-    // individual signals fire within it. Prevents 7 correlated oscillators
-    // satisfying the threshold alone.
-    const longCats = new Set();
-    const shortCats = new Set();
-    for (const [sig, dir] of Object.entries(result.signals)) {
-        const cat = SIGNAL_CATEGORIES[sig];
-        if (!cat) continue;
-        if (dir === 'LONG') longCats.add(cat);
-        else if (dir === 'SHORT') shortCats.add(cat);
-    }
-    result.longCategoryScore  = longCats.size;
-    result.shortCategoryScore = shortCats.size;
-    result.longCategories     = [...longCats];
-    result.shortCategories    = [...shortCats];
-
-    const direction = result.longCategoryScore > result.shortCategoryScore ? 'LONG'
-        : result.shortCategoryScore > result.longCategoryScore ? 'SHORT' : null;
+    const direction = result.longScore > result.shortScore ? 'LONG'
+        : result.shortScore > result.longScore ? 'SHORT' : null;
 
     if (!direction) {
-        result.failReason = `Categories split L:${result.longCategoryScore} S:${result.shortCategoryScore}`;
+        result.failReason = `Categories split L:${result.longScore} S:${result.shortScore}`;
         return result;
     }
 
@@ -223,14 +257,15 @@ function evaluateSignals(marketState) {
         }
     }
 
-    const dominantCatScore = direction === 'LONG' ? result.longCategoryScore : result.shortCategoryScore;
+    const dominantScore = Math.max(result.longScore, result.shortScore);
 
     const pmStats = patternMemory.getStats();
     const isLearning = pmStats.isLearning;
     const minCategories = isLearning ? 2 : 4;
 
-    if (dominantCatScore < minCategories) {
-        result.failReason = `Only ${dominantCatScore} independent signal categories for ${direction} (need ${minCategories}+). Categories: ${[...(direction === 'LONG' ? longCats : shortCats)].join(', ')}`;
+    if (dominantScore < minCategories) {
+        const activeCats = Object.keys(result.activeCategories).filter(c => result.activeCategories[c] === direction);
+        result.failReason = `Only ${dominantScore} independent signal categories for ${direction} (need ${minCategories}+). Categories: ${activeCats.join(', ')}`;
         return result;
     }
 
@@ -262,13 +297,12 @@ function evaluateSignals(marketState) {
     result.direction = direction;
     result.entryMode = decision.mode;
     result.patternMatch = decision.matchData;
-    result.confidence = Math.min(0.95, 0.50 + (dominantCatScore * 0.10));
+    result.confidence = Math.min(0.95, 0.50 + (dominantScore * 0.10));
 
-    const activeSignals = Object.entries(result.signals)
-        .filter(([, dir]) => dir === direction)
-        .map(([sig]) => sig);
+    const activeCatList = Object.keys(result.activeCategories)
+        .filter(c => result.activeCategories[c] === direction);
 
-    result.reason = `${direction} | ${dominantCatScore} categories | ${decision.mode} | ${activeSignals.join(', ')}`;
+    result.reason = `${direction} | ${dominantScore} categories | ${decision.mode} | ${activeCatList.join(', ')}`;
 
     return result;
 }
@@ -310,35 +344,35 @@ function r(v) { return Math.round(v * 100) / 100; }
 
 function getSignalDefinitions() {
     return [
-        { id: 'rsi_oversold_1m', name: 'RSI Oversold 1m' },
-        { id: 'rsi_overbought_1m', name: 'RSI Overbought 1m' },
-        { id: 'rsi_oversold_5m', name: 'RSI Oversold 5m' },
-        { id: 'rsi_overbought_5m', name: 'RSI Overbought 5m' },
-        { id: 'stoch_bounce_1m', name: 'StochRSI Bounce' },
-        { id: 'stoch_drop_1m', name: 'StochRSI Drop' },
-        { id: 'bb_lower_1m', name: 'BB Lower Touch' },
-        { id: 'bb_upper_1m', name: 'BB Upper Touch' },
-        { id: 'cci_oversold_1m', name: 'CCI Oversold' },
-        { id: 'cci_overbought_1m', name: 'CCI Overbought' },
-        { id: 'willr_oversold_1m', name: 'Williams%R Oversold' },
-        { id: 'willr_overbought_1m', name: 'Williams%R Overbought' },
-        { id: 'macd_bull_div', name: 'MACD Bull Divergence' },
-        { id: 'macd_bear_div', name: 'MACD Bear Divergence' },
-        { id: 'ema_trend_5m', name: '5m EMA Trend' },
-        { id: 'adx_bull_1m', name: 'ADX Bullish' },
-        { id: 'adx_bear_1m', name: 'ADX Bearish' },
-        { id: 'orderbook_buy', name: 'Orderbook Buyers' },
-        { id: 'orderbook_sell', name: 'Orderbook Sellers' },
-        { id: 'near_support', name: 'Near Support' },
-        { id: 'near_resistance', name: 'Near Resistance' },
-        { id: 'price_at_low', name: 'Price At Low' },
-        { id: 'price_at_high', name: 'Price At High' },
-        { id: 'roc_oversold', name: 'ROC Oversold' },
-        { id: 'roc_overbought', name: 'ROC Overbought' },
-        { id: 'price_above_ema50', name: 'Price Above EMA50' },
-        { id: 'price_below_ema50', name: 'Price Below EMA50' },
-        { id: 'ema_trend_1m', name: '1m EMA Trend' },
-        { id: 'ema_align_15m', name: '15m EMA Alignment' },
+        { id: 'rsi_oversold_1m',     name: 'RSI Oversold 1m',        category: 'oscillator_1m' },
+        { id: 'rsi_overbought_1m',   name: 'RSI Overbought 1m',       category: 'oscillator_1m' },
+        { id: 'rsi_oversold_5m',     name: 'RSI Oversold 5m',         category: 'oscillator_5m' },
+        { id: 'rsi_overbought_5m',   name: 'RSI Overbought 5m',       category: 'oscillator_5m' },
+        { id: 'stoch_bounce_1m',     name: 'StochRSI Bounce',         category: 'oscillator_1m' },
+        { id: 'stoch_drop_1m',       name: 'StochRSI Drop',           category: 'oscillator_1m' },
+        { id: 'bb_lower_1m',         name: 'BB Lower Touch',          category: 'oscillator_1m' },
+        { id: 'bb_upper_1m',         name: 'BB Upper Touch',          category: 'oscillator_1m' },
+        { id: 'cci_oversold_1m',     name: 'CCI Oversold',            category: 'oscillator_1m' },
+        { id: 'cci_overbought_1m',   name: 'CCI Overbought',          category: 'oscillator_1m' },
+        { id: 'willr_oversold_1m',   name: 'Williams%R Oversold',     category: 'oscillator_1m' },
+        { id: 'willr_overbought_1m', name: 'Williams%R Overbought',   category: 'oscillator_1m' },
+        { id: 'macd_bull_div',       name: 'MACD Bull Divergence',    category: 'macd_divergence' },
+        { id: 'macd_bear_div',       name: 'MACD Bear Divergence',    category: 'macd_divergence' },
+        { id: 'ema_trend_5m',        name: '5m EMA Trend',            category: 'trend_5m' },
+        { id: 'adx_bull_1m',         name: 'ADX Bullish',             category: 'adx_strength' },
+        { id: 'adx_bear_1m',         name: 'ADX Bearish',             category: 'adx_strength' },
+        { id: 'orderbook_buy',       name: 'Orderbook Buyers',        category: 'orderbook' },
+        { id: 'orderbook_sell',      name: 'Orderbook Sellers',       category: 'orderbook' },
+        { id: 'near_support',        name: 'Near Support',            category: 'support_resistance' },
+        { id: 'near_resistance',     name: 'Near Resistance',         category: 'support_resistance' },
+        { id: 'price_at_low',        name: 'Price At Low',            category: 'oscillator_1m' },
+        { id: 'price_at_high',       name: 'Price At High',           category: 'oscillator_1m' },
+        { id: 'roc_oversold',        name: 'ROC Oversold',            category: 'oscillator_1m' },
+        { id: 'roc_overbought',      name: 'ROC Overbought',          category: 'oscillator_1m' },
+        { id: 'price_above_ema50',   name: 'Price Above EMA50',       category: 'price_vs_ema50' },
+        { id: 'price_below_ema50',   name: 'Price Below EMA50',       category: 'price_vs_ema50' },
+        { id: 'ema_trend_1m',        name: '1m EMA Trend',            category: 'trend_1m' },
+        { id: 'ema_align_15m',       name: '15m EMA Alignment',       category: 'trend_15m' },
     ];
 }
 
@@ -349,5 +383,7 @@ module.exports = {
     getSignalDefinitions,
     SIGNAL_DEFINITIONS,
     SIGNAL_CATEGORIES,
-    buildSnapshot
+    SIGNAL_TO_CATEGORY,
+    buildSnapshot,
+    computeCategoryScores,
 };
