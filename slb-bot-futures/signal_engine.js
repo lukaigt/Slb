@@ -244,9 +244,16 @@ function evaluateSignals(marketState) {
         return result;
     }
 
-    // Hard trend filter: block trades that fight the 15m EMA trend
-    if (ind15m && ind15m.ema9 != null && ind15m.ema21 != null) {
-        const trend15m = ind15m.ema9 > ind15m.ema21 ? 'UP' : 'DOWN';
+    // Hard trend filter: block trades that fight the 15m EMA trend.
+    // v19 — also require 5m trend alignment. Both 5m and 15m must agree with
+    // the intended direction (or at least not fight it). This blocks counter-trend
+    // entries where only the 1m oscillators look attractive.
+    const trend15m = (ind15m && ind15m.ema9 != null && ind15m.ema21 != null)
+        ? (ind15m.ema9 > ind15m.ema21 ? 'UP' : 'DOWN') : null;
+    const trend5m = (ind5m && ind5m.ema9 != null && ind5m.ema21 != null)
+        ? (ind5m.ema9 > ind5m.ema21 ? 'UP' : 'DOWN') : null;
+
+    if (trend15m) {
         if (direction === 'SHORT' && trend15m === 'UP') {
             result.failReason = `Trend filter blocked SHORT — 15m trend is UP (EMA9 ${ind15m.ema9.toFixed(4)} > EMA21 ${ind15m.ema21.toFixed(4)})`;
             return result;
@@ -255,6 +262,25 @@ function evaluateSignals(marketState) {
             result.failReason = `Trend filter blocked LONG — 15m trend is DOWN (EMA9 ${ind15m.ema9.toFixed(4)} < EMA21 ${ind15m.ema21.toFixed(4)})`;
             return result;
         }
+    }
+    if (trend5m) {
+        if (direction === 'SHORT' && trend5m === 'UP') {
+            result.failReason = `Trend filter blocked SHORT — 5m trend is UP (EMA9 ${ind5m.ema9.toFixed(4)} > EMA21 ${ind5m.ema21.toFixed(4)}). Multi-TF alignment requires 5m agreement.`;
+            return result;
+        }
+        if (direction === 'LONG' && trend5m === 'DOWN') {
+            result.failReason = `Trend filter blocked LONG — 5m trend is DOWN (EMA9 ${ind5m.ema9.toFixed(4)} < EMA21 ${ind5m.ema21.toFixed(4)}). Multi-TF alignment requires 5m agreement.`;
+            return result;
+        }
+    }
+
+    // Hour-of-day filter — skip entries during historically losing UTC hours.
+    // Only activates after the hour has 20+ trades recorded AND WR < 40%.
+    const nowHour = new Date().getUTCHours();
+    const hourStats = patternMemory.getHourStats(nowHour);
+    if (!hourStats.allowed) {
+        result.failReason = `Hour ${nowHour}:00 UTC blocked — ${hourStats.wins}W/${hourStats.losses}L = ${(hourStats.winRate*100).toFixed(0)}% WR (< 40% with ${hourStats.totalTrades} samples).`;
+        return result;
     }
 
     const dominantScore = Math.max(result.longScore, result.shortScore);

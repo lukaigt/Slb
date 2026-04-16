@@ -79,6 +79,9 @@ function createEmptyMarketState() {
         highestPriceSinceEntry: 0,
         lowestPriceSinceEntry: Infinity,
         trailingStopActive: false,
+        peakFavorableMovePct: 0,      // max % price has moved in trade direction since entry
+        aiStopLossOriginal: null,     // original SL at entry (trailing can tighten it)
+        trailingStage: 'NONE',        // NONE | BREAKEVEN | TRAILING
         lastOrderTime: 0,
         currentTradeDirection: null,
         aiStopLoss: null,
@@ -375,6 +378,9 @@ async function openPosition(direction, marketState, marketConfig, symbol) {
     marketState.highestPriceSinceEntry = currentPrice;
     marketState.lowestPriceSinceEntry = currentPrice;
     marketState.trailingStopActive = false;
+    marketState.peakFavorableMovePct = 0;
+    marketState.aiStopLossOriginal = marketState.aiStopLoss;
+    marketState.trailingStage = 'NONE';
     marketState.currentTradeDirection = direction;
     marketState.entrySnapshot = {
         trend: marketState.trend,
@@ -387,6 +393,15 @@ async function openPosition(direction, marketState, marketConfig, symbol) {
 }
 
 async function closePosition(exitReason, marketState, marketConfig, symbol) {
+    // Per-symbol close mutex. Both the 2s poll loop and the WebSocket fast-tick
+    // can call this for the same symbol; without this guard a SL crossing
+    // during a 2s window produces a duplicate close (double trade record,
+    // stale state). First caller wins; others bail out cleanly.
+    if (marketState.closeInFlight) {
+        return true;
+    }
+    marketState.closeInFlight = true;
+    try {
     const currentPrice = marketState.lastPrice;
     const pos = getPosition(marketState, marketConfig);
     if (!pos) return true;
@@ -540,6 +555,9 @@ async function closePosition(exitReason, marketState, marketConfig, symbol) {
     }
 
     return true;
+    } finally {
+        marketState.closeInFlight = false;
+    }
 }
 
 function resetPositionState(marketState, marketConfig) {
@@ -553,6 +571,9 @@ function resetPositionState(marketState, marketConfig) {
     marketState.highestPriceSinceEntry = 0;
     marketState.lowestPriceSinceEntry = Infinity;
     marketState.trailingStopActive = false;
+    marketState.peakFavorableMovePct = 0;
+    marketState.aiStopLossOriginal = null;
+    marketState.trailingStage = 'NONE';
     marketState.currentTradeDirection = null;
     marketState.aiStopLoss = null;
     marketState.aiTakeProfit = null;
@@ -621,18 +642,23 @@ function checkStopLoss(currentPrice, marketState, marketConfig, symbol) {
     const pos = getPosition(marketState, marketConfig);
     if (!pos || marketState.aiStopLoss === null || marketState.aiStopLoss === undefined) return false;
 
-    const priceMovePercent = ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100;
+    // priceMovePct is expressed in the direction of the trade — always "how
+    // far has price moved in our favor". Negative means we're losing.
+    const priceMovePct = pos === 'LONG'
+        ? ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100
+        : ((marketState.entryPrice - currentPrice) / marketState.entryPrice) * 100;
 
-    const slThreshold = marketState.aiStopLoss;
+    const sl = marketState.aiStopLoss;
+    // Canonical rule: threshold = -sl.
+    //   sl = +0.40 (classic loss stop) → threshold = -0.40 → trigger when priceMovePct ≤ -0.40
+    //   sl = -0.05 (breakeven lock)    → threshold = +0.05 → trigger when priceMovePct ≤ +0.05
+    //   sl = -0.55 (trailing lock)     → threshold = +0.55 → trigger when priceMovePct ≤ +0.55
+    const threshold = -sl;
 
-    if (pos === 'LONG' && priceMovePercent <= -slThreshold) {
-        log(`[${symbol}] STOP LOSS (LONG): price moved ${priceMovePercent.toFixed(2)}% | SL: ${marketState.aiStopLoss}% | Threshold: ${slThreshold.toFixed(3)}%`);
-        aiBrain.think(`[${symbol}] STOP LOSS hit on LONG at ${priceMovePercent.toFixed(2)}% | SL was ${marketState.aiStopLoss}%`, 'exit');
-        return true;
-    }
-    if (pos === 'SHORT' && priceMovePercent >= slThreshold) {
-        log(`[${symbol}] STOP LOSS (SHORT): price moved ${priceMovePercent.toFixed(2)}% | SL: ${marketState.aiStopLoss}% | Threshold: ${slThreshold.toFixed(3)}%`);
-        aiBrain.think(`[${symbol}] STOP LOSS hit on SHORT at ${priceMovePercent.toFixed(2)}% | SL was ${marketState.aiStopLoss}%`, 'exit');
+    if (priceMovePct <= threshold) {
+        const tag = sl < 0 ? (marketState.trailingStage === 'TRAILING' ? 'TRAILING STOP' : 'BREAKEVEN STOP') : 'STOP LOSS';
+        log(`[${symbol}] ${tag} (${pos}): priceMove ${priceMovePct.toFixed(3)}% ≤ ${threshold.toFixed(3)}% | SL: ${sl.toFixed(2)}%`);
+        aiBrain.think(`[${symbol}] ${tag} hit on ${pos} at ${priceMovePct.toFixed(2)}% | SL was ${sl.toFixed(2)}%`, 'exit');
         return true;
     }
     return false;
@@ -662,6 +688,126 @@ function checkTakeProfit(currentPrice, marketState, marketConfig, symbol) {
         }
     }
     return false;
+}
+
+// Trailing stop — ratchets the SL tighter as a trade goes in our favor.
+// Locks in breakeven at 50% of TP distance, then trails 0.25% behind peak at
+// 75% of TP. Never loosens — `aiStopLossOriginal` is the worst-case floor.
+function updateTrailingStop(currentPrice, marketState, marketConfig, symbol) {
+    const pos = getPosition(marketState, marketConfig);
+    if (!pos || !marketState.entryPrice || !marketState.aiTakeProfit) return;
+
+    const priceMovePct = pos === 'LONG'
+        ? ((currentPrice - marketState.entryPrice) / marketState.entryPrice) * 100
+        : ((marketState.entryPrice - currentPrice) / marketState.entryPrice) * 100;
+
+    // Only ratchet upward. Losses can't tighten a trailing stop.
+    if (priceMovePct > marketState.peakFavorableMovePct) {
+        marketState.peakFavorableMovePct = priceMovePct;
+    }
+    const peak = marketState.peakFavorableMovePct;
+    const tp = marketState.aiTakeProfit;
+
+    // Stage 2: trail at peak − 0.25% once we've captured 75% of TP
+    if (peak >= tp * 0.75) {
+        const trailingSL = Math.max(0.05, peak - 0.25);
+        // SL is expressed as a positive number meaning "price has moved this
+        // many % against entry". Once we're trailing, SL becomes negative (in
+        // our favor) — we track it as the adverse move from entry. So if peak
+        // is +0.8% and we trail at peak-0.25 = +0.55%, that means SL would
+        // trigger if price retraced to only +0.55% above entry, which is
+        // still a WIN. We encode this as a NEGATIVE SL value.
+        const newSL = -trailingSL; // negative = still in profit even if hit
+        if (marketState.trailingStage !== 'TRAILING' || newSL < marketState.aiStopLoss) {
+            marketState.aiStopLoss = newSL;
+            if (marketState.trailingStage !== 'TRAILING') {
+                aiBrain.think(`[${symbol}] TRAILING STOP activated at peak ${peak.toFixed(2)}% — SL trails at ${trailingSL.toFixed(2)}% (locks ~${(trailingSL * CONFIG.LEVERAGE).toFixed(1)}% P&L if hit)`, 'safety');
+            }
+            marketState.trailingStage = 'TRAILING';
+        }
+        return;
+    }
+
+    // Stage 1: breakeven lock at 50% of TP
+    if (peak >= tp * 0.5 && marketState.trailingStage === 'NONE') {
+        // Move SL to breakeven + 0.05% (covers fees). Encode as negative
+        // so "SL triggers if we go below +0.05% favorable move" = tiny win.
+        marketState.aiStopLoss = -0.05;
+        marketState.trailingStage = 'BREAKEVEN';
+        aiBrain.think(`[${symbol}] BREAKEVEN LOCK at peak ${peak.toFixed(2)}% — SL moved to entry + 0.05% (locks ~${(0.05 * CONFIG.LEVERAGE).toFixed(1)}% P&L if hit)`, 'safety');
+    }
+}
+
+// Fast tick-driven SL/TP check — runs on every Kraken price update (real-time,
+// not the 2s poll loop). This is what stops SL slippage. All heavy work
+// (candles, indicators, signals) still happens in the poll loop; this just
+// fires a close order when price crosses an exit level. Async fire-and-forget
+// so the WebSocket thread never blocks.
+const fastCheckInFlight = {};
+function fastTickCheck(symbol, price) {
+    try {
+        const marketConfig = MARKETS[symbol];
+        const marketState = marketStates[symbol];
+        if (!marketConfig || !marketState) return;
+        const pos = getPosition(marketState, marketConfig);
+        if (!pos) return;
+        if (!marketState.entryPrice || marketState.entryPrice <= 0) return;
+        if (fastCheckInFlight[symbol]) return;
+
+        marketState.lastPrice = price; // keep fresh so close uses latest price
+
+        // Update trailing stop before checking — the tightened SL may now trigger.
+        updateTrailingStop(price, marketState, marketConfig, symbol);
+
+        const priceMovePct = pos === 'LONG'
+            ? ((price - marketState.entryPrice) / marketState.entryPrice) * 100
+            : ((marketState.entryPrice - price) / marketState.entryPrice) * 100;
+
+        // Take profit
+        if (marketState.aiTakeProfit != null && priceMovePct >= marketState.aiTakeProfit) {
+            fastCheckInFlight[symbol] = true;
+            aiBrain.think(`[${symbol}] TICK TP: priceMove ${priceMovePct.toFixed(3)}% ≥ TP ${marketState.aiTakeProfit}%`, 'exit');
+            closePosition('take_profit', marketState, marketConfig, symbol)
+                .finally(() => { fastCheckInFlight[symbol] = false; });
+            return;
+        }
+
+        // Stop loss — note aiStopLoss may be negative (trailing/breakeven).
+        // For a negative SL, trigger when priceMove FALLS BELOW that value
+        // (e.g. SL = −0.05 means trigger if priceMove drops below +0.05%).
+        // For a positive SL, trigger when priceMove goes below −SL (standard).
+        const sl = marketState.aiStopLoss;
+        if (sl != null) {
+            // Canonical: threshold = -sl.
+            //   sl = +0.3  → threshold = -0.3  (trigger on -0.3% adverse move)
+            //   sl = -0.05 → threshold = +0.05 (trigger if profit drops to +0.05%)
+            const threshold = -sl;
+            if (priceMovePct <= threshold) {
+                fastCheckInFlight[symbol] = true;
+                marketState.lastStopLossTime = Date.now();
+                const tag = sl < 0 ? (marketState.trailingStage === 'TRAILING' ? 'TRAILING STOP' : 'BREAKEVEN STOP') : 'STOP LOSS';
+                aiBrain.think(`[${symbol}] TICK ${tag}: priceMove ${priceMovePct.toFixed(3)}% ≤ ${threshold.toFixed(3)}% (SL ${sl.toFixed(2)})`, 'exit');
+                const reason = sl < 0 ? (marketState.trailingStage === 'TRAILING' ? 'trailing_stop' : 'breakeven_stop') : 'stop_loss';
+                closePosition(reason, marketState, marketConfig, symbol)
+                    .finally(() => { fastCheckInFlight[symbol] = false; });
+                return;
+            }
+        }
+
+        // Hard circuit breaker at 2× SL in P&L terms (catches freakish slippage).
+        // If SL=0.3%, this fires at a 0.6% move = −12% P&L at 20×.
+        const absSL = sl != null ? Math.abs(sl) : 0.3;
+        const cbMove = Math.max(absSL * 2, 0.5);
+        if (priceMovePct <= -cbMove) {
+            fastCheckInFlight[symbol] = true;
+            aiBrain.think(`[${symbol}] TICK CIRCUIT BREAKER: priceMove ${priceMovePct.toFixed(3)}% ≤ -${cbMove.toFixed(2)}% (2× SL overshoot)`, 'safety');
+            closePosition('circuit_breaker', marketState, marketConfig, symbol)
+                .finally(() => { fastCheckInFlight[symbol] = false; });
+            return;
+        }
+    } catch (e) {
+        // Never let a tick callback crash the WebSocket
+    }
 }
 
 function checkMaxHoldTime(marketState, marketConfig, symbol) {
@@ -818,6 +964,9 @@ async function processMarket(symbol) {
                 await closePosition('stagnation', marketState, marketConfig, symbol);
                 return;
             }
+
+            // 3. Update trailing stop (ratchets SL tighter as trade goes in our favor)
+            updateTrailingStop(price, marketState, marketConfig, symbol);
 
             // 4. Standard Stop Loss / Take Profit
             if (checkStopLoss(price, marketState, marketConfig, symbol)) {
@@ -979,6 +1128,9 @@ function generateDashboardData() {
             tpSlMode: ms.tpSlMode || null,
             holdMin,
             entryMode: ms.entryMode || null,
+            trailingStage: ms.trailingStage || 'NONE',
+            peakMove: ms.peakFavorableMovePct || 0,
+            slOriginal: ms.aiStopLossOriginal,
             lastSignal: lastSig ? {
                 action: lastSig.action,
                 longScore: lastSig.longScore,
@@ -1063,6 +1215,17 @@ function generateDashboardData() {
             tradesToday: safetyStatus.dailyTrades || 0
         },
         pmStats,
+        pmThresholds: {
+            wilson: patternMemory.WILSON_WR_THRESHOLD ?? 0.50,
+            ev: patternMemory.MIN_EV_THRESHOLD ?? 0,
+            halfLife: patternMemory.RECENCY_HALF_LIFE_DAYS ?? 14
+        },
+        hourStats: (() => {
+            const out = [];
+            if (!patternMemory.getHourStats) return out;
+            for (let h = 0; h < 24; h++) out.push(patternMemory.getHourStats(h));
+            return out;
+        })(),
         tpSlStats,
         topCombos,
         markets: marketsData,
@@ -1199,7 +1362,9 @@ function generateDashboardHTML() {
     const exWR = d.pmStats.explorationWinRate;
     html += '<div class="stat-row"><span class="stat-label">Pattern Match WR</span><span class="stat-value ' + (pmWR >= 50 ? 'positive' : pmWR > 0 ? 'negative' : '') + '">' + (pmWR > 0 ? pmWR.toFixed(0) + '%' : '-') + '</span></div>';
     html += '<div class="stat-row"><span class="stat-label">Exploration WR</span><span class="stat-value ' + (exWR >= 50 ? 'positive' : exWR > 0 ? 'negative' : '') + '">' + (exWR > 0 ? exWR.toFixed(0) + '%' : '-') + '</span></div>';
-    html += '<div class="stat-row"><span class="stat-label">WR Threshold</span><span class="stat-value">55%</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Wilson WR Gate</span><span class="stat-value">≥ ' + Math.round((d.pmThresholds.wilson || 0.50) * 100) + '% (95% conf)</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">EV Gate</span><span class="stat-value">> ' + (d.pmThresholds.ev || 0).toFixed(2) + '%</span></div>';
+    html += '<div class="stat-row"><span class="stat-label">Recency Half-Life</span><span class="stat-value">' + (d.pmThresholds.halfLife || 14) + ' days</span></div>';
     html += '</div>';
 
     // TP/SL Optimizer
@@ -1259,7 +1424,7 @@ function generateDashboardHTML() {
 
     // Markets Overview
     html += '<div class="grid"><div class="card full-width"><h2>Markets Overview</h2><div style="overflow-x:auto;"><table>';
-    html += '<thead><tr><th>Market</th><th>Price</th><th>Trend</th><th>Score</th><th>Phase</th><th>Imbalance</th><th>Volatility</th><th>Data Pts</th><th>Position</th><th>Entry $</th><th>P&L</th><th>SL/TP</th><th>TP/SL Mode</th><th>Hold</th><th>Entry Mode</th><th>Last Signal</th></tr></thead><tbody>';
+    html += '<thead><tr><th>Market</th><th>Price</th><th>Trend 5m/15m</th><th>Score</th><th>Phase</th><th>Imbalance</th><th>Volatility</th><th>Data Pts</th><th>Position</th><th>Entry $</th><th>P&L</th><th>SL/TP</th><th>Trailing</th><th>TP/SL Mode</th><th>Hold</th><th>Entry Mode</th><th>Last Signal</th></tr></thead><tbody>';
     for (const sym of d.activeMarkets) {
         const m = d.markets[sym] || {};
         const scoreC = m.score > 8 ? 'positive' : m.score < -8 ? 'negative' : 'neutral';
@@ -1270,7 +1435,12 @@ function generateDashboardHTML() {
         const lastSigC = m.lastSignal && m.lastSignal.action !== 'WAIT' ? 'positive' : '';
         html += '<tr><td><strong>' + sym + '</strong></td>';
         html += '<td>' + usd(m.price) + '</td>';
-        html += '<td class="' + trendC + '">' + m.trend + '</td>';
+        const i5 = m.indicators && m.indicators['5m']; const i15 = m.indicators && m.indicators['15m'];
+        const t5 = (i5 && i5.ema9 != null && i5.ema21 != null) ? (i5.ema9 > i5.ema21 ? 'UP' : 'DN') : '?';
+        const t15 = (i15 && i15.ema9 != null && i15.ema21 != null) ? (i15.ema9 > i15.ema21 ? 'UP' : 'DN') : '?';
+        const aligned = t5 === t15 && t5 !== '?';
+        const trendCol = t5 === '?' || t15 === '?' ? 'neutral' : aligned ? (t5 === 'UP' ? 'positive' : 'negative') : 'neutral';
+        html += '<td class="' + trendCol + '" style="font-size:0.82em;">' + t5 + '/' + t15 + (aligned ? ' ✓' : ' ✗') + '</td>';
         html += '<td class="' + scoreC + '"><strong>' + m.score + '</strong></td>';
         html += '<td>' + m.phase + '</td>';
         html += '<td class="' + (m.imbalance > 0 ? 'positive' : 'negative') + '">' + (m.imbalance * 100).toFixed(1) + '%</td>';
@@ -1280,6 +1450,14 @@ function generateDashboardHTML() {
         html += '<td>' + (m.position ? usd(m.entryPrice) : '-') + '</td>';
         html += '<td class="' + pnlC + '" style="font-weight:bold;">' + (m.position ? m.pnl.toFixed(2) + '%' : '-') + '</td>';
         html += '<td>' + (m.position && m.sl != null ? m.sl.toFixed(2) + ' / ' + (m.tp != null ? m.tp.toFixed(2) : '?') : '-') + '</td>';
+        let trailCell = '-';
+        if (m.position) {
+            const ts = m.trailingStage || 'NONE';
+            const peak = (m.peakMove || 0).toFixed(2);
+            const col = ts === 'TRAILING' ? 'positive' : ts === 'BREAKEVEN' ? 'neutral' : '';
+            trailCell = '<span class="' + col + '" style="font-size:0.78em;">' + ts + ' (peak +' + peak + '%)</span>';
+        }
+        html += '<td>' + trailCell + '</td>';
         html += '<td>' + (m.position && m.tpSlMode ? tag(m.tpSlMode) : '-') + '</td>';
         html += '<td>' + m.holdMin + '</td>';
         html += '<td>' + (m.position && m.entryMode ? tag(m.entryMode) : '-') + '</td>';
@@ -1356,17 +1534,17 @@ function generateDashboardHTML() {
         html += '<div style="background:#0d1117;padding:10px;border-radius:6px;"><div style="font-weight:bold;color:' + (dk==='LONG'?'#3fb950':'#f85149') + ';margin-bottom:4px;">' + dk + '</div><div style="font-size:0.85em;">W: <span class="positive">' + dd.wins + '</span> L: <span class="negative">' + dd.losses + '</span> WR: <span class="' + (dwr>=50?'positive':'negative') + '">' + dwr + '%</span></div></div>';
     }
     html += '</div>';
-    // Hourly heatmap
-    const byH = d.pmStats.byHour || {};
-    if (Object.keys(byH).length > 0) {
-        html += '<div style="margin-top:10px;"><div style="color:#58a6ff;font-weight:600;margin-bottom:6px;">Win Rate by Hour (UTC)</div><div style="display:flex;flex-wrap:wrap;gap:4px;">';
-        for (let h = 0; h < 24; h++) {
-            const hd = byH[h.toString()] || {wins:0,losses:0}; const ht2 = hd.wins+hd.losses; const hwr = ht2 > 0 ? Math.round(hd.wins/ht2*100) : -1;
-            const bg = hwr < 0 ? '#21262d' : hwr >= 60 ? '#238636' : hwr >= 40 ? '#d29922' : '#da3633';
-            html += '<div style="width:30px;height:30px;background:'+bg+';border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.7em;" title="'+h+':00 UTC - '+(ht2>0?hwr+'% ('+ht2+' trades)':'no trades')+'">'+h+'</div>';
-        }
-        html += '</div></div>';
+    // Hourly heatmap with pass/block flag (blocks when ≥20 samples & WR <40%)
+    const hs = d.hourStats || [];
+    html += '<div style="margin-top:10px;"><div style="color:#58a6ff;font-weight:600;margin-bottom:6px;">Win Rate by Hour (UTC) — red border = blocked for entries</div><div style="display:flex;flex-wrap:wrap;gap:4px;">';
+    for (let h = 0; h < 24; h++) {
+        const hd = hs[h] || {totalTrades:0,winRate:0,allowed:true};
+        const ht2 = hd.totalTrades; const hwr = ht2 > 0 ? Math.round(hd.winRate*100) : -1;
+        const bg = hwr < 0 ? '#21262d' : hwr >= 60 ? '#238636' : hwr >= 40 ? '#d29922' : '#da3633';
+        const border = hd.allowed ? 'none' : '2px solid #ff0000';
+        html += '<div style="width:32px;height:32px;background:'+bg+';border:'+border+';border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.7em;" title="'+h+':00 UTC — '+(ht2>0?hwr+'% WR ('+ht2+' trades) '+(hd.allowed?'ALLOWED':'BLOCKED'):'no trades')+'">'+h+'</div>';
     }
+    html += '</div></div>';
     html += '</div></div>';
 
     // Live Decisions
@@ -1640,8 +1818,11 @@ async function main() {
                     log(`[${symbol}] Loaded ${h.prices.length} historical prices from Kraken REST`);
                 }
             }
+            // Real-time tick-driven SL/TP — runs on every Kraken price update,
+            // not just the 2s poll loop. This is the core fix for SL slippage.
+            krakenFeed.onPrice = (symbol, price) => fastTickCheck(symbol, price);
             krakenFeed.connect();
-            log('Kraken WebSocket feed started — real-time prices + orderbook');
+            log('Kraken WebSocket feed started — real-time prices + orderbook + tick-driven SL/TP');
         }
 
         let driftConnected = false;

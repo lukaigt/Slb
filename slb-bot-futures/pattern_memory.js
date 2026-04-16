@@ -7,12 +7,37 @@ const DATA_DIR = path.join(__dirname, 'data');
 const PATTERNS_FILE = path.join(DATA_DIR, 'patterns.json');
 const STATS_FILE = path.join(DATA_DIR, 'learning_stats.json');
 
+// ── Learning parameters (v19 — EV + Wilson + recency) ───────────────────────
 const MIN_TRADES_FOR_LEARNING = 30;
 const SIMILARITY_NEIGHBORS = 10;
 const MIN_NEIGHBORS_FOR_DECISION = 5;
-const WIN_RATE_THRESHOLD = 0.65;
+// Wilson lower confidence bound threshold. With 95% confidence, a 50% lower
+// bound roughly corresponds to observed WR ≈ 55-60% at 10 samples — realistic
+// for profitable scalping with decent R:R.
+const WILSON_WR_THRESHOLD = 0.50;
+// Minimum expected value per trade (in %, post-leverage-neutral — this is
+// raw profitPercent averaged across weighted neighbors). If EV < this, skip.
+const MIN_EV_THRESHOLD = 0.00;
+// Recency half-life in days. A pattern from 14 days ago contributes half the
+// weight of a pattern from today.
+const RECENCY_HALF_LIFE_DAYS = 14;
+// Feature weights — dimensions that define regime get larger say in k-NN
+// distance. Everything else defaults to 1.0.
+const FEATURE_WEIGHTS = {
+    trend: 3.0,
+    ema9_vs_21_15m: 2.5,
+    ema9_vs_21_5m: 2.0,
+    atr_pct_1m: 2.0,
+    atr_pct_5m: 2.0,
+    adx_1m: 1.5,
+    adx_5m: 1.5,
+    rsi_15m: 1.5,
+    price_vs_ema50_1m: 1.5,
+    // Hour is situational — medium weight
+    hour: 1.2,
+};
 
-let patterns = { version: 1, trades: [] };
+let patterns = { version: 2, trades: [] };
 let learningStats = {
     totalStored: 0,
     wins: 0,
@@ -42,15 +67,16 @@ function load() {
             const parsed = JSON.parse(data);
             if (parsed && Array.isArray(parsed.trades)) {
                 patterns = parsed;
+                if (patterns.version == null) patterns.version = 2;
             } else {
                 console.log('[PatternMemory] Invalid patterns file (no trades array), starting fresh');
-                patterns = { version: 1, trades: [] };
+                patterns = { version: 2, trades: [] };
             }
             console.log(`[PatternMemory] Loaded ${patterns.trades.length} stored trade patterns`);
         }
     } catch (e) {
         console.log(`[PatternMemory] Error loading patterns: ${e.message}, starting fresh`);
-        patterns = { version: 1, trades: [] };
+        patterns = { version: 2, trades: [] };
     }
     try {
         if (fs.existsSync(STATS_FILE)) {
@@ -234,21 +260,47 @@ function normalizeValue(key, val) {
     return (clamped - r[0]) / (r[1] - r[0]);
 }
 
+// Weighted Euclidean distance — same math as before but each dim contributes
+// its FEATURE_WEIGHTS multiplier squared. Returns similarity = 1 − normalized
+// weighted distance ∈ [0, 1].
 function calcSimilarity(fp1, fp2) {
     const allKeys = new Set([...Object.keys(fp1), ...Object.keys(fp2)]);
     let sumSqDiff = 0;
-    let dims = 0;
+    let sumWeights = 0;
     for (const key of allKeys) {
         const v1 = normalizeValue(key, fp1[key]);
         const v2 = normalizeValue(key, fp2[key]);
         if (v1 == null || v2 == null) continue;
+        const w = FEATURE_WEIGHTS[key] != null ? FEATURE_WEIGHTS[key] : 1.0;
         const diff = v1 - v2;
-        sumSqDiff += diff * diff;
-        dims++;
+        sumSqDiff += w * diff * diff;
+        sumWeights += w;
     }
-    if (dims === 0) return 0;
-    const euclidean = Math.sqrt(sumSqDiff / dims);
+    if (sumWeights === 0) return 0;
+    const euclidean = Math.sqrt(sumSqDiff / sumWeights);
     return Math.max(0, 1 - euclidean);
+}
+
+// Exponential decay weight for a pattern given its age in days.
+// weight = 0.5^(ageDays / halfLife) — recent trades count more.
+function recencyWeight(timestamp) {
+    if (!timestamp) return 0.5;
+    const ageMs = Date.now() - new Date(timestamp).getTime();
+    const ageDays = ageMs / (1000 * 60 * 60 * 24);
+    if (ageDays < 0) return 1.0;
+    return Math.pow(0.5, ageDays / RECENCY_HALF_LIFE_DAYS);
+}
+
+// Wilson score lower bound (95% confidence). Returns 0 when n=0.
+// Used because a raw 80% WR on 5 trades is statistically weaker than 70% on 50.
+function wilsonLowerBound(wins, total, zScore) {
+    if (total === 0) return 0;
+    const z = zScore != null ? zScore : 1.96;
+    const p = wins / total;
+    const denom = 1 + (z * z) / total;
+    const center = p + (z * z) / (2 * total);
+    const margin = z * Math.sqrt((p * (1 - p) + (z * z) / (4 * total)) / total);
+    return Math.max(0, (center - margin) / denom);
 }
 
 function findSimilarTrades(fingerprint, direction, symbol) {
@@ -256,7 +308,6 @@ function findSimilarTrades(fingerprint, direction, symbol) {
 
     // Strict filter: same coin + same direction + same regime.
     // If too few results, shouldEnter() falls through to exploration — intentional.
-    // We never cross coin boundaries or regime boundaries to pad the candidate pool.
     const candidates = patterns.trades.filter(t =>
         t.direction === direction &&
         t.symbol === symbol &&
@@ -265,7 +316,9 @@ function findSimilarTrades(fingerprint, direction, symbol) {
         (currentRegime == null || t.fingerprint.trend == null || t.fingerprint.trend === currentRegime)
     );
 
-    if (candidates.length === 0) return { neighbors: [], winRate: 0, count: 0 };
+    if (candidates.length === 0) {
+        return { neighbors: [], winRate: 0, wilsonWR: 0, expectedValue: 0, count: 0, wins: 0, losses: 0 };
+    }
 
     const scored = candidates.map(t => ({
         trade: t,
@@ -273,10 +326,38 @@ function findSimilarTrades(fingerprint, direction, symbol) {
     }));
 
     scored.sort((a, b) => b.similarity - a.similarity);
-
     const neighbors = scored.slice(0, SIMILARITY_NEIGHBORS);
-    const wins = neighbors.filter(n => n.trade.result === 'WIN').length;
+
+    // Similarity × recency weighted aggregation. A near-match from 2 days ago
+    // should dominate over a distant-match from 20 days ago. Combined weight
+    // = similarity * recencyWeight. Old losses fade out AND loose matches
+    // contribute less to the running vote.
+    let weightedWins = 0, weightedTotal = 0;
+    let weightedProfit = 0;
+    let rawWins = 0;
+    for (const n of neighbors) {
+        const w = Math.max(0, n.similarity) * recencyWeight(n.trade.timestamp);
+        weightedTotal += w;
+        if (n.trade.result === 'WIN') {
+            weightedWins += w;
+            rawWins++;
+        }
+        const p = n.trade.profitPercent != null ? n.trade.profitPercent : 0;
+        weightedProfit += w * p;
+    }
+
     const total = neighbors.length;
+    const rawLosses = total - rawWins;
+
+    // Effective sample size for Wilson — use recency-weighted total, floor at
+    // actual sample count so small-n bias still applies.
+    const effN = Math.max(total, Math.round(weightedTotal));
+    const effWins = Math.round((weightedWins / Math.max(1e-9, weightedTotal)) * effN);
+
+    const winRate = total > 0 ? rawWins / total : 0;
+    const weightedWR = weightedTotal > 0 ? weightedWins / weightedTotal : 0;
+    const wilsonWR = wilsonLowerBound(effWins, effN);
+    const expectedValue = weightedTotal > 0 ? weightedProfit / weightedTotal : 0;
 
     return {
         neighbors: neighbors.map(n => ({
@@ -286,12 +367,16 @@ function findSimilarTrades(fingerprint, direction, symbol) {
             symbol: n.trade.symbol,
             direction: n.trade.direction,
             exitReason: n.trade.exitReason,
-            timestamp: n.trade.timestamp
+            timestamp: n.trade.timestamp,
+            recencyWeight: round(recencyWeight(n.trade.timestamp))
         })),
-        winRate: total > 0 ? wins / total : 0,
+        winRate,
+        weightedWinRate: round(weightedWR),
+        wilsonWR: round(wilsonWR),
+        expectedValue: round(expectedValue),
         count: total,
-        wins,
-        losses: total - wins
+        wins: rawWins,
+        losses: rawLosses
     };
 }
 
@@ -319,30 +404,41 @@ function shouldEnter(fingerprint, direction, symbol) {
         };
     }
 
-    if (match.winRate >= WIN_RATE_THRESHOLD) {
+    // Decision rule: Wilson-LCB WR must clear threshold AND expected value
+    // must be positive. Either condition alone is insufficient.
+    //   • WR alone can be a 4W/1L fluke → Wilson handles that.
+    //   • Wilson alone can approve a 60% WR strategy that still loses money
+    //     (big losses on the 40%) → EV gate handles that.
+    const wrOk = match.wilsonWR >= WILSON_WR_THRESHOLD;
+    const evOk = match.expectedValue > MIN_EV_THRESHOLD;
+
+    if (wrOk && evOk) {
         return {
             enter: true,
             mode: 'PATTERN_MATCH',
-            reason: `Pattern match: ${match.wins}W/${match.losses}L (${(match.winRate * 100).toFixed(0)}% WR) from ${match.count} similar trades. ENTERING.`,
+            reason: `Pattern match: ${match.wins}W/${match.losses}L | raw WR ${(match.winRate*100).toFixed(0)}% | Wilson-LCB ${(match.wilsonWR*100).toFixed(0)}% | EV ${match.expectedValue>=0?'+':''}${match.expectedValue.toFixed(2)}% | ${match.count} neighbors. ENTERING.`,
             matchData: match
         };
     }
 
-    // Allow 5% exploration so the bot never fully freezes.
-    // This lets it keep collecting new data points and adapt to changing markets.
+    // 5% exploration so the bot never fully freezes.
     if (Math.random() < 0.05) {
         return {
             enter: true,
             mode: 'EXPLORATION',
-            reason: `Pattern below threshold (${(match.winRate * 100).toFixed(0)}% WR, ${match.wins}W/${match.losses}L) — exploring (5% rate) to keep learning.`,
+            reason: `Pattern below threshold (Wilson ${(match.wilsonWR*100).toFixed(0)}%, EV ${match.expectedValue.toFixed(2)}%) — exploring (5% rate) to keep learning.`,
             matchData: match
         };
     }
 
+    const failBits = [];
+    if (!wrOk) failBits.push(`Wilson-LCB ${(match.wilsonWR*100).toFixed(0)}% < ${(WILSON_WR_THRESHOLD*100).toFixed(0)}%`);
+    if (!evOk) failBits.push(`EV ${match.expectedValue.toFixed(2)}% ≤ 0`);
+
     return {
         enter: false,
         mode: 'PATTERN_REJECT',
-        reason: `Pattern match: ${match.wins}W/${match.losses}L (${(match.winRate * 100).toFixed(0)}% WR) from ${match.count} similar trades. SKIPPING — below ${(WIN_RATE_THRESHOLD * 100).toFixed(0)}% threshold.`,
+        reason: `Pattern reject: ${match.wins}W/${match.losses}L from ${match.count} neighbors — ${failBits.join(', ')}.`,
         matchData: match
     };
 }
@@ -402,6 +498,25 @@ function storeTrade(tradeData) {
     return entry;
 }
 
+// Returns {hour, totalTrades, wins, losses, winRate, allowed} for a given UTC hour.
+// allowed = false when that hour has ≥ 20 samples AND WR < 40%. Used as a
+// time-of-day filter to block entries during historically losing windows.
+function getHourStats(hour) {
+    const h = String(hour);
+    const bucket = learningStats.byHour[h] || { wins: 0, losses: 0 };
+    const total = bucket.wins + bucket.losses;
+    const wr = total > 0 ? bucket.wins / total : 0;
+    const allowed = total < 20 || wr >= 0.40;
+    return {
+        hour: Number(h),
+        totalTrades: total,
+        wins: bucket.wins,
+        losses: bucket.losses,
+        winRate: round(wr),
+        allowed
+    };
+}
+
 function getStats() {
     return {
         ...learningStats,
@@ -434,6 +549,12 @@ module.exports = {
     findSimilarTrades,
     getStats,
     getRecentPatterns,
+    getHourStats,
+    wilsonLowerBound,
+    recencyWeight,
     MIN_TRADES_FOR_LEARNING,
-    WIN_RATE_THRESHOLD
+    WILSON_WR_THRESHOLD,
+    MIN_EV_THRESHOLD,
+    RECENCY_HALF_LIFE_DAYS,
+    FEATURE_WEIGHTS
 };
