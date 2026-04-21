@@ -1281,12 +1281,19 @@ function generateDashboardHTML() {
 
     function esc(s) { return s == null ? '-' : String(s).replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
     function tag(s) { return '<span class="tag">' + esc(s) + '</span>'; }
-    function usd(v) { return v != null ? '$' + v.toFixed(2) : '-'; }
+    // Smart price formatter: full precision for tiny coins (DOGE, HBAR, POL etc.)
+    function usd(v) {
+        if (v == null) return '-';
+        if (v === 0) return '$0.00';
+        const abs = Math.abs(v);
+        const decimals = abs >= 1000 ? 2 : abs >= 1 ? 3 : abs >= 0.01 ? 4 : 6;
+        return '$' + v.toFixed(decimals);
+    }
 
     let html = `<!DOCTYPE html>
 <html>
 <head>
-    <title>v18.2 Self-Learning Bot - Boosted Learning</title>
+    <title>v19.0 Self-Learning Bot - Pure Pattern Mode</title>
     <meta charset="UTF-8">
     
     <style>
@@ -1334,15 +1341,18 @@ function generateDashboardHTML() {
 </head>
 <body>
 <div class="container">
-    <h1>Self-Learning Bot <span style="color: #8957e5; font-size: 0.5em; vertical-align: middle;">v18.2 Boosted Learning</span></h1>
-    <div class="subtitle">${d.dataSource === 'kraken' ? 'Kraken Feed' : 'Drift Protocol'} | ${d.leverage}x | ${d.tpSlStats.bestCombo ? 'Best TP/SL: ' + d.tpSlStats.bestCombo.tp.toFixed(2) + '/' + d.tpSlStats.bestCombo.sl.toFixed(2) + '%' : 'TP/SL: Learning...'} | Fee: 0.07% | ${d.pmStats.isLearning ? 'LEARNING PHASE' : 'EXPLOITATION PHASE'} | ${d.pmStats.totalStored} patterns | ${d.tpSlStats.isExploiting ? 'TP/SL OPTIMIZING' : 'TP/SL LEARNING (' + d.tpSlStats.learningProgress + '%)'}</div>
+    <h1>Self-Learning Bot <span style="color: #8957e5; font-size: 0.5em; vertical-align: middle;">v19.0 Perfect Bot</span></h1>
+    <div class="subtitle">${d.dataSource === 'kraken' ? 'Kraken Feed' : 'Drift Protocol'} | ${d.leverage}x | ${d.pmThresholds.purePatternMode ? '<strong style="color:#3fb950">PURE PATTERN MODE</strong>' : 'Pattern + Exploration'} | ${d.pmStats.totalStored} patterns | ${d.pmStats.isLearning ? 'LEARNING' : 'EXPLOITATION'} | WR: ${d.stats.winRate}% (${d.stats.wins}W/${d.stats.losses}L) | Refreshed: ${new Date().toLocaleTimeString()}</div>
 
     <div class="grid">`;
 
     // System Health
     const dot = (ok) => '<span class="health-dot ' + (ok ? 'health-green' : 'health-red') + '"></span>';
     html += '<div class="card"><h2>System Health</h2>';
-    html += '<div class="stat-row"><span class="stat-label">Status</span><span class="stat-value">' + (d.running ? dot(true) + 'Running' : dot(false) + 'Stopped') + '</span></div>';
+    // Show Running whenever the heartbeat fired in the last 60s — avoids the
+    // brief "Stopped" flash on page load before the first scan completes.
+    const isAlive = d.running || d.heartbeatAgo < 60;
+    html += '<div class="stat-row"><span class="stat-label">Status</span><span class="stat-value">' + (isAlive ? dot(true) + 'Running' : dot(false) + (d.heartbeatAgo < 180 ? 'Starting...' : 'Stopped')) + '</span></div>';
     html += '<div class="stat-row"><span class="stat-label">Mode</span><span class="stat-value">' + (d.simulation ? '<span class="sim-mode">SIMULATION</span>' : '<span class="live-mode">LIVE</span>') + '</span></div>';
     html += '<div class="stat-row"><span class="stat-label">Data Feed</span><span class="stat-value">' + (d.dataSource === 'kraken' ? '<span style="color:#7B68EE;font-weight:bold;">KRAKEN</span>' : '<span style="color:#58a6ff;font-weight:bold;">DRIFT</span>') + '</span></div>';
     if (d.dataSource === 'kraken') {
@@ -1500,7 +1510,7 @@ function generateDashboardHTML() {
             html += '<td>' + (ind.atrPct != null ? ind.atrPct.toFixed(3) + '%' : '-') + '</td>';
             html += '<td class="' + stC + '">' + (ind.stochK != null ? ind.stochK.toFixed(0) : '-') + '/' + (ind.stochD != null ? ind.stochD.toFixed(0) : '-') + '</td>';
             html += '<td class="' + adxC + '">' + (ind.adx != null ? ind.adx.toFixed(1) : '-') + '</td>';
-            html += '<td style="font-size:0.78em;">' + (ind.plusDI != null ? '+' + ind.plusDI.toFixed(0) + '/-' + ind.minusDI.toFixed(0) : '-') + '</td>';
+            html += '<td style="font-size:0.78em;">' + (ind.plusDI != null && ind.minusDI != null ? '+' + ind.plusDI.toFixed(0) + '/-' + ind.minusDI.toFixed(0) : '-') + '</td>';
             html += '<td class="' + cciC + '">' + (ind.cci != null ? ind.cci.toFixed(0) : '-') + '</td>';
             html += '<td class="' + wrC + '">' + (ind.willR != null ? ind.willR.toFixed(0) : '-') + '</td>';
             html += '<td class="' + rocC + '">' + (ind.roc != null ? ind.roc.toFixed(3) + '%' : '-') + '</td>';
@@ -1643,7 +1653,8 @@ function generateDashboardHTML() {
             rows += '<td class="' + (t2.profitPercent>=0?'positive':'negative') + '" style="font-weight:bold;">' + (t2.profitPercent>=0?'+':'') + t2.profitPercent.toFixed(2) + '%</td>';
             rows += '<td class="' + (t2.result==='WIN'?'positive':'negative') + '" style="font-weight:bold;">' + t2.result + '</td>';
             rows += '<td>' + t2.exitReason + '</td>';
-            rows += '<td style="font-size:0.78em;">' + (t2.tp!=null?'TP:'+t2.tp.toFixed(2)+' SL:'+t2.sl.toFixed(2):'-') + '</td>';
+            const slDisp = t2.sl != null ? (t2.sl < 0 ? 'BE/TRAIL' : t2.sl.toFixed(2)) : '?';
+            rows += '<td style="font-size:0.78em;">' + (t2.tp!=null ? 'TP:'+t2.tp.toFixed(2)+' SL:'+slDisp : '-') + '</td>';
             rows += '<td>' + (t2.holdTimeMin||'?') + 'm</td>';
             rows += '<td>' + (t2.simulated?'SIM':'LIVE') + '</td>';
             rows += '<td>' + sigDisp + '</td></tr>';
