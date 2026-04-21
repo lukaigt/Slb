@@ -1218,7 +1218,8 @@ function generateDashboardData() {
         pmThresholds: {
             wilson: patternMemory.WILSON_WR_THRESHOLD ?? 0.50,
             ev: patternMemory.MIN_EV_THRESHOLD ?? 0,
-            halfLife: patternMemory.RECENCY_HALF_LIFE_DAYS ?? 14
+            halfLife: patternMemory.RECENCY_HALF_LIFE_DAYS ?? 14,
+            purePatternMode: patternMemory.PURE_PATTERN_MODE ?? false
         },
         hourStats: (() => {
             const out = [];
@@ -1354,6 +1355,8 @@ function generateDashboardHTML() {
 
     // Learning Engine
     html += '<div class="card"><h2>Learning Engine</h2>';
+    const ppm = d.pmThresholds.purePatternMode;
+    html += '<div class="stat-row"><span class="stat-label">Entry Mode</span><span class="stat-value">' + (ppm ? '<span style="background:#1a3a2a;color:#3fb950;padding:2px 8px;border-radius:4px;font-weight:700;border:1px solid #238636;">PURE PATTERN ONLY</span>' : '<span style="background:#3a2e1a;color:#d29922;padding:2px 8px;border-radius:4px;font-weight:700;border:1px solid #9e6a03;">PATTERN + EXPLORATION</span>') + '</span></div>';
     html += '<div class="stat-row"><span class="stat-label">Phase</span><span class="stat-value">' + (d.pmStats.isLearning ? '<span class="learning-badge">LEARNING</span>' : '<span class="exploit-badge">EXPLOITATION</span>') + '</span></div>';
     html += '<div class="stat-row"><span class="stat-label">Patterns Stored</span><span class="stat-value" style="color:#58a6ff;">' + d.pmStats.totalStored + '</span></div>';
     const prog = d.pmStats.learningProgress;

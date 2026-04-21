@@ -9,6 +9,11 @@ const STATS_FILE = path.join(DATA_DIR, 'learning_stats.json');
 
 // ── Learning parameters (v19 — EV + Wilson + recency) ───────────────────────
 const MIN_TRADES_FOR_LEARNING = 30;
+
+// When true, the bot ONLY enters on confirmed pattern matches (Wilson WR + EV
+// both pass). All exploration / learning-phase free entries are blocked.
+// Flip to false to go back to mixed exploration + pattern mode.
+const PURE_PATTERN_MODE = true;
 const SIMILARITY_NEIGHBORS = 10;
 const MIN_NEIGHBORS_FOR_DECISION = 5;
 // Wilson lower confidence bound threshold. With 95% confidence, a 50% lower
@@ -384,7 +389,17 @@ function shouldEnter(fingerprint, direction, symbol) {
     const totalTrades = patterns.trades.length;
     const isLearning = totalTrades < MIN_TRADES_FOR_LEARNING;
 
+    // In PURE_PATTERN_MODE, learning-phase free entries are also blocked.
+    // With 6000+ patterns there is no reason to explore blindly.
     if (isLearning) {
+        if (PURE_PATTERN_MODE) {
+            return {
+                enter: false,
+                mode: 'PATTERN_REJECT',
+                reason: `Pure-pattern mode: learning phase (${totalTrades}/${MIN_TRADES_FOR_LEARNING} trades) but exploration disabled.`,
+                matchData: null
+            };
+        }
         return {
             enter: true,
             mode: 'EXPLORATION',
@@ -396,6 +411,14 @@ function shouldEnter(fingerprint, direction, symbol) {
     const match = findSimilarTrades(fingerprint, direction, symbol);
 
     if (match.count < MIN_NEIGHBORS_FOR_DECISION) {
+        if (PURE_PATTERN_MODE) {
+            return {
+                enter: false,
+                mode: 'PATTERN_REJECT',
+                reason: `Pure-pattern mode: only ${match.count} similar ${direction} patterns found (need ${MIN_NEIGHBORS_FOR_DECISION}). No exploration — skipping.`,
+                matchData: match
+            };
+        }
         return {
             enter: true,
             mode: 'EXPLORATION',
@@ -421,8 +444,8 @@ function shouldEnter(fingerprint, direction, symbol) {
         };
     }
 
-    // 5% exploration so the bot never fully freezes.
-    if (Math.random() < 0.05) {
+    // In PURE_PATTERN_MODE the 5% safety-valve exploration is also disabled.
+    if (!PURE_PATTERN_MODE && Math.random() < 0.05) {
         return {
             enter: true,
             mode: 'EXPLORATION',
@@ -556,5 +579,6 @@ module.exports = {
     WILSON_WR_THRESHOLD,
     MIN_EV_THRESHOLD,
     RECENCY_HALF_LIFE_DAYS,
-    FEATURE_WEIGHTS
+    FEATURE_WEIGHTS,
+    PURE_PATTERN_MODE
 };
